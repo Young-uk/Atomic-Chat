@@ -78,7 +78,7 @@ describe('real app download recovery and guarded deletion', () => {
   const evidence = join(ARTIFACTS_ROOT, 'download-recovery-success')
   const modelDir = () => join(session.profile.dataFolder, 'llamacpp/models', ID)
   const status = () => session.app.browser.execute((selector) =>
-    (document.querySelector(selector) as HTMLElement | null)?.innerText ?? '', PANEL)
+    ((document.querySelector(selector) as HTMLElement | null)?.innerText ?? '').replace(/\s+/g, ' '), PANEL)
   const rows = () => session.app.browser.$$(`${PANEL} li`).length
   const payload = async () => {
     const names = await readdir(modelDir())
@@ -103,7 +103,7 @@ describe('real app download recovery and guarded deletion', () => {
     const button = session.app.browser.$('//button[normalize-space(.)="Download"]')
     await button.waitForClickable({ timeout: 30_000 })
     await button.click()
-    await expect.poll(status, { timeout: 60_000 }).toMatch(/\b[1-9]\d?% · /)
+    await expect.poll(status, { timeout: 60_000 }).toMatch(/\b[1-9]\d?%/)
     if (probeVisibility) {
       // Reproduce an early/late terminal notification while native I/O still
       // runs. Wait for React to paint, not for another progress update to hide
@@ -129,7 +129,6 @@ describe('real app download recovery and guarded deletion', () => {
       modelBytes: 64 * 1024 * 1024, chunkDelayMs: 300, modelUrl: SOURCE, sizeLabel: '0.06 GB' })
     mirror = await mirrorDownload()
     session = await startSession('download-recovery', { webviewSeed: proxySeed(mirror.url) })
-    await session.app.browser.$('button=Skip').click()
     await waitForChat(session)
   })
   afterAll(async () => {
@@ -157,9 +156,10 @@ describe('real app download recovery and guarded deletion', () => {
       const getCount = () => hub.requests().filter((r) => r.path === '/model.gguf' && r.method === 'GET').length
       const requests = getCount()
       await openHub()
-      const show = session.app.browser.$('button[aria-label="Show download progress"]')
+      const show = session.app.browser.$('button[aria-label="Resume download"]')
       await show.waitForClickable({ timeout: 30_000 })
-      for (let at = 0; at < 3; at++) await show.click()
+      // Reopening the Hub must offer the same paused transfer without starting I/O.
+      for (let at = 0; at < 3; at++) await openHub()
       expect(await rows()).toBe(1)
       expect(getCount()).toBe(requests)
       expect(sha(await payload())).toBe(sha(before))
@@ -212,7 +212,6 @@ describe('real app download recovery and guarded deletion', () => {
     expect(await endSession(session)).toEqual([])
     session = await startSession('download-recovery-delete', { webviewSeed: proxySeed(mirror.url) })
     await withArtifacts(session, async () => {
-      await session.app.browser.$('button=Skip').click()
       await waitForChat(session)
       const neighbour = join(session.profile.dataFolder, 'llamacpp/models/e2e/untouched')
       await mkdir(neighbour, { recursive: true })

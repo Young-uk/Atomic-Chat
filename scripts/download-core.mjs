@@ -94,6 +94,9 @@ async function main() {
       verifyBinaryVersion(output)
       console.log(`Using local core build: ${local} -> ${output}`)
     }
+    // Local overrides are a complete verified pair, just like release downloads.
+    // Keep the provenance stamp in sync instead of retaining an older release's.
+    writeFileSync(path.join(BIN_DIR, 'atomic-chat-core-version.txt'), `${VERSION}\n`)
     return
   }
 

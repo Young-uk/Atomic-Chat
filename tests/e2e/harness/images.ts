@@ -138,6 +138,9 @@ export interface ImageSeedOptions {
 export function imageSeed(options: ImageSeedOptions = {}): Record<string, string> {
   const now = String(Date.now())
   const seed: Record<string, string> = {
+    // These scenarios start after app setup as well as the image tour.
+    'atomic-onboarding': JSON.stringify({ state: { phase: 'finished' }, version: 1 }),
+    'setup-completed': 'true',
     atomic_diffusion_catalog_cache_v1: JSON.stringify(imageCatalogFixture()),
     atomic_diffusion_catalog_cache_ts_v1: now,
     'setting-images': JSON.stringify({

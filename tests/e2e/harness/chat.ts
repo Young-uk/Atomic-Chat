@@ -58,7 +58,14 @@ export async function skipOnboarding(session: Session): Promise<void> {
 
 export async function waitForChat(session: Session): Promise<void> {
   // A profile that already holds a usable local model skips onboarding.
-  await session.app.browser.$(CHAT_INPUT).waitForDisplayed({ timeout: 60_000 })
+  // Fresh profiles can reach onboarding before model discovery finishes.
+  // Leave it through the real Skip setup action instead of racing its redirect.
+  await session.app.browser.waitUntil(async () => {
+    if (await session.app.browser.$(CHAT_INPUT).isDisplayed()) return true
+    const skip = session.app.browser.$(SKIP_ONBOARDING)
+    if (await skip.isDisplayed()) await skip.click()
+    return false
+  }, { timeout: 60_000, timeoutMsg: 'the chat did not become ready after setup' })
 }
 
 /**
