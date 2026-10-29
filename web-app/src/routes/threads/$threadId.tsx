@@ -1,3 +1,5 @@
+import { InferenceProgress } from '@/components/InferenceProgress'
+import { useInferenceProgress } from '@/lib/inference-progress'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute, useParams, useSearch, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
@@ -249,10 +251,12 @@ const agentAttachmentsFromMessage = (
       mediaType?: string
       size?: number
       fileType?: string
+      kind?: string
     }
     return [
       {
-        type: 'document' as const,
+        type:
+          file.kind === 'video' ? ('video' as const) : ('document' as const),
         name: file.name,
         path: file.path,
         mimeType: file.mediaType,
@@ -285,6 +289,7 @@ function ThreadDetail() {
   const { t } = useTranslation()
   const serviceHub = useServiceHub()
   const { threadId } = useParams({ from: Route.id })
+  const hasInferenceProgress = useInferenceProgress((state) => Boolean(state.byThread[threadId]))
   const search = useSearch({ from: Route.id })
   const searchThreadModel = search.threadModel
   const setCurrentThreadId = useThreads((state) => state.setCurrentThreadId)
@@ -975,7 +980,8 @@ function ThreadDetail() {
       const documentAttachments =
         documentsFromPayload ??
         getAttachments(attachmentsKey).filter(
-          (attachment) => attachment.type === 'document'
+          (attachment) =>
+            attachment.type === 'document' || attachment.type === 'video'
         )
       if (files?.some((file) => file.mediaType.startsWith('audio/'))) {
         toast.error(t('chat:agentErrors.audioUnsupported'))
@@ -1289,10 +1295,13 @@ function ThreadDetail() {
       // (home → new thread flow). In that case the store has already been
       // cleared synchronously on send to avoid the chip lingering in the
       // input. For in-thread sends no payload is provided and we read the
-      // attachments from the store as before.
+      // attachments from the store as before. Video rides with documents:
+      // both are local files referenced by path.
       const documentAttachments =
         documentsFromPayload ??
-        getAttachments(attachmentsKey).filter((a) => a.type === 'document')
+        getAttachments(attachmentsKey).filter(
+          (a) => a.type === 'document' || a.type === 'video'
+        )
       const executionRoute = resolveThreadExecutionRoute(threadId, {
         hasAudioAttachment: files?.some((file) =>
           file.mediaType?.startsWith('audio/')
@@ -2075,6 +2084,7 @@ function ThreadDetail() {
                         isLastMessage={isLastMessage}
                         status={inputStatus}
                         requestActive={requestActive}
+                        inferenceThreadId={isLastMessage && message.role === 'assistant' ? threadId : undefined}
                         reasoningContainerRef={reasoningContainerRef}
                         onReasoningScroll={onReasoningScroll}
                         onRegenerate={handleRegenerate}
@@ -2139,10 +2149,11 @@ function ThreadDetail() {
                       ) : (
                         inputStatus === CHAT_STATUS.SUBMITTED &&
                         !isAgentRunning &&
-                        !hasActiveAssistantMessage && <PromptProgress />
+                        !hasActiveAssistantMessage && !hasInferenceProgress && <PromptProgress />
                       )}
                     </div>
                   )}
+                  {!hasActiveAssistantMessage && <InferenceProgress threadId={threadId} />}
                   {shownError &&
                     !isAutoIncreasingContext &&
                     (() => {

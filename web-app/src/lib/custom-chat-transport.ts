@@ -153,6 +153,7 @@ const LOCAL_INFERENCE_PROVIDERS = new Set<string>([
   'foundation-models',
   'foundry-local',
   'litert-lm',
+  'geniex',
 ])
 
 const isLocalInferenceProvider = (provider: string): boolean =>
@@ -1081,7 +1082,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           effectiveProvider,
           inferenceParams ?? {},
           hasOverride ? effectiveReasoningOverride : undefined,
-          audioInputParts.length > 0 ? audioInputParts : undefined
+          audioInputParts.length > 0 ? audioInputParts : undefined,
+          this.threadId
         )
         ttftMark('deltaEnd')
         recreateModel = async () => {
@@ -1093,7 +1095,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             fresh,
             inferenceParams ?? {},
             hasOverride ? effectiveReasoningOverride : undefined,
-            audioInputParts.length > 0 ? audioInputParts : undefined
+            audioInputParts.length > 0 ? audioInputParts : undefined,
+            this.threadId
           )
         }
         this.lastChatTemplateKwargs =

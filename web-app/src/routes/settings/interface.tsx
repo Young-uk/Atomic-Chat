@@ -23,10 +23,12 @@ function InterfaceSettings() {
     <div className="flex flex-col h-svh w-full">
       <HeaderPage>
         <div className="flex items-center gap-2 w-full">
-          <span className='font-medium text-base font-studio'>{t('common:settings')}</span>
+          <span className="font-medium text-base font-studio">
+            {t('common:settings')}
+          </span>
         </div>
       </HeaderPage>
-      <div className="flex h-[calc(100%-60px)]">
+      <div className="flex h-[calc(100%-var(--page-header-height))]">
         <div className="p-4 pt-0 w-full overflow-y-auto">
           <div className="flex flex-col justify-between gap-4 gap-y-3 w-full">
             {/* Interface */}
@@ -37,8 +39,10 @@ function InterfaceSettings() {
                 actions={<ThemeSwitcher />}
               />
               <CardItem
-                title={t('settings:interface.fontSize')}
-                description={t('settings:interface.fontSizeDesc')}
+                title={t('settings:interface.fontScale')}
+                description={t('settings:interface.fontScaleDesc')}
+                className="flex-col items-start gap-3 lg:flex-row lg:items-center"
+                classNameWrapperAction="w-full min-w-0 lg:w-[min(24rem,50%)]"
                 actions={<FontSizeSwitcher />}
               />
               {/* Accent color — hidden */}
@@ -57,8 +61,19 @@ function InterfaceSettings() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={() => {
-                      resetInterface()
+                    onClick={async () => {
+                      try {
+                        await resetInterface()
+                      } catch (error) {
+                        console.error(
+                          'Failed to reset interface settings:',
+                          error
+                        )
+                        toast.error(
+                          t('settings:interface.resetInterfaceFailed')
+                        )
+                        return
+                      }
                       toast.success(
                         t('settings:interface.resetInterfaceSuccess'),
                         {

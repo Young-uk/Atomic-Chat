@@ -1,3 +1,5 @@
+import { InferenceProgress } from '@/components/InferenceProgress'
+import { useInferenceProgress } from '@/lib/inference-progress'
 import {
   memo,
   useState,
@@ -23,6 +25,11 @@ import { DeleteMessageDialog } from '@/containers/dialogs/DeleteMessageDialog'
 import TokenSpeedIndicator from '@/containers/TokenSpeedIndicator'
 import { extractFilesFromPrompt, FileMetadata } from '@/lib/fileMetadata'
 import { AttachmentChip } from '@/containers/AttachmentChip'
+import {
+  AttachmentPreviewDialog,
+  type AttachmentPreviewSource,
+} from '@/containers/AttachmentPreviewDialog'
+import { VIDEO_EXTENSIONS } from '@/containers/chatInput/classifyDroppedPaths'
 import { useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { useTranslation } from '@/i18n/react-i18next-compat'
@@ -74,6 +81,8 @@ export type MessageItemProps = {
   isLastMessage: boolean
   status: ChatStatus
   requestActive?: boolean
+  /** The request status row owns live phase and elapsed time for this thread. */
+  inferenceThreadId?: string
   reasoningContainerRef?: React.RefObject<HTMLDivElement | null>
   onReasoningScroll?: UIEventHandler<HTMLDivElement>
   onRegenerate?: (messageId: string) => void
@@ -92,6 +101,7 @@ export const MessageItem = memo(
     isLastMessage,
     status,
     requestActive,
+    inferenceThreadId,
     isAnimating,
     hideActions,
     reasoningContainerRef,
@@ -102,15 +112,15 @@ export const MessageItem = memo(
     agentAttachmentReferences = [],
   }: MessageItemProps) => {
     const { t } = useTranslation('chat')
+    const liveInference = useInferenceProgress((state) =>
+      inferenceThreadId ? state.byThread[inferenceThreadId] : undefined
+    )
+    const hasLiveInference = Boolean(liveInference)
     const serviceHub = useServiceHub()
     const selectedModel = useModelProvider((state) => state.selectedModel)
-    const [previewImage, setPreviewImage] = useState<{
-      url: string
-      filename?: string
-    } | null>(null)
-    // Editing state is deliberately local: the memo comparator below does not
-    // compare `onEdit` or any edit prop, so an `editingMessageId` lifted to the
-    // thread route would go stale for every non-last message.
+    const [previewSource, setPreviewSource] =
+      useState<AttachmentPreviewSource | null>(null)
+    // Keep an in-progress draft with its message across thread renders.
     const [isEditing, setIsEditing] = useState(false)
 
     const handleRegenerate = useCallback(() => {
@@ -133,6 +143,7 @@ export const MessageItem = memo(
 
     const getThinkingMessage = useCallback(
       (thinking: boolean, duration?: number) => {
+        if (thinking && hasLiveInference) return t('activity.reasoningDetails')
         if (thinking) {
           return t('activity.thinkingFor', { count: duration ?? 1 })
         }
@@ -141,7 +152,7 @@ export const MessageItem = memo(
         }
         return t('activity.thoughtFor', { count: duration })
       },
-      [t]
+      [t, hasLiveInference]
     )
 
     const isStreaming = isLastMessage && status === CHAT_STATUS.STREAMING
@@ -254,6 +265,68 @@ export const MessageItem = memo(
       return files
     }, [message.parts, message.role])
 
+    // Where each attached file lives on disk, and any text already pulled
+    // out of it, from the metadata the send path recorded. The
+    // `[ATTACHED_FILES]` block in the text carries names only.
+    const attachedFileSources = useMemo(() => {
+      const sources = new Map<string, AttachmentPreviewSource>()
+      if (attachedFiles.length === 0) return sources
+      const metadata = (message.metadata ?? {}) as {
+        file_attachments?: unknown
+        inline_file_contents?: unknown
+      }
+      const inlineContents = new Map<string, string>()
+      if (Array.isArray(metadata.inline_file_contents)) {
+        for (const entry of metadata.inline_file_contents) {
+          if (
+            typeof entry?.name === 'string' &&
+            typeof entry?.content === 'string'
+          ) {
+            inlineContents.set(entry.name, entry.content)
+          }
+        }
+      }
+      if (Array.isArray(metadata.file_attachments)) {
+        for (const entry of metadata.file_attachments) {
+          if (
+            typeof entry?.name !== 'string' ||
+            typeof entry?.path !== 'string' ||
+            sources.has(entry.name)
+          ) {
+            continue
+          }
+          const isVideo = entry.kind === 'video'
+          sources.set(entry.name, {
+            name: entry.name,
+            path: entry.path,
+            fileType:
+              typeof entry.fileType === 'string' ? entry.fileType : undefined,
+            size: typeof entry.size === 'number' ? entry.size : undefined,
+            // A video's inline entry is the note the model got, not its text.
+            inlineContent: isVideo ? undefined : inlineContents.get(entry.name),
+          })
+        }
+      }
+      return sources
+    }, [attachedFiles.length, message.metadata])
+
+    const renderAttachedFileChip = (file: FileMetadata, idx: number) => {
+      const source = attachedFileSources.get(file.name)
+      const isVideo = VIDEO_EXTENSIONS.has(
+        (file.type ?? file.name.split('.').pop() ?? '').toLowerCase()
+      )
+      return (
+        <AttachmentChip
+          key={`file-${idx}-${file.id}`}
+          name={file.name}
+          fileType={file.type}
+          size={file.size}
+          note={isVideo ? t('attachmentPreview.videoModelNote') : undefined}
+          onOpen={source ? () => setPreviewSource(source) : undefined}
+        />
+      )
+    }
+
     // Get full text content for copy button
     const getFullTextContent = useCallback(() => {
       return message.parts
@@ -290,14 +363,7 @@ export const MessageItem = memo(
             <div className="bg-secondary relative text-foreground p-2 rounded-md w-full max-w-[80%]">
               {attachedFiles.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
-                  {attachedFiles.map((file: FileMetadata, idx: number) => (
-                    <AttachmentChip
-                      key={`file-${idx}-${file.id}`}
-                      name={file.name}
-                      fileType={file.type}
-                      size={file.size}
-                    />
-                  ))}
+                  {attachedFiles.map(renderAttachedFileChip)}
                 </div>
               )}
               {editor}
@@ -351,14 +417,7 @@ export const MessageItem = memo(
               <div className="bg-secondary relative text-foreground p-2 rounded-md inline-block max-w-[80%]">
                 {attachedFiles.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-3">
-                    {attachedFiles.map((file: FileMetadata, idx: number) => (
-                      <AttachmentChip
-                        key={`file-${idx}-${file.id}`}
-                        name={file.name}
-                        fileType={file.type}
-                        size={file.size}
-                      />
-                    ))}
+                    {attachedFiles.map(renderAttachedFileChip)}
                   </div>
                 )}
                 {displayText && (
@@ -404,7 +463,11 @@ export const MessageItem = memo(
             type="button"
             className="block overflow-hidden rounded-md border border-border max-w-[80%] cursor-pointer"
             onClick={() =>
-              setPreviewImage({ url: block.url, filename: block.filename })
+              setPreviewSource({
+                name: block.filename || t('attachmentPreview.image'),
+                url: block.url,
+                mimeType: block.mediaType,
+              })
             }
           >
             <img
@@ -471,7 +534,9 @@ export const MessageItem = memo(
         agentRunStatus === 'awaiting_approval' ||
         agentRunStatus === 'awaiting_folder_access'
 
-      if (!block.tools.length && !error && !active) {
+      // The request row already owns live status; keep actual tool details,
+      // but do not add a second generic Working indicator.
+      if (!block.tools.length && !error && (!active || hasLiveInference)) {
         return null
       }
 
@@ -565,6 +630,10 @@ export const MessageItem = memo(
               return null
           }
         })}
+
+        {isRequestActive && hasLiveInference && inferenceThreadId && (
+          <InferenceProgress threadId={inferenceThreadId} />
+        )}
 
         {isEditing && !firstTextBlockKey && renderEditor('inline-editor')}
 
@@ -671,20 +740,10 @@ export const MessageItem = memo(
           </div>
         )}
 
-        {/* Image Preview Dialog */}
-        {previewImage && (
-          <div
-            className="fixed inset-0 z-100 bg-black/50 backdrop-blur-md flex items-center justify-center cursor-pointer"
-            onClick={() => setPreviewImage(null)}
-          >
-            <img
-              src={previewImage.url}
-              alt={previewImage.filename || 'Preview'}
-              className="max-h-[90vh] max-w-[90vw] object-contain"
-              onClick={(e) => e.stopPropagation()}
-            />
-          </div>
-        )}
+        <AttachmentPreviewDialog
+          source={previewSource}
+          onClose={() => setPreviewSource(null)}
+        />
       </div>
     )
   },
@@ -704,8 +763,12 @@ export const MessageItem = memo(
       prevProps.isLastMessage === nextProps.isLastMessage &&
       prevProps.status === nextProps.status &&
       prevProps.requestActive === nextProps.requestActive &&
+      prevProps.inferenceThreadId === nextProps.inferenceThreadId &&
       prevProps.showAssistant === nextProps.showAssistant &&
       prevProps.hideActions === nextProps.hideActions &&
+      prevProps.onEdit === nextProps.onEdit &&
+      prevProps.onDelete === nextProps.onDelete &&
+      prevProps.onRegenerate === nextProps.onRegenerate &&
       prevProps.onReasoningScroll === nextProps.onReasoningScroll &&
       prevProps.agentAttachmentReferences ===
         nextProps.agentAttachmentReferences

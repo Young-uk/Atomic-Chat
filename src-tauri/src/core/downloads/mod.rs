@@ -1,6 +1,7 @@
+pub mod archive;
 pub mod commands;
-pub mod disk;
 pub mod discard;
+pub mod disk;
 pub mod helpers;
 pub mod models;
 mod segmented;

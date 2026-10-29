@@ -1,3 +1,4 @@
+import { useInferenceProgress } from '@/lib/inference-progress'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { page } from '@vitest/browser/context'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -509,3 +510,28 @@ for (const width of [1024, 1280]) {
     }
   }
 }
+
+
+it.each([['16px', false], ['20px', false], ['16px', true], ['20px', true]] as const)(
+  'shows one live indicator alongside reasoning details at %s (dark: %s)',
+  async (fontSize, dark) => {
+    setFontSize(fontSize)
+    setTheme(dark ? 'dark' : 'light')
+    useInferenceProgress.setState({ byThread: { overlap: {
+      requestId: 'overlap', startedAt: Date.now() - 33000, phase: 'thinking',
+    } } })
+    render(withTranslations(<div style={{ width: 320 }} data-testid="overlap-column">
+      <MessageItem message={{ id: 'overlap', role: 'assistant', parts: [
+        { type: 'reasoning', text: 'Inspect this reasoning without a second live clock.', state: 'streaming' },
+      ] }} isFirstMessage={false} isLastMessage status="streaming" inferenceThreadId="overlap" />
+    </div>))
+    const column = screen.getByTestId('overlap-column')
+    await settle(column)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Reasoning details' })).toBeVisible()
+    expect(screen.queryByText(/^Working/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Thinking for/)).not.toBeInTheDocument()
+    expectNoHorizontalOverflow(column)
+    useInferenceProgress.setState({ byThread: {} })
+  }
+)

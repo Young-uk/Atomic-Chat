@@ -26,6 +26,8 @@ for (const font of [DEFAULT_FONT_SIZE, XL_FONT_SIZE]) {
                 total={88.88 * 1024 ** 3}
                 pausable
                 stage={{ kind: 'retrying', attempt: 7, maxAttempts: 0 }}
+                // Retry copy is intentionally short; use a genuinely overflowing recovery line.
+                statusText="Checking saved download files and completed shards before resuming…"
               />
             </ul>
           )

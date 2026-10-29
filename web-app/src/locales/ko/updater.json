@@ -7,5 +7,6 @@
   "remindMeLater": "나중에 알림",
   "downloading": "다운로드 중...",
   "updateNow": "지금 업데이트",
-  "relaunchingWindows": "업데이트가 설치되었습니다. 앱이 자동으로 재시작됩니다."
+  "relaunchingWindows": "업데이트가 설치되었습니다. 앱이 자동으로 재시작됩니다.",
+  "personalReleaseNotice": "새 공식 버전이 있어요. Personal 앱은 별도로 업데이트해요."
 }

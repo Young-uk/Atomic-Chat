@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockIPC } from '@tauri-apps/api/mocks'
 
 const mockPluginCheck = vi.hoisted(() => vi.fn())
@@ -71,5 +71,59 @@ describe('TauriUpdaterService on a package-managed install', () => {
       expect.objectContaining({ nonceSeed: 'seed' })
     )
     expect(mockPluginCheck).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('TauriUpdaterService when the update server cannot be reached', () => {
+  let ipc: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    ipc = vi.fn()
+  })
+
+  it('rejects when neither the signed check nor the plugin got an answer', async () => {
+    ipc.mockImplementation((command: string) => {
+      if (command === 'check_for_app_updates') {
+        throw new Error('error sending request')
+      }
+    })
+    mockPluginCheck.mockRejectedValue(new Error('error sending request'))
+    const service = await loadService(false, ipc)
+
+    await expect(service.check()).rejects.toThrow('error sending request')
+  })
+
+  it('keeps the signed "no update" when only the plugin check fails', async () => {
+    ipc.mockImplementation((command: string) =>
+      command === 'check_for_app_updates' ? null : undefined
+    )
+    mockPluginCheck.mockRejectedValue(new Error('error sending request'))
+    const service = await loadService(false, ipc)
+
+    await expect(service.check()).resolves.toBeNull()
+  })
+})
+
+
+describe('Personal release notices', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('checks releases but blocks both installation entry points', async () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+    mockPluginCheck.mockReset().mockResolvedValue({ version: '9.9.9' })
+    const ipc = vi.fn()
+    const service = await loadService(false, ipc)
+    await expect(service.check()).resolves.toMatchObject({ version: '9.9.9' })
+    mockPluginCheck.mockClear()
+    ipc.mockClear()
+
+    await service.installAndRestart()
+    await expect(service.downloadAndInstallWithProgress(vi.fn()))
+      .rejects.toThrow('Personal builds only check official releases')
+    expect(mockPluginCheck).not.toHaveBeenCalled()
+    expect(ipc).not.toHaveBeenCalled()
   })
 })

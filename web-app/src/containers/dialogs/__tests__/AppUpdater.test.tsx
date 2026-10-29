@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DialogAppUpdater from '@/containers/dialogs/AppUpdater'
 import type { UpdateState } from '@/hooks/useAppUpdater'
@@ -61,12 +61,26 @@ const baseState = (): UpdateState => ({
 })
 
 describe('DialogAppUpdater', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('keeps Personal release information without an installation button', async () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+    render(<DialogAppUpdater />)
+    expect(banner()).not.toBeNull()
+    expect(screen.getByText('updater:personalReleaseNotice')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'updater:update' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'updater:showReleaseNotes' }))
+    await userEvent.click(screen.getByRole('button', { name: 'updater:openRelease' }))
+    expect(open).toHaveBeenCalledWith('https://github.com/AtomicBot-ai/Atomic-Chat/releases/tag/v2.0.38')
+    expect(downloadAndInstallUpdate).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     open.mockResolvedValue(undefined)
     updateState = baseState()
     useUpdateBannerSlots.setState({
-      claimed: { download: false, app: false, engine: false },
+      claimed: { app: false, engine: false },
     })
   })
 
@@ -82,15 +96,13 @@ describe('DialogAppUpdater', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows a wider version transition and changelog without a redundant subtitle', () => {
+  it('shows the version transition and changelog as a corner card, without a redundant subtitle', () => {
     render(<DialogAppUpdater />)
 
-    expect(screen.getByTestId('app-update-banner')).toHaveClass(
-      'w-[min(25rem,calc(100vw-1rem))]',
-      'bottom-[calc(1rem+var(--download-panel-offset,0px))]',
-      'z-40',
-      'transition-[bottom]'
-    )
+    // The download panel's card, in the corner column beside it.
+    const card = screen.getByTestId('app-update-banner')
+    expect(card).toHaveClass('dl-panel', 'w-[min(22rem,calc(100vw-2rem))]')
+    expect(card.closest('[data-corner-stack]')).not.toBeNull()
     expect(screen.getByText('updater:app.title')).toBeInTheDocument()
     expect(screen.getByText('2.0.37')).toBeInTheDocument()
     expect(screen.getByText('2.0.38')).toBeInTheDocument()
@@ -345,13 +357,5 @@ describe('DialogAppUpdater', () => {
     expect(
       screen.queryByRole('button', { name: 'updater:dismiss' })
     ).not.toBeInTheDocument()
-  })
-
-  it('outranks the engine banner but yields to a running download', () => {
-    useUpdateBannerSlots.setState({
-      claimed: { download: true, app: false, engine: false },
-    })
-    const { container } = render(<DialogAppUpdater />)
-    expect(container).toBeEmptyDOMElement()
   })
 })

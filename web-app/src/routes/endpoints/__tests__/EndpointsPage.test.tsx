@@ -52,6 +52,14 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
   }),
 }))
 
+vi.mock('@/containers/server/DstarControlPanel', () => ({
+  DstarControlPanel: () => <section aria-label="dstar-runtime-controls" />,
+}))
+vi.mock('@/lib/platform/utils', async (original) => ({
+  ...(await original<typeof import('@/lib/platform/utils')>()),
+  isPlatformTauri: () => true,
+}))
+
 vi.mock('@/containers/HeaderPage', () => ({
   default: ({ children }: { children?: React.ReactNode }) => (
     <div>{children}</div>
@@ -261,6 +269,41 @@ describe('EndpointsPage', () => {
     // No media catalog from the core unless a case says otherwise.
     useMediaCatalog.setState({ available: false, status: 'ready' })
     mockStore()
+  })
+
+  it('keeps runtime controls inside only the matching Dstar endpoint card', () => {
+    vi.stubGlobal('IS_MACOS', true)
+    try {
+      mockStore([
+        ...providers,
+        {
+          provider: 'Dstar',
+          base_url: 'http://127.0.0.1:8010/v1',
+          active: true,
+          models: [],
+          settings: [],
+        },
+      ])
+      render(<EndpointsPage />)
+      const dstar = card('Dstar')
+      const controls = screen.getByRole('region', {
+        name: 'dstar-runtime-controls',
+        hidden: true,
+      })
+      expect(dstar).toContainElement(controls)
+      expect(
+        screen.getAllByRole('region', {
+          name: 'dstar-runtime-controls',
+          hidden: true,
+        })
+      ).toHaveLength(1)
+      expect(controls.closest('details')).not.toHaveAttribute('open')
+      expect(
+        within(card('Ollama')).queryByText('endpoints:dstar.controls')
+      ).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("lists the user's own servers and nothing hosted or local", () => {

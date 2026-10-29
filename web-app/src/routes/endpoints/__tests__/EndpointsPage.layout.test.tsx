@@ -29,6 +29,31 @@ vi.mock('@tanstack/react-router', () => ({
   useSearch: () => searchState.current,
 }))
 
+vi.mock('@/lib/platform/utils', async (original) => ({
+  ...(await original<typeof import('@/lib/platform/utils')>()),
+  isPlatformTauri: () => true,
+}))
+vi.mock('@/services/dstar', async (original) => ({
+  ...(await original<typeof import('@/services/dstar')>()),
+  controlDstar: async () => ({
+    available: true,
+    owned: false,
+    status: 'stopped',
+    selection: { model: 'iq3', context: 65536 },
+    models: [
+      {
+        id: 'iq3',
+        name: 'Qwen3.8 Flash Next · IQ3_XXS',
+        available: true,
+        bytes: 16,
+      },
+    ],
+    servedModels: [],
+    elapsedSeconds: 0,
+    log: '',
+  }),
+}))
+
 const serviceHubStub = {
   providers: () => ({
     updateSettings: vi.fn().mockResolvedValue(undefined),
@@ -147,6 +172,36 @@ describe('Custom Endpoint page geometry', () => {
         'llamacpp-server': { ok: true, latencyMs: 24, modelCount: 12 },
       },
     })
+  })
+
+  it('keeps Dstar controls nested, collapsible and within a narrow endpoint card', async () => {
+    vi.stubGlobal('IS_MACOS', true)
+    try {
+      await page.viewport(1024, 900)
+      setFontSize(XL_FONT_SIZE)
+      useModelProvider.setState({
+        providers: [...providers, server('Dstar', 'http://127.0.0.1:8010/v1')],
+      })
+      const root = await renderPage()
+      const dstar = screen.getByRole('article', { name: 'Dstar' })
+      const summary = within(dstar).getByText('Server controls')
+      const start = within(dstar).getByRole('button', {
+        name: 'Start Dstar',
+        hidden: true,
+      })
+      expect(start).not.toBeVisible()
+      summary.click()
+      await settle(dstar)
+      expect(start).toBeVisible()
+      expectNoHorizontalOverflow(root)
+      expect(
+        screen.getAllByRole('region', { name: 'Dstar local server' })
+      ).toHaveLength(1)
+      summary.click()
+      expect(start).not.toBeVisible()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it.each(CASES)(

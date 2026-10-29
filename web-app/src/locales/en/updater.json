@@ -25,5 +25,6 @@
     "restartRequired": "Restart required after update",
     "showWhatsNew": "Show what's new",
     "updateFailed": "Could not start the engine update. Please try again."
-  }
+  },
+  "personalReleaseNotice": "Official release available. This Personal build is updated separately."
 }

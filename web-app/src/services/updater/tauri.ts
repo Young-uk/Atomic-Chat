@@ -1,3 +1,4 @@
+import { isPersonalBuild } from '@/lib/personal-build'
 /**
  * Tauri Updater Service - Desktop implementation
  * 
@@ -77,7 +78,12 @@ async function getCurrentVersion(): Promise<string> {
 export class TauriUpdaterService extends DefaultUpdaterService {
   /**
    * Check for updates using custom signed request for primary endpoint
-   * Falls back to standard Tauri updater if custom check fails
+   * Falls back to standard Tauri updater if custom check fails.
+   *
+   * Resolves `null` only when an update server answered "no update"; rejects
+   * when neither check could get an answer, so a check the user asked for
+   * can say it failed instead of reading as "up to date". The startup check
+   * in `useAppUpdater` still treats a rejection as no update.
    */
   async check(): Promise<UpdateInfo | null> {
     // A package manager owns updates: no request, not even the plugin
@@ -85,6 +91,9 @@ export class TauriUpdaterService extends DefaultUpdaterService {
     // any other caller.
     if (await isPackageManaged()) return null
 
+    // Set when the signed check answered "no update". The plugin check after
+    // it is only a second opinion, so its failure leaves that answer standing.
+    let signedCheckAnswered = false
     try {
       const nonceSeed = await getNonceSeed()
       const currentVersion = await getCurrentVersion()
@@ -111,6 +120,7 @@ export class TauriUpdaterService extends DefaultUpdaterService {
             signature: customUpdate.signature,
           }
         }
+        signedCheckAnswered = true
       } catch (customError) {
         console.warn('Custom updater check failed, falling back to standard Tauri updater:', customError)
       }
@@ -127,11 +137,13 @@ export class TauriUpdaterService extends DefaultUpdaterService {
       }
     } catch (error) {
       console.error('Error checking for updates in Tauri:', error)
-      return null
+      if (signedCheckAnswered) return null
+      throw error
     }
   }
 
   async installAndRestart(): Promise<void> {
+    if (isPersonalBuild()) return
     if (await isPackageManaged()) return
 
     try {
@@ -149,6 +161,7 @@ export class TauriUpdaterService extends DefaultUpdaterService {
   async downloadAndInstallWithProgress(
     progressCallback: (event: UpdateProgressEvent) => void
   ): Promise<void> {
+    if (isPersonalBuild()) throw new Error('Personal builds only check official releases')
     if (await isPackageManaged()) {
       throw new Error('Updates are owned by the package manager')
     }

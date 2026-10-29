@@ -182,7 +182,7 @@ describe('Interface Settings Route', () => {
     render(<Component />)
 
     expect(screen.getByText('settings:interface.theme')).toBeInTheDocument()
-    expect(screen.getByText('settings:interface.fontSize')).toBeInTheDocument()
+    expect(screen.getByText('settings:interface.fontScale')).toBeInTheDocument()
     expect(
       screen.getByText('settings:interface.resetToDefault')
     ).toBeInTheDocument()

@@ -111,6 +111,7 @@ pub fn run() {
     // Desktop: include updater commands
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let app_builder = app_builder.invoke_handler(tauri::generate_handler![
+        core::dstar::dstar_control,
         // FS commands - Deperecate soon
         core::filesystem::commands::join_path,
         core::filesystem::commands::mkdir,
@@ -169,6 +170,7 @@ pub fn run() {
         core::system::commands::detect_agent_installed,
         core::system::commands::install_agent,
         core::system::commands::configure_codex,
+        core::system::codex_config::disconnect_codex,
         core::system::commands::configure_opencode,
         core::system::commands::configure_openclaude,
         core::system::commands::configure_cline,
@@ -268,6 +270,8 @@ pub fn run() {
         core::downloads::discard::delete_unfinished_model_download,
         core::downloads::commands::test_proxy_connection,
         core::downloads::commands::get_download_free_space,
+        // An AI Hub bundle's zip, unpacked under its download's task id (change add-geniex-runtime).
+        core::downloads::archive::extract_zip,
         // Custom updater commands (desktop only)
         core::updater::commands::check_for_app_updates,
         core::updater::commands::is_update_available,
@@ -362,6 +366,7 @@ pub fn run() {
         core::system::commands::detect_agent_installed,
         core::system::commands::install_agent,
         core::system::commands::configure_codex,
+        core::system::codex_config::disconnect_codex,
         core::system::commands::configure_opencode,
         core::system::commands::configure_openclaude,
         core::system::commands::configure_cline,
@@ -516,6 +521,8 @@ pub fn run() {
             tray_handles: Arc::new(std::sync::Mutex::new(None)),
         })
         .setup(|app| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            core::dstar::install(app.handle());
             // The same windows from the same config, built here so that each
             // can be given this run's own WebKit data store.
             #[cfg(feature = "e2e")]
@@ -712,6 +719,11 @@ pub fn run() {
             }
 
             setup_mcp(app);
+            // Earlier releases wrote Atomic's settings into the config.toml
+            // Codex shares with the ChatGPT app, where they could keep it from
+            // starting; take them out (backed up) and keep them as our profile.
+            #[cfg(desktop)]
+            tauri::async_runtime::spawn_blocking(core::system::codex_config::migrate_on_startup);
             // Not in an end-to-end build: a clean profile always counts as a
             // version change, so every run would overwrite the CLI on the
             // operator's real PATH — outside the isolated test root.
@@ -784,6 +796,7 @@ pub fn run() {
                     let handle = app_handle.clone();
                     tokio::task::block_in_place(|| {
                         tauri::async_runtime::block_on(async move {
+                            crate::core::dstar::shutdown(&handle).await;
                             crate::core::atomic_core::commands::shutdown(&handle).await;
                         })
                     });

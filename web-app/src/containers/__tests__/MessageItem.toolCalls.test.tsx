@@ -1,4 +1,5 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { useInferenceProgress } from '@/lib/inference-progress'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
@@ -721,4 +722,31 @@ describe('MessageItem tool calls', () => {
     ).not.toBeInTheDocument()
     expect(screen.queryByText('activity.working')).not.toBeInTheDocument()
   })
+})
+
+
+it('uses one request clock while preserving the live reasoning disclosure', () => {
+  vi.useFakeTimers()
+  const progress = { requestId: 'single-status', startedAt: Date.now() - 33000, phase: 'thinking' as const }
+  useInferenceProgress.setState({ byThread: { 'test-thread': progress } })
+  const message: UIMessage = { id: 'single-status', role: 'assistant', parts: [
+    { type: 'reasoning', text: 'Reasoning remains inspectable.', state: 'streaming' },
+  ] }
+  const { rerender } = render(<MessageItem message={message} isFirstMessage={false}
+    isLastMessage status="streaming" inferenceThreadId="test-thread" />)
+  expect(screen.getAllByRole('status')).toHaveLength(1)
+  expect(screen.getByText('0:33')).toBeInTheDocument()
+  expect(screen.queryByText('activity.working')).not.toBeInTheDocument()
+  expect(screen.queryByText(/activity.thinkingFor/)).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'activity.reasoningDetails' }))
+  expect(screen.getByText('Reasoning remains inspectable.')).toBeVisible()
+  act(() => vi.advanceTimersByTime(5000))
+  expect(screen.getByText('0:38')).toBeInTheDocument()
+  act(() => useInferenceProgress.setState({ byThread: { 'test-thread': { ...progress, phase: 'generating' } } }))
+  expect(screen.getByText('inferenceProgress.generating')).toBeInTheDocument()
+  expect(screen.getAllByRole('status')).toHaveLength(1)
+  act(() => useInferenceProgress.setState({ byThread: {} }))
+  rerender(<MessageItem message={message} isFirstMessage={false} isLastMessage status="ready" inferenceThreadId="test-thread" />)
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  expect(screen.getByText('Reasoning remains inspectable.')).toBeVisible()
 })

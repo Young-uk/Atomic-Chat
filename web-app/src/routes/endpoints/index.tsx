@@ -18,6 +18,9 @@ import HeaderPage from '@/containers/HeaderPage'
 import { CloudMediaModelsCard } from '@/containers/cloud/CloudMediaModelsCard'
 import { CloudModelsCard } from '@/containers/cloud/CloudModelsCard'
 import { EndpointCard } from '@/containers/endpoints/EndpointCard'
+import { DstarControlPanel } from '@/containers/server/DstarControlPanel'
+import { isDstarEndpoint } from '@/services/dstar'
+import { isPlatformTauri } from '@/lib/platform/utils'
 import {
   EndpointDialog,
   type EndpointDraft,
@@ -461,6 +464,7 @@ function EndpointListItem({
   refreshing: boolean
   onRefreshModels: () => void
 }) {
+  const { t } = useTranslation()
   const { connecting, connect } = useConnectMediaServer(updateProvider)
   const mediaServer = provider.media_only === true
   // A media server's only models are media ones, which need the core's catalog.
@@ -487,6 +491,16 @@ function EndpointListItem({
   return (
     <EndpointCard
       provider={provider}
+      serverControls={
+        IS_MACOS && isPlatformTauri() && isDstarEndpoint(provider.base_url) ? (
+          <details className="min-w-0 border-t border-border p-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              {t('endpoints:dstar.controls')}
+            </summary>
+            <DstarControlPanel embedded />
+          </details>
+        ) : undefined
+      }
       connectingMedia={connecting}
       onConnectMedia={() => void connect(provider)}
       {...card}

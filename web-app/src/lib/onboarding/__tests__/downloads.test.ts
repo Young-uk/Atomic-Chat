@@ -6,6 +6,11 @@ const mocks = vi.hoisted(() => ({
   markSilentImport: vi.fn(),
   pullModelWithMetadata: vi.fn(),
 }))
+// The MLX engine build: whether one is active, and its install.
+const mlxEngine = vi.hoisted(() => ({
+  mlxEngineActive: vi.fn(),
+  installMlxEngine: vi.fn(),
+}))
 
 vi.mock('@janhq/core', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -17,6 +22,11 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 vi.mock('@/utils/backgroundImports', () => ({
   markSilentImport: mocks.markSilentImport,
 }))
+vi.mock('@/services/engine-builds/mlx', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/engine-builds/mlx')>()),
+  ...mlxEngine,
+}))
+vi.mock('@/i18n/setup', () => ({ default: { t: (key: string) => key } }))
 
 import { useDownloadStore } from '@/hooks/useDownloadStore'
 import type { ServiceHub } from '@/services'
@@ -67,6 +77,7 @@ describe('MLX downloads from setup', () => {
     vi.clearAllMocks()
     mocks.engines = { mlx: { import: vi.fn().mockResolvedValue(undefined) } }
     mocks.pullModelWithMetadata.mockReset().mockResolvedValue(undefined)
+    mlxEngine.mlxEngineActive.mockResolvedValue(true)
     useDownloadStore.setState({
       localDownloadingModels: new Set(),
       resumableDownloads: new Set(),
@@ -140,6 +151,152 @@ describe('MLX downloads from setup', () => {
 
     expect(started).toBe(false)
     expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+/** A promise and the functions that settle it, for steps that must overlap. */
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+/** Settles once the microtask queue has drained. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+describe('the MLX engine beside a new MLX model', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.engines = { mlx: { import: vi.fn() } }
+    mocks.pullModelWithMetadata.mockReset().mockResolvedValue(undefined)
+    useDownloadStore.setState({
+      localDownloadingModels: new Set(),
+      resumableDownloads: new Set(),
+      downloadOriginByModelId: {},
+      downloadRequestOriginByModelId: {},
+    })
+  })
+
+  it('installs a missing engine while the model downloads, and waits for both', async () => {
+    mlxEngine.mlxEngineActive.mockResolvedValue(false)
+    const engine = deferred<unknown>()
+    const model = deferred<void>()
+    mlxEngine.installMlxEngine.mockReturnValue(engine.promise)
+    mocks.pullModelWithMetadata.mockReturnValue(model.promise)
+
+    let settled: boolean | undefined
+    void startMlxCatalogDownload(catalog, {
+      serviceHub: hubWith(async () => repo),
+    }).then((value) => (settled = value))
+    await flush()
+
+    // Both run at once; neither waits for the other.
+    expect(mlxEngine.installMlxEngine).toHaveBeenCalledTimes(1)
+    expect(mocks.pullModelWithMetadata).toHaveBeenCalledTimes(1)
+
+    model.resolve()
+    await flush()
+    expect(settled).toBeUndefined()
+
+    engine.resolve({ installed: true })
+    await vi.waitFor(() => expect(settled).toBe(true))
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('reports an engine that failed with a Retry, and keeps the model as it is', async () => {
+    mlxEngine.mlxEngineActive.mockResolvedValue(false)
+    mlxEngine.installMlxEngine.mockRejectedValue({
+      code: 'ENGINE_INSTALL_FAILED',
+      message: 'sha256 mismatch',
+    })
+    mocks.pullModelWithMetadata.mockResolvedValue(undefined)
+
+    const started = await startMlxCatalogDownload(catalog, {
+      serviceHub: hubWith(async () => repo),
+    })
+
+    expect(started).toBe(false)
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    const [title, options] = vi.mocked(toast.error).mock.calls[0] as [
+      string,
+      {
+        description: string
+        action: { label: string; onClick: () => void }
+      },
+    ]
+    expect(title).toBe('settings:mlxEngine.installFailed')
+    expect(options.description).toBe('sha256 mismatch')
+    expect(options.action.label).toBe('common:retry')
+    // The model is in: not resumable, still the engine's.
+    const state = useDownloadStore.getState()
+    expect(state.resumableDownloads.has('Qwen3.5-4B-4bit')).toBe(false)
+    expect(state.localDownloadingModels.has('Qwen3.5-4B-4bit')).toBe(true)
+
+    mlxEngine.installMlxEngine.mockResolvedValue({ installed: true })
+    options.action.onClick()
+    expect(mlxEngine.installMlxEngine).toHaveBeenCalledTimes(2)
+  })
+
+  it('says nothing about an engine install the user cancelled', async () => {
+    mlxEngine.mlxEngineActive.mockResolvedValue(false)
+    mlxEngine.installMlxEngine.mockRejectedValue({
+      code: 'CANCELLED',
+      message: 'Download cancelled',
+    })
+    mocks.pullModelWithMetadata.mockResolvedValue(undefined)
+
+    const started = await startMlxCatalogDownload(catalog, {
+      serviceHub: hubWith(async () => repo),
+    })
+
+    expect(started).toBe(false)
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('leaves an engine failure unsaid when the model already failed', async () => {
+    mlxEngine.mlxEngineActive.mockResolvedValue(false)
+    const engine = deferred<unknown>()
+    mlxEngine.installMlxEngine.mockReturnValue(engine.promise)
+
+    const started = startMlxCatalogDownload(catalog, {
+      serviceHub: hubWith(async () => ({ siblings: [] })),
+    })
+    await flush()
+    engine.reject({ code: 'ENGINE_INSTALL_FAILED', message: 'boom' })
+
+    await expect(started).resolves.toBe(false)
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(toast.error).mock.calls[0][0]).toBe(
+      'Failed to download MLX model'
+    )
+  })
+
+  it('installs nothing when MLX has an active build', async () => {
+    mlxEngine.mlxEngineActive.mockResolvedValue(true)
+    mocks.pullModelWithMetadata.mockResolvedValue(undefined)
+
+    const started = await startMlxCatalogDownload(catalog, {
+      serviceHub: hubWith(async () => repo),
+    })
+
+    expect(started).toBe(true)
+    expect(mlxEngine.installMlxEngine).not.toHaveBeenCalled()
+  })
+
+  it('leaves the engine to the first load when the core said nothing about MLX', async () => {
+    mlxEngine.mlxEngineActive.mockResolvedValue(null)
+    mocks.pullModelWithMetadata.mockResolvedValue(undefined)
+
+    await expect(
+      startMlxCatalogDownload(catalog, {
+        serviceHub: hubWith(async () => repo),
+      })
+    ).resolves.toBe(true)
+    expect(mlxEngine.installMlxEngine).not.toHaveBeenCalled()
   })
 })
 

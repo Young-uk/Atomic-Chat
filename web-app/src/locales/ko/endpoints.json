@@ -1,0 +1,47 @@
+{
+  "dstar": {
+    "title": "Dstar 로컬 서버",
+    "checking": "Dstar 확인 중…",
+    "start": "Dstar 시작",
+    "stop": "Dstar 중지",
+    "restart": "적용하고 다시 시작",
+    "model": "저장된 모델",
+    "context": "문맥 크기 (토큰)",
+    "chatModel": "채팅 모델",
+    "useInChat": "채팅에 사용",
+    "reloadHint": "모델이나 문맥 크기를 변경하려면 서버를 다시 불러와야 해요.",
+    "restartConfirm": "현재 서버를 중지하고 이 설정으로 다시 불러올까요? 진행 중인 요청이 중단돼요.",
+    "goBack": "돌아가기",
+    "lifecycle": "창을 닫아도 Dstar는 계속 실행돼요. Atomic을 완전히 종료하면 Atomic이 시작한 Dstar 서버만 중지돼요.",
+    "externalHint": "Atomic 밖에서 시작한 서버예요. 제어를 넘기려면 먼저 해당 서버를 중지해 주세요.",
+    "logs": "서버 로그",
+    "noLogs": "아직 로그가 없어요.",
+    "elapsed": "{{seconds}}초 경과",
+    "status": {
+      "unavailable": "Dstar 실행 파일을 찾을 수 없어요",
+      "stopped": "중지됨",
+      "loading": "모델 불러오는 중…",
+      "ready": "준비됨",
+      "stopping": "중지하는 중…",
+      "external": "Atomic 밖에서 실행 중",
+      "error": "서버가 종료됐어요"
+    },
+    "reason": {
+      "missingFiles": "모델 파일이 없어요",
+      "unreadableFiles": "모델 파일을 읽을 수 없어요",
+      "incompleteFiles": "다운로드가 완료되지 않았어요",
+      "invalidFiles": "유효한 GGUF 파일이 아니에요",
+      "invalidContext": "문맥 크기는 512~524288 토큰으로 입력해 주세요",
+      "unknownModel": "설치된 모델을 선택해 주세요",
+      "alreadyRunning": "다른 모델을 시작하려면 현재 모델을 중지해 주세요",
+      "portInUse": "8010 포트가 사용 중이에요. 다른 프로세스는 중지하지 않았어요",
+      "notOwned": "Atomic이 시작한 서버가 아니어서 중지하지 않아요",
+      "missingRuntime": "Dstar 실행 파일이 없어요",
+      "stopTimeout": "아직 서버가 중지되지 않았어요. 잠시 기다린 뒤 다시 시작해 주세요.",
+      "unsupportedPlatform": "Dstar는 Apple Silicon macOS에서만 지원돼요"
+    },
+    "activeSettings": "실행 설정: {{model}} · {{context}} 토큰",
+    "showUnavailableModels": "미설치 모델 보기",
+    "controls": "서버 제어"
+  }
+}

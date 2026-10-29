@@ -34,9 +34,14 @@ const EXPECTED_DESKTOP_ONLY = new Set([
   'chatgpt_models',
   'chatgpt_status',
   'check_for_app_updates',
+  // The personal Dstar lifecycle owns a native process group on desktop only.
+  'dstar_control',
   // Writes the logs through the crash-report scrubber, which lives in the
   // desktop-only telemetry module; the mobile targets have no Logs window.
   'export_logs',
+  // An AI Hub bundle's zip, unpacked by the GenieX installer (change add-geniex-runtime): a
+  // desktop model store, and GenieX runs on Snapdragon X laptops only.
+  'extract_zip',
   // The session resolver answers from the app's mirror of atomic-chat-core's session table, and
   // no core runs on the mobile targets.
   'list_local_sessions',

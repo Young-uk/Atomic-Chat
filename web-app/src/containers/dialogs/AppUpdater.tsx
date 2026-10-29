@@ -1,3 +1,4 @@
+import { isPersonalBuild } from '@/lib/personal-build'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Markdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -170,12 +171,11 @@ const DialogAppUpdater = () => {
   return (
     <UpdateBanner
       testId="app-update-banner"
-      className="w-[min(25rem,calc(100vw-1rem))]"
       title={t('updater:app.title')}
       fromVersion={updateState.currentVersion || null}
       toVersion={newVersion}
       subtitle={
-        transferring
+        isPersonalBuild() ? t('updater:personalReleaseNotice') : transferring
           ? [
               formatProgressPair(downloadedBytes, totalBytes),
               eta && t('common:downloadPanel.left', { eta }),
@@ -216,13 +216,14 @@ const DialogAppUpdater = () => {
       remindLaterLabel={t('updater:remindMeLater')}
       onRemindLater={() => setRemindMeLater(true)}
       updateLabel={t('updater:update')}
-      onUpdate={handleUpdate}
+      onUpdate={isPersonalBuild() ? undefined : handleUpdate}
       busy={inProgress}
       busyLabel={progressLabel}
       progress={isInstalling ? 1 : updateState.downloadProgress}
       dismissible={!inProgress}
       dismissLabel={t('updater:dismiss')}
       onDismiss={() => setRemindMeLater(true)}
+      collapseLabel={t('common:cornerCard.collapse')}
     />
   )
 }

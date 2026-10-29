@@ -49,5 +49,50 @@
     "description": "This removes the endpoint, its models and its configuration.",
     "cancel": "Cancel",
     "confirm": "Remove endpoint"
+  },
+  "dstar": {
+    "title": "Dstar local server",
+    "checking": "Checking Dstar…",
+    "start": "Start Dstar",
+    "stop": "Stop Dstar",
+    "restart": "Apply and restart",
+    "model": "Model on disk",
+    "context": "Context size (tokens)",
+    "chatModel": "Chat model",
+    "useInChat": "Use in chat",
+    "reloadHint": "Changing the model or context requires reloading the server.",
+    "restartConfirm": "Stop the current server and reload with these settings? Active requests will be interrupted.",
+    "goBack": "Go back",
+    "lifecycle": "Closing the window keeps Dstar running. Quitting Atomic stops only the Dstar server it started.",
+    "externalHint": "This server was started outside Atomic. Stop it there before handing control to Atomic.",
+    "logs": "Server logs",
+    "noLogs": "No log output yet.",
+    "elapsed": "{{seconds}}s elapsed",
+    "status": {
+      "unavailable": "Dstar runtime not found",
+      "stopped": "Stopped",
+      "loading": "Loading model…",
+      "ready": "Ready",
+      "stopping": "Stopping…",
+      "external": "Running outside Atomic",
+      "error": "Could not keep the server running"
+    },
+    "reason": {
+      "missingFiles": "Model files are missing",
+      "unreadableFiles": "Model files cannot be read",
+      "incompleteFiles": "Download is incomplete",
+      "invalidFiles": "Not a valid GGUF file",
+      "invalidContext": "Enter a context size from 512 to 524288 tokens",
+      "unknownModel": "Choose an installed model",
+      "alreadyRunning": "Stop the current model before starting another",
+      "portInUse": "Port 8010 is already in use; no other process was stopped",
+      "notOwned": "Atomic did not start this server and will not stop it",
+      "missingRuntime": "Dstar runtime is missing",
+      "stopTimeout": "The server has not stopped yet. Wait before starting another model.",
+      "unsupportedPlatform": "Dstar is supported on Apple Silicon macOS only"
+    },
+    "activeSettings": "Active: {{model}} · {{context}} tokens",
+    "showUnavailableModels": "Show uninstalled models",
+    "controls": "Server controls"
   }
 }

@@ -4,6 +4,7 @@ import { quantFromModelId } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import {
+  IconCpu,
   IconDownload,
   IconPlayerPause,
   IconPlayerPlay,
@@ -32,6 +33,14 @@ export type DownloadRowProps = {
   id: string
   /** Display label; falls back to `id` when the download has no friendlier name. */
   name?: string
+  /**
+   * `engine` for an inference engine's build (a llama.cpp backend, an engine
+   * update, the media engine): the row carries the engine's mark, and
+   * `detail` instead of a quant read from the id.
+   */
+  kind?: 'model' | 'engine'
+  /** Shown muted after the name, e.g. the build an engine row is fetching. */
+  detail?: string
   progress: number
   current: number
   total: number
@@ -69,6 +78,8 @@ export type DownloadRowProps = {
 export function DownloadProgressRow({
   id,
   name,
+  kind = 'model',
+  detail,
   progress,
   current,
   total,
@@ -83,11 +94,15 @@ export function DownloadProgressRow({
 }: DownloadRowProps) {
   const { t } = useTranslation()
 
-  const label = shortModelName(name || id)
+  const engine = kind === 'engine'
+  // An engine's name is already a display name; a model's is its repo path.
+  const label = engine && name ? name : shortModelName(name || id)
   // Most names already end in their quant; the rest get it beside the name.
-  const quant = quantFromModelId(id)
+  // An engine build id has no quant, only the build it names.
+  const quant = engine ? null : quantFromModelId(id)
   const quantApart =
-    quant && !label.toLowerCase().includes(quant.toLowerCase()) ? quant : null
+    detail ||
+    (quant && !label.toLowerCase().includes(quant.toLowerCase()) ? quant : null)
   // The panel is narrow: a running transfer's line is its size and estimate,
   // the icon, the bar and Pause already say it is downloading.
   const line = statusText ?? formatDownloadStatusLine(
@@ -109,7 +124,11 @@ export function DownloadProgressRow({
     >
       <div className="flex items-center gap-3 px-4 py-3">
         <span className="flex shrink-0 text-[var(--dl-strong)]">
-          <IconDownload size={18} aria-hidden />
+          {engine ? (
+            <IconCpu size={18} aria-hidden data-icon="engine" />
+          ) : (
+            <IconDownload size={18} aria-hidden />
+          )}
         </span>
         <div className="min-w-0 flex-1">
           <OverflowText

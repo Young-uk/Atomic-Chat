@@ -10,7 +10,8 @@
   "newConversation": "새 대화",
   "clearHistory": "기록 지우기",
   "activity": {
-    "completedActions": "작업 {{count}}개 완료"
+    "completedActions": "작업 {{count}}개 완료",
+    "reasoningDetails": "추론 내용"
   },
   "agentMode": {
     "menuItem": "에이전트 모드",
@@ -37,5 +38,12 @@
     "openFailed": "{{name}}을(를) 열 수 없습니다",
     "openFailedDescription": "파일이 이동되었거나 삭제되었을 수 있습니다.",
     "chipLabel": "출처: {{name}}, 구절 {{passage}}"
+  },
+  "inferenceProgress": {
+    "waiting": "모델 응답 대기 중",
+    "reading": "입력 읽는 중",
+    "thinking": "생각하는 중",
+    "generating": "답변 생성 중",
+    "preparing": "답변 준비 중"
   }
 }

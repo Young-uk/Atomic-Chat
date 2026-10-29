@@ -19,8 +19,10 @@ import {
 } from '@/lib/hub-installed'
 import { CatalogModel } from '@/services/models/types'
 import { cn } from '@/lib/utils'
+import { downloadWithMlxEngine } from '@/lib/mlx-engine'
+import { useMlxEngineInstallStore } from '@/services/engine-builds/mlx'
 import { switchToModel } from '@/utils/switchModel'
-import { IconX } from '@tabler/icons-react'
+import { IconLoader2, IconX } from '@tabler/icons-react'
 import { DownloadEvent, EngineManager, events } from '@janhq/core'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
@@ -97,6 +99,11 @@ export const MlxModelDownloadAction = memo(
       [providers, model]
     )
     const isDownloaded = installed !== null || justDownloaded
+    // The engine the model runs on is still installing: a chat started now
+    // would only fail to load it.
+    const engineInstalling = useMlxEngineInstallStore(
+      (state) => state.installing
+    )
 
     // The id the engine registered (with or without the developer prefix).
     const downloadedModelId = installed?.modelId ?? modelId
@@ -141,7 +148,9 @@ export const MlxModelDownloadAction = memo(
       })
     }, [navigate, downloadedModelId, serviceHub])
 
-    const handleDownloadMlxModel = useCallback(async () => {
+    // The model alone: `true` once it is in, `false` when it failed or was
+    // cancelled (a failure is reported here).
+    const downloadModel = useCallback(async (): Promise<boolean> => {
       clearResumableDownload(modelId)
       addLocalDownloadingModel(modelId)
       setDownloadOrigin(modelId, model.model_name, 'standalone')
@@ -198,6 +207,7 @@ export const MlxModelDownloadAction = memo(
           modelId, modelUrl, undefined, huggingfaceToken, true,
           resumableDownloads.has(modelId), { provider: 'mlx', files: extraFiles }
         )
+        return true
       } catch (error) {
         console.error('Error downloading MLX model:', error)
         markResumableDownload(modelId)
@@ -207,11 +217,12 @@ export const MlxModelDownloadAction = memo(
           wasDownloadCancellationRequested(modelId) ||
           isDownloadCancellationError(error)
         ) {
-          return
+          return false
         }
         toast.error('Failed to download MLX model', {
           description: error instanceof Error ? error.message : 'Unknown error',
         })
+        return false
       }
     }, [
       serviceHub,
@@ -227,6 +238,12 @@ export const MlxModelDownloadAction = memo(
       modelId,
       modelName,
     ])
+
+    // When MLX has no engine yet, it installs beside the model.
+    const handleDownloadMlxModel = useCallback(
+      () => downloadWithMlxEngine(downloadModel),
+      [downloadModel]
+    )
 
     const requestDownload = useCallback(() => {
       if (warnTooLarge) {
@@ -273,9 +290,26 @@ export const MlxModelDownloadAction = memo(
               variant="default"
               size="sm"
               onClick={handleUseModel}
+              disabled={engineInstalling}
+              aria-busy={engineInstalling}
+              title={
+                engineInstalling
+                  ? t('settings:mlxEngine.installingEngine')
+                  : undefined
+              }
+              className="relative"
               data-test-id={`hub-model-${modelId}`}
             >
-              {t('hub:newChat')}
+              {/* Transparent while the engine installs: the label keeps the
+                  button's width and its name. */}
+              <span className={cn(engineInstalling && 'opacity-0')}>
+                {t('hub:newChat')}
+              </span>
+              {engineInstalling && (
+                <span className="absolute inset-0 flex items-center justify-center">
+                  <IconLoader2 size={14} className="animate-spin" aria-hidden />
+                </span>
+              )}
             </Button>
             {deletable && installed && (
               <DeleteModelAction

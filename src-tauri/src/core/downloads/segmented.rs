@@ -7,7 +7,8 @@
 //! into byte ranges, each fetched over its own HTTP/1.1 connection and written
 //! in place into a `.tmp` created at full size. A connection that finishes
 //! takes over half of the largest range still running, so one slow connection
-//! does not decide when the file ends.
+//! does not decide when the file ends; one that brings next to nothing for a
+//! whole idle window is reopened where it stopped, as a silent one is.
 //!
 //! Resume state lives in `<save_path>.parts`: for every range, where it
 //! starts, how far it is on disk, and where it ends. It is replaced atomically
@@ -20,10 +21,10 @@
 
 use super::disk::disk_err_to_string;
 use super::helpers::{
-    build_client_for_item, next_chunk_with_watchdog, request_download_response,
-    request_download_response_with_retry, retry_delay, should_retry_download, sidecar_path,
-    wait_for_retry, DownloadRequestError, NextChunk, StageReporter, TransferTuning,
-    MAX_STREAM_RETRIES, RETRY_RESET_PROGRESS_BYTES,
+    build_client_for_item, next_chunk_with_watchdog, publish_downloaded_file,
+    request_download_response, request_download_response_with_retry, retry_delay,
+    should_retry_download, sidecar_path, wait_for_retry, DownloadRequestError, NextChunk,
+    StageReporter, TransferTuning, MAX_STREAM_RETRIES, RETRY_RESET_PROGRESS_BYTES,
 };
 use super::models::{DownloadEvent, DownloadItem, DownloadStage, ProgressTracker};
 use reqwest::header::HeaderMap;
@@ -470,11 +471,15 @@ async fn stream_range(
     progress_since_retry_reset: &mut u64,
     retry_count: &mut u32,
 ) -> Result<Option<String>, WorkerError> {
+    let tuning = &shared.tuning;
     let mut stream = response.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(WRITE_BUFFER_BYTES);
     let mut buf_at = 0u64;
+    let mut buf_since = tokio::time::Instant::now();
+    let mut window_start = tokio::time::Instant::now();
+    let mut window_bytes = 0u64;
     let failure = loop {
-        match next_chunk_with_watchdog(&mut stream, &shared.cancel, &shared.tuning, || {}).await {
+        match next_chunk_with_watchdog(&mut stream, &shared.cancel, tuning, || {}).await {
             NextChunk::Chunk(chunk) => {
                 let (offset, allowed, reached_end) = {
                     let mut plan = shared.plan();
@@ -484,6 +489,7 @@ async fn stream_range(
                 if allowed > 0 {
                     if buf.is_empty() {
                         buf_at = offset;
+                        buf_since = tokio::time::Instant::now();
                     }
                     buf.extend_from_slice(&chunk[..allowed as usize]);
                     *progress_since_retry_reset += allowed;
@@ -492,13 +498,37 @@ async fn stream_range(
                         *progress_since_retry_reset = 0;
                     }
                 }
-                if buf.len() >= WRITE_BUFFER_BYTES || reached_end {
+                // Landed by size on a fast link, and by age on a slow one:
+                // only landed bytes count as progress and go into the map, so
+                // a connection gathering its 1 MiB for minutes showed a frozen
+                // bar and a "stalled" status while bytes were arriving, and a
+                // quit lost up to 1 MiB per connection from the resume point.
+                if buf.len() >= WRITE_BUFFER_BYTES
+                    || reached_end
+                    || (!buf.is_empty() && buf_since.elapsed() >= tuning.progress_interval)
+                {
                     flush(shared, index, &mut buf, buf_at).await?;
                 }
                 // The range ended, or another connection took its tail: this
                 // body has nothing more for us, and dropping it closes it.
                 if reached_end {
                     break None;
+                }
+                // A connection that trickles is never silent long enough for
+                // the idle watchdog, and once a file's tail is too short to
+                // split, no other connection takes its bytes over.
+                window_bytes += chunk.len() as u64;
+                if window_start.elapsed() >= tuning.idle_timeout {
+                    if window_bytes < tuning.slow_window_floor {
+                        // "connection" is what the web's failure classifier
+                        // reads as a network fault, which this is.
+                        break Some(format!(
+                            "connection too slow: {window_bytes} bytes in {:.0}s",
+                            window_start.elapsed().as_secs_f32()
+                        ));
+                    }
+                    window_start = tokio::time::Instant::now();
+                    window_bytes = 0;
                 }
             }
             NextChunk::End => {
@@ -520,7 +550,7 @@ async fn stream_range(
 
 pub(super) enum SegmentedOutcome {
     /// The file is complete at its save path.
-    Done,
+    Done { verified: bool },
     /// Not fetched this way; the caller downloads it over one connection from
     /// byte 0. Nothing of a partial it could misread is left on disk.
     Declined(String),
@@ -811,9 +841,8 @@ pub(super) async fn download<R: Runtime>(job: FileJob<'_, R>) -> Result<Segmente
 
     emit_progress(&job, transferred, true).await;
     // The final name first, the map after: see the module comment.
-    tokio::fs::rename(&tmp_path, job.save_path)
-        .await
-        .map_err(|error| disk_err_to_string(&error))?;
+    let verified =
+        publish_downloaded_file(job.app, item, &tmp_path, job.save_path, job.cancel_token).await?;
     let _ = tokio::fs::remove_file(&map_path).await;
     tokio::fs::remove_file(&url_path)
         .await
@@ -822,7 +851,7 @@ pub(super) async fn download<R: Runtime>(job: FileJob<'_, R>) -> Result<Segmente
         "Finished downloading over several connections: {}",
         item.url
     );
-    Ok(SegmentedOutcome::Done)
+    Ok(SegmentedOutcome::Done { verified })
 }
 
 #[cfg(test)]

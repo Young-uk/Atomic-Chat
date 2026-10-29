@@ -51,6 +51,10 @@ describe('download controls', () => {
     expect(useDownloadStore.getState().resumableDownloads.has(id)).toBe(true)
   })
 
+  it('keeps GenieX downloads cancel-only: Download again in the Hub resumes them (change add-geniex-runtime)', () => {
+    expect(isPausableDownload('geniex-gemma-4-e4b')).toBe(false)
+  })
+
   it('pauses a model download so it can resume, under both of its ids', () => {
     pauseDownload(
       { id: 'Qwen3.5-4B-Q4_K_M', name: 'unsloth/Qwen3.5-4B-Q4_K_M' },

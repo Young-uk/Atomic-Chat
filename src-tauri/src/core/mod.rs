@@ -6,11 +6,13 @@ pub mod atomic_core;
 pub mod auth;
 pub mod chat_exec;
 pub mod downloads;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod dstar;
 #[cfg(feature = "e2e")]
 pub mod e2e;
 pub mod extensions;
-pub mod foundry_template;
 pub mod filesystem;
+pub mod foundry_template;
 pub mod http;
 pub mod logs;
 pub mod mcp;

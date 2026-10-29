@@ -41,6 +41,7 @@ import { queuedCapture } from '@/lib/telemetry-queue'
 import { captureHandledError } from '@/lib/sentry'
 import { resumeDownload } from '@/lib/downloadResume'
 import { isPausableDownload, pauseDownload } from '@/lib/downloadControls'
+import { engineDownloadLabel } from '@/lib/engineDownloadLabel'
 import { bindInterruptedDownloads } from '@/lib/interrupted-downloads'
 import {
   decisionDownloadTaskId,
@@ -53,6 +54,7 @@ import {
 import { isManagedDownloadId } from '@/lib/managed-engine/download-id'
 import { isFoundryLocalDownloadId } from '@/lib/foundry-local/download-id'
 import { isLiteRtLmDownloadId } from '@/lib/litert-lm/download-id'
+import { isGeniexDownloadId } from '@/lib/geniex/download-id'
 import { useDecisionStore } from '@/stores/decision-store'
 import { useEmbeddingStore } from '@/stores/embedding-store'
 import { useImageGenerationStore } from '@/stores/image-generation-store'
@@ -142,6 +144,7 @@ function downloadRowName(
     (isManagedDownloadId(id) && origins[id]) ||
     (isFoundryLocalDownloadId(id) && origins[id]) ||
     (isLiteRtLmDownloadId(id) && origins[id]) ||
+    (isGeniexDownloadId(id) && origins[id]) ||
     (isEmbeddingDownloadTaskId(id) &&
       embeddingCatalog.models.find(
         (model) => embeddingDownloadTaskId(model.id) === id
@@ -1008,8 +1011,15 @@ export function DownloadManagement({
     const rows: DownloadRowProps[] = []
 
     for (const download of downloadProcesses) {
+      // An engine build reads as the engine and its release, not its task id.
+      const engine = engineDownloadLabel(download.id)
       rows.push({
         ...download,
+        ...(engine && {
+          kind: 'engine' as const,
+          name: engine.name,
+          detail: engine.version,
+        }),
         paused: pausedDownloads.has(download.id),
         statusText: downloads[download.id]?.recoveryBlocked
           ? t('common:downloadRecoveryNeedsSource')
