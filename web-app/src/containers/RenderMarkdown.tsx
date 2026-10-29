@@ -451,7 +451,11 @@ function RenderMarkdownComponent({
           className
         )}
       >
-        {content}
+        {/* Markdown ignores leading blank separator lines. Match that in the
+            short-text path too, so the first glyph does not jump when a
+            streamed answer crosses the 32-character Markdown threshold.
+            Keep indentation, interior newlines and user input unchanged. */}
+        {isUser ? content : content.replace(/^(?:[ \t]*\r?\n)+/, '')}
       </div>
     )
   }

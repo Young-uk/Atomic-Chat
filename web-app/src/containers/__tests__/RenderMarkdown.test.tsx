@@ -16,6 +16,17 @@ Object.assign(navigator, {
 })
 
 describe('RenderMarkdown', () => {
+  it('does not paint leading blank lines in a short assistant answer', () => {
+    const { container } = render(<RenderMarkdown content={'\r\n \r\nHello\nagain'} isStreaming />)
+    expect(container.querySelector('.markdown')?.textContent).toBe('Hello\nagain')
+  })
+
+  it('preserves leading blank lines in user plain text', () => {
+    const content = '\n\nHello'
+    const { container } = render(<RenderMarkdown content={content} isUser />)
+    expect(container.querySelector('.markdown')?.textContent).toBe(content)
+  })
+
   it('repairs whitespace just inside strong markers', () => {
     const { container } = render(
       <RenderMarkdown content="** uncensored-ai-models.pdf **" />

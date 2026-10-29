@@ -535,3 +535,47 @@ it.each([['16px', false], ['20px', false], ['16px', true], ['20px', true]] as co
     useInferenceProgress.setState({ byThread: {} })
   }
 )
+
+
+it.each([1024, 1280].flatMap((width) => ['16px', '20px'].map((fontSize) => ({ width, fontSize }))))(
+  'keeps the first answer line next to collapsed reasoning at $width / $fontSize',
+  async ({ width, fontSize }) => {
+    await page.viewport(width, 800)
+    setFontSize(fontSize)
+    const reply = 'A short reply.'
+    const message = (text: string): UIMessage => ({
+      id: 'spacing', role: 'assistant', parts: [
+        { type: 'reasoning', text: 'Reasoning finished.', state: 'done' },
+        { type: 'text', text },
+      ],
+    })
+    const view = (text: string) => withTranslations(
+      <div style={{ width: 700 }}>
+        <MessageItem message={message(text)} isFirstMessage={false} isLastMessage status="streaming" hideActions />
+      </div>
+    )
+    const { container, rerender } = render(view(reply))
+    const firstInkTop = () => {
+      const markdown = [...container.querySelectorAll('.markdown')].at(-1)!
+      const walker = document.createTreeWalker(markdown, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const offset = node.textContent?.indexOf(reply) ?? -1
+        if (offset < 0) continue
+        const range = document.createRange()
+        range.setStart(node, offset)
+        range.setEnd(node, offset + 1)
+        return range.getBoundingClientRect().top
+      }
+      throw new Error('The first answer glyph was not rendered')
+    }
+    await settle(container)
+    const initialTop = firstInkTop()
+    // Qwen can begin the answer with separator newlines after its reasoning.
+    // Check both the plain-text fast path and its switch to Markdown at 32 chars.
+    for (const text of ['\n\n' + reply, '\r\n \r\n' + reply, '\n\n' + reply + ' This answer now exceeds thirty-two characters.']) {
+      rerender(view(text))
+      await settle(container)
+      expect(Math.abs(firstInkTop() - initialTop)).toBeLessThanOrEqual(1)
+    }
+  }
+)
