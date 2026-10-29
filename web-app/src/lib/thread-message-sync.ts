@@ -33,6 +33,14 @@ const windowOrigin = `${Date.now().toString(36)}-${Math.random()
   .slice(2)}`
 
 const pendingWrites = new Map<string, number>()
+const pendingWriteResults = new Map<string, Set<Promise<unknown>>>()
+
+/** Await existing writes before attaching immutable request metadata. */
+export async function waitForThreadMessageWrites(threadId: string): Promise<void> {
+  while (pendingWriteResults.get(threadId)?.size) {
+    await Promise.all([...pendingWriteResults.get(threadId)!])
+  }
+}
 const deletedElsewhere = new Map<string, Set<string>>()
 const subscribers = new Set<(threadId: string) => void>()
 let listening: Promise<boolean> | undefined
@@ -88,7 +96,7 @@ export function trackThreadMessageWrite<T>(
   { deletedId }: { deletedId?: string } = {}
 ): Promise<T> {
   pendingWrites.set(threadId, (pendingWrites.get(threadId) ?? 0) + 1)
-  return Promise.resolve(write).then(
+  const result = Promise.resolve(write).then(
     (value) => {
       settleWrite(threadId)
       announceThreadMessagesChanged(
@@ -102,6 +110,14 @@ export function trackThreadMessageWrite<T>(
       throw error
     }
   )
+  const writes = pendingWriteResults.get(threadId) ?? new Set<Promise<unknown>>()
+  pendingWriteResults.set(threadId, writes)
+  const tracked = result.finally(() => {
+    writes.delete(tracked)
+    if (!writes.size) pendingWriteResults.delete(threadId)
+  })
+  writes.add(tracked)
+  return tracked
 }
 
 function receive(payload: ThreadMessagesChanged | undefined): void {
@@ -156,6 +172,7 @@ export async function listenForThreadMessageChanges(
 
 /** Forgets every write, deletion and listener; tests start from scratch. */
 export function resetThreadMessageSyncForTests(): void {
+  pendingWriteResults.clear()
   pendingWrites.clear()
   deletedElsewhere.clear()
   subscribers.clear()

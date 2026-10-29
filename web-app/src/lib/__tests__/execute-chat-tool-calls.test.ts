@@ -26,6 +26,19 @@ const baseOptions = () => ({
 })
 
 describe('executeChatToolCalls', () => {
+  it('refuses a historical tool after it is disabled during approval', async () => {
+    const options = baseOptions()
+    const callMcpTool = vi.fn()
+    const outputs: ChatToolOutput[] = []
+    const addToolOutput = (output: ChatToolOutput) => outputs.push(output)
+    await executeChatToolCalls({ ...options, toolCalls: [calls[0]],
+      signal: new AbortController().signal, callMcpTool, addToolOutput,
+      isAvailable: vi.fn().mockResolvedValue(false) })
+    expect(callMcpTool).not.toHaveBeenCalled()
+    expect(outputs).toEqual([{ tool: 'search', toolCallId: 'call-1',
+      state: 'output-error', errorText: 'Tool is no longer available for this chat' }])
+  })
+
   it('executes MCP calls in order and adds output for continuation', async () => {
     const events: string[] = []
     const callMcpTool = vi.fn(async ({ arguments: input }) => {

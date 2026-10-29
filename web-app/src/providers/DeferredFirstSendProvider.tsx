@@ -1,3 +1,4 @@
+import { useChatSessions } from '@/stores/chat-session-store'
 import { useEffect, useRef, useState } from 'react'
 import { generateId, type UIMessage } from 'ai'
 import {
@@ -252,6 +253,7 @@ export function DeferredFirstSendProvider() {
         ragToolNames: useAppState.getState().ragToolNames,
         mcpToolNames: useAppState.getState().mcpToolNames,
         execToolNames: offeredChatExecToolNames(),
+        isAvailable: async (name) => (await useChatSessions.getState().sessions[current.threadId]?.transport.isToolCurrentlyAvailable(name)) ?? false,
         approve: approveChatToolCall,
         callRagTool: (args) => serviceHub.rag().callTool(args),
         callMcpTool: (args) => serviceHub.mcp().callTool(args),

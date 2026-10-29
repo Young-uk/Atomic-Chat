@@ -1,3 +1,6 @@
+import { DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from './dstar-tools'
+import { useMessages } from '@/hooks/useMessages'
+import { trackThreadMessageWrite, waitForThreadMessageWrites } from './thread-message-sync'
 import { usesAppendOnlyDstarEffort, withDstarEffortUpdates } from './dstar-effort'
 import { renderInstructions } from './instructionTemplate'
 import { withMessageClocksForModel } from './messageClock'
@@ -573,6 +576,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     return this.threadId
       ? store.getMutedServersForThread(this.threadId)
       : store.getDefaultMutedServers()
+  }
+
+  async isToolCurrentlyAvailable(name: string): Promise<boolean> {
+    await this.refreshTools(true)
+    return Object.prototype.hasOwnProperty.call(this.tools, name)
   }
 
   async refreshTools(force = false) {
@@ -1154,10 +1162,59 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         supportsVision,
       })
     }
+    const hasTools = Object.keys(this.tools).length > 0
+    const selectedModel = useModelProvider.getState().selectedModel
+    const modelSupportsTools =
+      selectedModel?.capabilities?.includes('tools') ?? this.modelSupportsTools
+    const suppressToolsForDflash = shouldSuppressToolsForUpstreamDflash(
+      effectiveProviderName,
+      provider.settings
+    )
+    const shouldEnableTools =
+      hasTools && modelSupportsTools && !suppressToolsForDflash
+    let activeTools = !shouldEnableTools
+      ? undefined
+      : GRAMMAR_CONSTRAINED_PROVIDERS.has(effectiveProviderName)
+        ? withGrammarSafeToolSchemas(this.tools)
+        : this.tools
+
+    const appendOnlyDstar = usesAppendOnlyDstarEffort(provider.base_url, modelId)
+    if (appendOnlyDstar && activeTools?.retrieve) {
+      // Tool-specific guidance belongs to its recorded catalog, not the global
+      // system prefix, which would change when retrieval is toggled.
+      activeTools = { ...activeTools, retrieve: { ...activeTools.retrieve,
+        description: `${activeTools.retrieve.description ?? ''}\n${ATTACHED_DOCUMENTS_HINT}` } }
+    }
+
     // Synthetic configuration turns exist only on the model-bound copy.
     // Their source snapshots remain hidden message metadata after app restart.
-    if (usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
-      preparedMessages = withDstarEffortUpdates(preparedMessages)
+    if (appendOnlyDstar) {
+      // The AI SDK assigns a Chat ID independently of our persisted thread ID.
+      const snapshotThreadId = this.threadId ?? options.chatId
+      // Snapshot only the newest user turn, never migrate historical turns.
+      // Wait for its initial create to finish before writing request metadata.
+      const user = [...options.messages].reverse().find((m) => m.role === 'user')
+      if (user) {
+        await waitForThreadMessageWrites(snapshotThreadId)
+        const store = useMessages.getState()
+        const stored = store.getMessages(snapshotThreadId).find((m) => m.id === user.id)
+        const snapshot = stored?.metadata?.[DSTAR_TOOLS_METADATA] ??
+          (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOLS_METADATA]
+        const tools = isToolSnapshot(snapshot) ? snapshot : stableToolJson(toOpenAiTools(activeTools))
+        if (stored && !isToolSnapshot(snapshot)) {
+          const updated = { ...stored, metadata: { ...stored.metadata, [DSTAR_TOOLS_METADATA]: tools } }
+          await trackThreadMessageWrite(snapshotThreadId, this.serviceHub!.messages().modifyMessage(updated))
+          store.setMessages(snapshotThreadId, useMessages.getState().getMessages(snapshotThreadId)
+            .map((m) => m.id === updated.id ? updated : m))
+        }
+        preparedMessages = preparedMessages.map((m) => m.id === user.id
+          ? { ...m, metadata: { ...(m.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools } } : m)
+      }
+      // The SDK keeps its own message instances. Earlier snapshots persisted
+      // by this transport must be replayed even before a route/app reload.
+      preparedMessages = replayDstarToolSnapshots(preparedMessages,
+        useMessages.getState().getMessages(snapshotThreadId))
+      preparedMessages = withDstarEffortUpdates(withDstarToolUpdates(preparedMessages))
     }
     const baseMessages = convertToModelMessages(
       chatExecOutputsForModel(preparedMessages)
@@ -1186,22 +1243,6 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // on/off setting (via refreshTools -> useToolAvailable).
     const isLocalProvider = isLocalInferenceProvider(effectiveProviderName)
 
-    const hasTools = Object.keys(this.tools).length > 0
-    const selectedModel = useModelProvider.getState().selectedModel
-    const modelSupportsTools =
-      selectedModel?.capabilities?.includes('tools') ?? this.modelSupportsTools
-    const suppressToolsForDflash = shouldSuppressToolsForUpstreamDflash(
-      effectiveProviderName,
-      provider.settings
-    )
-    const shouldEnableTools =
-      hasTools && modelSupportsTools && !suppressToolsForDflash
-    const activeTools = !shouldEnableTools
-      ? undefined
-      : GRAMMAR_CONSTRAINED_PROVIDERS.has(effectiveProviderName)
-        ? withGrammarSafeToolSchemas(this.tools)
-        : this.tools
-
     // Skills invoked on this thread (via the composer's "/" menu, stamped on
     // user-message metadata) ride the system prompt — the chat counterpart of
     // the agent's `skill.view` loading. Reading them off `options.messages`
@@ -1214,7 +1255,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       await loadChatSkillDetails(invokedSkillNames, this.skillDetailCache)
     )
     const documentsHint =
-      activeTools && 'retrieve' in activeTools
+      !appendOnlyDstar && activeTools && 'retrieve' in activeTools
         ? ATTACHED_DOCUMENTS_HINT
         : undefined
     const systemWithSkills = composeSystemMessage(

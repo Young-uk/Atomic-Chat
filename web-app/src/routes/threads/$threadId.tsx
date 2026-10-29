@@ -667,6 +667,7 @@ function ThreadDetail() {
           // explicit "skip" runs them silently, an explicit "manual" prompts
           // even while the global MCP auto-approve switch is on. Commands and
           // scripts ask unless the thread is on "skip" (lib/mcp-approval).
+          isAvailable: async (name) => (await useChatSessions.getState().sessions[threadId]?.transport.isToolCurrentlyAvailable(name)) ?? false,
           approve: approveChatToolCall,
           callRagTool: (args) => serviceHub.rag().callTool(args),
           callMcpTool: (args) => serviceHub.mcp().callTool(args),

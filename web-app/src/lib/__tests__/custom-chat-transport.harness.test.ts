@@ -1,3 +1,5 @@
+import { useMessages } from '@/hooks/useMessages'
+import { DSTAR_TOOLS_METADATA } from '../dstar-tools'
 import type { UIMessage } from '@ai-sdk/react'
 import type { LanguageModel } from 'ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1490,5 +1492,33 @@ describe('CustomChatTransport commands and scripts', () => {
       },
     })
     expect(await sentToolNames()).toBeUndefined()
+  })
+})
+
+describe('Dstar tool catalog persistence', () => {
+  it('uses the persisted thread ID even when the SDK Chat has another ID', async () => {
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true')
+    const modifyMessage = vi.fn(async (message) => message)
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never,
+      messages: { modifyMessage } as never })
+    useModelProvider.setState({ selectedProvider: 'dstar',
+      selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: ['tools'], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    useMessages.getState().setMessages('persisted-thread', [{
+      id: 'user-1', thread_id: 'persisted-thread', role: 'user', metadata: {}, content: [] } as never])
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] },
+      { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const transport = new CustomChatTransport(undefined, 'persisted-thread')
+    try {
+      await readChunks(await transport.sendMessages({ chatId: 'sdk-random-id', messages: [userMessage],
+        abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+      const stored = useMessages.getState().getMessages('persisted-thread')[0]
+      expect(stored.metadata?.[DSTAR_TOOLS_METADATA]).toBe('[]')
+      expect(useMessages.getState().getMessages('sdk-random-id')).toEqual([])
+      expect(modifyMessage.mock.calls[0][0].thread_id).toBe('persisted-thread')
+      const request = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0]
+      expect(JSON.stringify(request.prompt)).toContain('atomic-tools:v1:[]')
+    } finally { vi.unstubAllEnvs() }
   })
 })

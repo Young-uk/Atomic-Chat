@@ -605,3 +605,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Percentage-based interface text scale](2026-10-29-percentage-interface-text-scale.md)
 
 - [Append-only Dstar reasoning effort experiment](2026-10-30-append-only-dstar-effort-experiment.md)
+
+- [Append-only Dstar tool catalogs and duplicate search output](2026-10-30-append-only-dstar-tools.md)

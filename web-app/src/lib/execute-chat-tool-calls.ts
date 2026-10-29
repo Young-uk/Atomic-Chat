@@ -1,3 +1,4 @@
+import { compactSearchOutput } from './compact-search-output'
 import type { UIMessage } from '@ai-sdk/react'
 import { lastAssistantMessageIsCompleteWithToolCalls } from 'ai'
 
@@ -36,6 +37,7 @@ type ExecuteChatToolCallsOptions = {
    * built-in tools win a name clash with an MCP tool.
    */
   execToolNames?: ReadonlySet<string>
+  isAvailable?: (toolName: string) => Promise<boolean>
   approve: (
     toolName: string,
     threadId: string,
@@ -76,6 +78,7 @@ export async function executeChatToolCalls({
   mcpToolNames,
   execToolNames = new Set(),
   approve,
+  isAvailable,
   callRagTool,
   callMcpTool,
   callExecTool,
@@ -104,6 +107,12 @@ export async function executeChatToolCalls({
         continue
       }
 
+      // Recheck after approval: a connector can be disabled while it is open.
+      if (isAvailable && !(await isAvailable(toolCall.toolName))) {
+        addToolOutput({ state: 'output-error', tool: toolCall.toolName,
+          toolCallId: toolCall.toolCallId, errorText: 'Tool is no longer available for this chat' })
+        continue
+      }
       if (execToolNames.has(toolCall.toolName) && callExecTool) {
         const run = await callExecTool({
           toolCallId: toolCall.toolCallId,
@@ -162,7 +171,7 @@ export async function executeChatToolCalls({
         addToolOutput({
           tool: toolCall.toolName,
           toolCallId: toolCall.toolCallId,
-          output: await processOutput(result.content),
+          output: await processOutput(compactSearchOutput(toolCall.toolName, result.content)),
         })
       }
     } catch (error) {
