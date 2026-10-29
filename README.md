@@ -1,3 +1,9 @@
+> **Unofficial personal fork**
+>
+> This is a personal fork of [Atomic Chat](https://github.com/AtomicBot-ai/Atomic-Chat), maintained independently from the upstream project. It is not an official Atomic Chat distribution.
+>
+> Unless marked otherwise, the documentation and download links below refer to the original upstream project.
+
 <img src="https://github.com/AtomicBot-ai/Atomic-Chat/raw/main/assets/logo.png" width="80" alt="Atomic Chat" />
 
 # Atomic Chat
