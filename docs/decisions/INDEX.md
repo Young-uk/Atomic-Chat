@@ -603,3 +603,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Verify model replacements before publishing](2026-10-29-verify-model-replacements-before-publishing.md)
 
 - [Percentage-based interface text scale](2026-10-29-percentage-interface-text-scale.md)
+
+- [Append-only Dstar reasoning effort experiment](2026-10-30-append-only-dstar-effort-experiment.md)

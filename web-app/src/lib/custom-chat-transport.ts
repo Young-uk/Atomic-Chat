@@ -1,3 +1,4 @@
+import { usesAppendOnlyDstarEffort, withDstarEffortUpdates } from './dstar-effort'
 import { renderInstructions } from './instructionTemplate'
 import { withMessageClocksForModel } from './messageClock'
 import { useMCPServers } from '@/hooks/useMCPServers'
@@ -1152,6 +1153,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       preparedMessages = prepareToolResultImagesForModel(preparedMessages, {
         supportsVision,
       })
+    }
+    // Synthetic configuration turns exist only on the model-bound copy.
+    // Their source snapshots remain hidden message metadata after app restart.
+    if (usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+      preparedMessages = withDstarEffortUpdates(preparedMessages)
     }
     const baseMessages = convertToModelMessages(
       chatExecOutputsForModel(preparedMessages)

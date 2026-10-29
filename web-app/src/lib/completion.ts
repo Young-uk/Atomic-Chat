@@ -1,3 +1,6 @@
+import { useModelProvider } from '@/hooks/useModelProvider'
+import { useGeneralSetting } from '@/hooks/useGeneralSetting'
+import { dstarEffortMetadata, usesAppendOnlyDstarEffort } from './dstar-effort'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   ContentType,
@@ -94,7 +97,14 @@ export const newUserThreadContent = (
       url: clip.dataUrl ?? `data:${clip.mimeType};base64,${clip.base64}`,
     }))
 
-  const metadata: Record<string, unknown> = {}
+  const selection = useModelProvider.getState()
+  const provider = selection.getProviderByName(selection.selectedProvider)
+  const settings = useGeneralSetting.getState()
+  const metadata: Record<string, unknown> = dstarEffortMetadata(
+    usesAppendOnlyDstarEffort(provider?.base_url, selection.selectedModel?.id),
+    settings.disableReasoning,
+    settings.reasoningBudget
+  )
   const messageClock = captureMessageClock(clock)
   if (messageClock) metadata.message_clock = messageClock
   if (inlineDocuments.length > 0 || videos.length > 0) {
