@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import type { UIMessage } from 'ai'
 import { convertToModelMessages } from 'ai'
-import { DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from '../dstar-tools'
+import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from '../dstar-tools'
 import { compactSearchOutput } from '../compact-search-output'
 
 const turn = (id: string, tools: unknown[]): UIMessage => ({
@@ -52,4 +52,20 @@ it('replays persisted catalogs while SDK message objects still lack new metadata
   expect(replay.map((m) => m.role)).toEqual(['system', 'user', 'system', 'user'])
   expect(replay[0].parts).toEqual([{ type: 'text', text: 'atomic-tools:v1:[]' }])
   expect(original[0].metadata).toBeUndefined()
+})
+
+it('adds narration policy prospectively without changing legacy history or repeating it for unchanged catalogs', () => {
+  const old = turn('old', [schema])
+  const next = turn('next', [schema])
+  next.metadata = { ...next.metadata as Record<string, unknown>, [DSTAR_TOOL_PREAMBLE_METADATA]: true }
+  const later = { ...next, id: 'later' }
+  const disabled = turn('disabled', [])
+  disabled.metadata = { ...disabled.metadata as Record<string, unknown>, [DSTAR_TOOL_PREAMBLE_METADATA]: true }
+  const prefix = withDstarToolUpdates([old])
+  const expanded = withDstarToolUpdates([old, next, later, disabled])
+  expect(expanded.slice(0, prefix.length)).toEqual(prefix)
+  expect(expanded.filter((m) => m.parts.some((p) => p.type === 'text' && p.text === 'atomic-tool-preamble:v1'))).toHaveLength(2)
+  const restored = replayDstarToolSnapshots([{ ...next, metadata: undefined }], JSON.parse(JSON.stringify([next])))
+  expect(withDstarToolUpdates(restored)[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v1' }])
+  expect(old.metadata).not.toHaveProperty(DSTAR_TOOL_PREAMBLE_METADATA)
 })

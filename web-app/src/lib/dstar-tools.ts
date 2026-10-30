@@ -1,6 +1,7 @@
 import type { UIMessage } from 'ai'
 
 export const DSTAR_TOOLS_METADATA = 'atomic_dstar_tools_v1'
+export const DSTAR_TOOL_PREAMBLE_METADATA = 'atomic_dstar_tool_preamble_v1'
 const marker = 'atomic-tools:v1:'
 
 /** Canonicalize keys, preserving array order inside schemas. A connector returning
@@ -28,13 +29,29 @@ export function isToolSnapshot(value: unknown): value is string {
  * allowlist; these historical definitions never grant execution permission. */
 export function withDstarToolUpdates(messages: UIMessage[]): UIMessage[] {
   let previous: string | undefined
-  return messages.flatMap((message) => {
-    const snapshot = (message.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOLS_METADATA]
-    if (message.role !== 'user' || !isToolSnapshot(snapshot) || snapshot === previous) return [message]
-    previous = snapshot
-    return [{ id: `atomic-tools-${message.id}`, role: 'system' as const,
-      parts: [{ type: 'text' as const, text: marker + snapshot }] }, message]
-  })
+  let preambleSent = false
+  const result: UIMessage[] = []
+  for (const message of messages) {
+    const metadata = message.metadata as Record<string, unknown> | undefined
+    const snapshot = metadata?.[DSTAR_TOOLS_METADATA]
+    if (message.role === 'user' && isToolSnapshot(snapshot)) {
+      if (snapshot !== previous) {
+        result.push({ id: `atomic-tools-${message.id}`, role: 'system',
+          parts: [{ type: 'text', text: marker + snapshot }] })
+        previous = snapshot
+        preambleSent = false
+      }
+      // Versioned policy starts only at a newly recorded turn. Never rewrite
+      // historical catalog instructions to add the new behavior retroactively.
+      if (!preambleSent && metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true) {
+        result.push({ id: `atomic-tool-preamble-${message.id}`, role: 'system',
+          parts: [{ type: 'text', text: 'atomic-tool-preamble:v1' }] })
+        preambleSent = true
+      }
+    }
+    result.push(message)
+  }
+  return result
 }
 
 /** Reconcile the SDK's original user objects with persisted hidden snapshots. */
@@ -42,11 +59,13 @@ export function replayDstarToolSnapshots(
   messages: UIMessage[],
   recorded: readonly { id: string; metadata?: Record<string, unknown> }[]
 ): UIMessage[] {
-  const snapshots = new Map(recorded.map((message) => [message.id, message.metadata?.[DSTAR_TOOLS_METADATA]]))
+  const snapshots = new Map(recorded.map((message) => [message.id, message.metadata]))
   return messages.map((message) => {
-    const tools = snapshots.get(message.id)
+    const metadata = snapshots.get(message.id)
+    const tools = metadata?.[DSTAR_TOOLS_METADATA]
     return isToolSnapshot(tools)
-      ? { ...message, metadata: { ...(message.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools } }
+      ? { ...message, metadata: { ...(message.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools,
+          ...(metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true ? { [DSTAR_TOOL_PREAMBLE_METADATA]: true } : {}) } }
       : message
   })
 }

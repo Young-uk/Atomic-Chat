@@ -607,3 +607,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Append-only Dstar reasoning effort experiment](2026-10-30-append-only-dstar-effort-experiment.md)
 
 - [Append-only Dstar tool catalogs and duplicate search output](2026-10-30-append-only-dstar-tools.md)
+
+- [Prospective model-authored progress updates](2026-10-30-prospective-dstar-progress-updates.md)
+
+- [Dstar checkpoint shutdown grace](2026-10-30-dstar-checkpoint-shutdown.md)

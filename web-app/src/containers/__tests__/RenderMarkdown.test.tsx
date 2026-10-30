@@ -16,6 +16,23 @@ Object.assign(navigator, {
 })
 
 describe('RenderMarkdown', () => {
+  it.each([false, true])('preserves tilde ranges while streaming=%s', (isStreaming) => {
+    const content = '12~15시: 17~18°C, 맑음. ~~취소~~ and `~code~`'
+    const { container } = render(<RenderMarkdown content={content} isStreaming={isStreaming} />)
+    expect(container.querySelector('.markdown')).toHaveTextContent('12~15시: 17~18°C')
+    const deleted = container.querySelectorAll('del')
+    expect(deleted).toHaveLength(1)
+    expect(deleted[0]).toHaveTextContent('취소')
+    expect(container.querySelector('code')).toHaveTextContent('~code~')
+  })
+
+  it('does not turn a range into strikethrough when the second tilde arrives', () => {
+    const { container, rerender } = render(<RenderMarkdown content="12~15시: 17" isStreaming />)
+    rerender(<RenderMarkdown content="12~15시: 17~18°C" isStreaming />)
+    expect(container.querySelector('del')).toBeNull()
+    expect(container.querySelector('.markdown')).toHaveTextContent('12~15시: 17~18°C')
+  })
+
   it('does not paint leading blank lines in a short assistant answer', () => {
     const { container } = render(<RenderMarkdown content={'\r\n \r\nHello\nagain'} isStreaming />)
     expect(container.querySelector('.markdown')?.textContent).toBe('Hello\nagain')

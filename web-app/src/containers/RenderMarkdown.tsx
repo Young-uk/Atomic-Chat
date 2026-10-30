@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  type ComponentProps,
   type ComponentType,
   type MemoExoticComponent,
   type ReactNode,
@@ -45,7 +46,13 @@ const HTML_LANGUAGES = new Set(['html', 'htm'])
 
 // Stable plugin configuration shared by the top-level renderer and the nested
 // renderer used to delegate non-HTML code blocks back to streamdown.
-const REMARK_PLUGINS = [remarkGfm, remarkMath, disableIndentedCodeBlockPlugin]
+// A range such as 12~15h: 17~18°C is literal text, not single-tilde
+// strikethrough. Explicit ~~strikethrough~~ remains supported.
+const REMARK_PLUGINS: ComponentProps<typeof Streamdown>['remarkPlugins'] = [
+  [remarkGfm, { singleTilde: false }],
+  remarkMath,
+  disableIndentedCodeBlockPlugin,
+]
 const REHYPE_PLUGINS = [rehypeKatex, defaultRehypePlugins.harden]
 const REHYPE_PLUGINS_WITH_RAW_HTML = [
   defaultRehypePlugins.raw,
@@ -53,7 +60,19 @@ const REHYPE_PLUGINS_WITH_RAW_HTML = [
   defaultRehypePlugins.harden,
   rehypeKatex,
 ]
-const STREAMDOWN_PLUGINS = { code, mermaid, cjk }
+// The CJK extension installs its own strikethrough tokenizer after GFM.
+// Pass the same option there; changing GFM alone leaves ranges struck out.
+const CJK_REMARK_PLUGINS_AFTER: typeof cjk.remarkPluginsAfter =
+  cjk.remarkPluginsAfter.map((plugin) =>
+    typeof plugin === 'function'
+      ? [plugin, { singleTilde: false }]
+      : plugin
+  )
+const STREAMDOWN_PLUGINS = {
+  code,
+  mermaid,
+  cjk: { ...cjk, remarkPluginsAfter: CJK_REMARK_PLUGINS_AFTER },
+}
 const STREAMDOWN_CONTROLS = { mermaid: { fullscreen: false } }
 
 /** Pick a fence longer than any backtick run inside the code. */

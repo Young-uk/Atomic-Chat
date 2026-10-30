@@ -16,6 +16,14 @@ use tokio::{
 
 const PORT: u16 = 8010;
 const DEFAULT_CONTEXT: u32 = 65_536;
+// Long-context KV checkpoints must finish before the owned process is killed.
+// Keep a bounded fallback for an unresponsive server, including app exit.
+const STOP_GRACE: Duration = Duration::from_secs(120);
+const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_secs(125);
+
+fn stop_grace_expired(elapsed: Duration) -> bool {
+    elapsed >= STOP_GRACE
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -111,7 +119,7 @@ pub async fn shutdown<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(controller) = app.try_state::<DstarController>() {
         let (reply, answer) = oneshot::channel();
         if controller.tx.send(Message::Shutdown(reply)).await.is_ok() {
-            let _ = tokio::time::timeout(Duration::from_secs(7), answer).await;
+            let _ = tokio::time::timeout(SHUTDOWN_REPLY_GRACE, answer).await;
         }
     }
 }
@@ -356,7 +364,7 @@ async fn run(root: PathBuf, mut rx: mpsc::Receiver<Message>, port: u16) {
                 Some(Message::Shutdown(reply)) => {
                     if let Some(mut process) = child.take() {
                         signal_child(&mut process, false);
-                        if tokio::time::timeout(Duration::from_secs(5), process.wait()).await.is_err() {
+                        if tokio::time::timeout(STOP_GRACE, process.wait()).await.is_err() {
                             signal_child(&mut process, true); let _ = process.wait().await;
                         }
                     }
@@ -402,7 +410,7 @@ async fn run(root: PathBuf, mut rx: mpsc::Receiver<Message>, port: u16) {
             },
             _ = ticker.tick() => {
                 if let Some(process) = child.as_mut() {
-                    if stopping.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) { signal_child(process, true); }
+                    if stopping.is_some_and(|t| stop_grace_expired(t.elapsed())) { signal_child(process, true); }
                     match process.try_wait() {
                         Ok(Some(status)) => {
                             if stopping.is_none() { error = Some(format!("Dstar exited: {status}")); }
@@ -521,6 +529,35 @@ mod tests {
         );
         assert_eq!(listener.local_addr().unwrap().port(), port);
         assert!(!root.path().join("atomic-test.pid").exists());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[tokio::test]
+    async fn shutdown_waits_for_a_slow_checkpoint_writer() {
+        let root = fixture();
+        // A synthetic server needs six seconds to flush after TERM. The old
+        // five-second process-group kill prevented the completion marker.
+        fs::write(root.path().join("dstar"),
+            b"trap 'sleep 6; echo saved > checkpoint-saved; exit 0' TERM\necho ready > checkpoint-ready\nwhile :; do sleep 0.1; done\n").unwrap();
+        let controller = DstarController::with_port(root.path().into(), unused_port());
+        controller.request("start".into(), Some(Selection::default())).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !root.path().join("checkpoint-ready").exists() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (reply, answer) = oneshot::channel();
+        controller.tx.send(Message::Shutdown(reply)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(15), answer).await.unwrap().unwrap();
+        assert!(root.path().join("checkpoint-saved").exists());
+    }
+
+    #[test]
+    fn checkpoint_shutdown_outlives_the_old_five_second_limit() {
+        assert!(!stop_grace_expired(Duration::from_secs(6)));
+        assert!(!stop_grace_expired(Duration::from_secs(119)));
+        assert!(stop_grace_expired(Duration::from_secs(120)));
+        assert!(SHUTDOWN_REPLY_GRACE > STOP_GRACE);
     }
 
     #[test]

@@ -481,7 +481,8 @@ pub fn setup_tray(app: &App) -> tauri::Result<TrayIcon> {
             &status_runtime_value,
             &sep_after_model,
             &status_ram_text,
-            &status_ram_bar,
+            // The icon-only RAM row renders blank on macOS. The caption above
+            // already reports usage, so omit that row from the visible menu.
             &sep_before_actions,
             &show_i,
             &quit_i,

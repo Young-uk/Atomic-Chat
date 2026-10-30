@@ -1,5 +1,5 @@
 import { useMessages } from '@/hooks/useMessages'
-import { DSTAR_TOOLS_METADATA } from '../dstar-tools'
+import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA } from '../dstar-tools'
 import type { UIMessage } from '@ai-sdk/react'
 import type { LanguageModel } from 'ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1515,10 +1515,12 @@ describe('Dstar tool catalog persistence', () => {
         abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
       const stored = useMessages.getState().getMessages('persisted-thread')[0]
       expect(stored.metadata?.[DSTAR_TOOLS_METADATA]).toBe('[]')
+      expect(stored.metadata?.[DSTAR_TOOL_PREAMBLE_METADATA]).toBe(true)
       expect(useMessages.getState().getMessages('sdk-random-id')).toEqual([])
       expect(modifyMessage.mock.calls[0][0].thread_id).toBe('persisted-thread')
       const request = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0]
       expect(JSON.stringify(request.prompt)).toContain('atomic-tools:v1:[]')
+      expect(JSON.stringify(request.prompt)).toContain('atomic-tool-preamble:v1')
     } finally { vi.unstubAllEnvs() }
   })
 })

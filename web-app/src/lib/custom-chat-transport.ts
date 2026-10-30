@@ -1,4 +1,4 @@
-import { DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from './dstar-tools'
+import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from './dstar-tools'
 import { useMessages } from '@/hooks/useMessages'
 import { trackThreadMessageWrite, waitForThreadMessageWrites } from './thread-message-sync'
 import { usesAppendOnlyDstarEffort, withDstarEffortUpdates } from './dstar-effort'
@@ -1201,14 +1201,17 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const snapshot = stored?.metadata?.[DSTAR_TOOLS_METADATA] ??
           (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOLS_METADATA]
         const tools = isToolSnapshot(snapshot) ? snapshot : stableToolJson(toOpenAiTools(activeTools))
+        const preamble = !isToolSnapshot(snapshot) ||
+          stored?.metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true ||
+          (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOL_PREAMBLE_METADATA] === true
         if (stored && !isToolSnapshot(snapshot)) {
-          const updated = { ...stored, metadata: { ...stored.metadata, [DSTAR_TOOLS_METADATA]: tools } }
+          const updated = { ...stored, metadata: { ...stored.metadata, [DSTAR_TOOLS_METADATA]: tools, [DSTAR_TOOL_PREAMBLE_METADATA]: true } }
           await trackThreadMessageWrite(snapshotThreadId, this.serviceHub!.messages().modifyMessage(updated))
           store.setMessages(snapshotThreadId, useMessages.getState().getMessages(snapshotThreadId)
             .map((m) => m.id === updated.id ? updated : m))
         }
         preparedMessages = preparedMessages.map((m) => m.id === user.id
-          ? { ...m, metadata: { ...(m.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools } } : m)
+          ? { ...m, metadata: { ...(m.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools, ...(preamble ? { [DSTAR_TOOL_PREAMBLE_METADATA]: true } : {}) } } : m)
       }
       // The SDK keeps its own message instances. Earlier snapshots persisted
       // by this transport must be replayed even before a route/app reload.

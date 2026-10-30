@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useShallow } from 'zustand/react/shallow'
 
+import { controlDstar } from '@/services/dstar'
 import { route } from '@/constants/routes'
 import { useAppState } from '@/hooks/useAppState'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
@@ -63,7 +64,7 @@ export function trayRuntimeLabel(
   if (distinct.length > 1) return `${distinct.length} runtimes`
   const [provider] = distinct
   if (!provider) return ''
-  const title = getProviderTitle(provider)
+  const title = provider === 'dstar' ? 'Dstar' : getProviderTitle(provider)
   const version = engines[provider as EngineId]?.active?.version
   return version ? `${title} · ${version}` : title
 }
@@ -105,13 +106,14 @@ export function useTrayStatusSync(): void {
       if (cancelled) return
       try {
         const current = latest.current
-        const [usage, sessions] = await Promise.all([
+        const [usage, sessions, dstar] = await Promise.all([
           invoke<SystemUsage>('plugin:hardware|get_system_usage').catch(
             () => null
           ),
           invoke<LocalSession[]>('list_local_sessions').catch(
             () => [] as LocalSession[]
           ),
+          controlDstar('status').catch(() => null),
         ])
 
         // Prefer the sessions the core is serving (authoritative: running inference
@@ -119,15 +121,26 @@ export function useTrayStatusSync(): void {
         // `activeModels`, which also tracks engines the resolver does not list
         // (Foundation Models).
         const nonEmbedding = sessions.filter((s) => !s.is_embedding)
-        const modelLabel = (() => {
-          if (nonEmbedding.length === 1) return nonEmbedding[0].model_id
-          if (nonEmbedding.length > 1)
-            return `${nonEmbedding.length} models loaded`
-          if (current.activeModels.length === 1) return current.activeModels[0]
-          if (current.activeModels.length > 1)
-            return `${current.activeModels.length} models loaded`
-          return ''
-        })()
+        // Only advertise models actually served by Dstar, never its saved
+        // selection while stopped/loading. It is separate from the 1337 API.
+        const dstarModels =
+          (dstar?.status === 'ready' || dstar?.status === 'external') &&
+          dstar.servedModels.length > 0
+            // Dstar exposes chat/reasoner aliases for one loaded checkpoint.
+            // Count the physical model once, using the owned selection's label.
+            ? [dstar.status === 'ready'
+                ? dstar.models?.find((model) => model.id === dstar.selection?.model)?.name ?? dstar.servedModels[0]
+                : dstar.servedModels[0]]
+            : []
+        const loadedModels = [
+          ...(nonEmbedding.length > 0
+            ? nonEmbedding.map((session) => session.model_id)
+            : current.activeModels),
+          ...dstarModels,
+        ]
+        const modelLabel = loadedModels.length > 1
+          ? `${loadedModels.length} models loaded`
+          : loadedModels[0] ?? ''
         // The runtime from the same source as the model: a session names its
         // engine, an `activeModels` id is looked up in the providers holding it.
         // Read from the stores here rather than subscribed to, so a new engine
@@ -142,7 +155,7 @@ export function useTrayStatusSync(): void {
                 return owner ? [owner.provider] : []
               })
         const runtimeLabel = trayRuntimeLabel(
-          runtimeProviders,
+          [...runtimeProviders, ...(dstarModels.length > 0 ? ['dstar'] : [])],
           useEngineVersionsStore.getState().engines
         )
 
@@ -161,7 +174,7 @@ export function useTrayStatusSync(): void {
           ram_percent: ramPercent,
         }
 
-        await invoke('update_tray_status', { payload })
+        if (!cancelled) await invoke('update_tray_status', { payload })
       } catch (err) {
         // Tray is optional UI; never surface errors to the user.
         if (IS_DEV) console.debug('[tray] update failed', err)

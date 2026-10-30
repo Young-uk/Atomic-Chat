@@ -89,6 +89,7 @@ describe('trayRuntimeLabel', () => {
 
 describe('useTrayStatusSync', () => {
   let sessions: ReturnType<typeof session>[] = []
+  let dstar: { status: string; servedModels: string[]; selection?: { model: string }; models?: { id: string; name: string }[] } | undefined
 
   beforeEach(() => {
     vi.stubGlobal('IS_TAURI', true)
@@ -98,12 +99,14 @@ describe('useTrayStatusSync', () => {
     mocks.router.navigate.mockClear()
     mocks.invoke.mockReset()
     mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'dstar_control') return dstar
       if (command === 'list_local_sessions') return sessions
       if (command === 'plugin:hardware|get_system_usage')
         return { cpu: 0, used_memory: 8192, total_memory: 16384 }
       return undefined
     })
     sessions = []
+    dstar = undefined
     useAppState.setState({ activeModels: [], serverStatus: 'running' })
     useModelProvider.setState({ providers: [] })
     useEngineVersionsStore.setState({ engines: {} })
@@ -112,6 +115,44 @@ describe('useTrayStatusSync', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it.each(['ready', 'external'])('shows the live Dstar model when %s', async (status) => {
+    dstar = { status, servedModels: ['Qwen3.8 Flash Next · IQ3_XXS'] }
+    const { unmount } = renderHook(() => useTrayStatusSync())
+    await waitFor(() => expect(lastPush()).toMatchObject({
+      model_label: 'Qwen3.8 Flash Next · IQ3_XXS', runtime_label: 'Dstar',
+      server_url: 'http://127.0.0.1:1337/v1',
+    }))
+    unmount()
+  })
+
+  it.each(['stopped', 'loading', 'stopping', 'error'])('does not advertise a stale Dstar model when %s', async (status) => {
+    dstar = { status, servedModels: ['stale-model'] }
+    const { unmount } = renderHook(() => useTrayStatusSync())
+    await waitFor(() => expect(lastPush()).toMatchObject({ model_label: '', runtime_label: '' }))
+    unmount()
+  })
+
+  it('counts chat and reasoner aliases as one physical model', async () => {
+    dstar = {
+      status: 'ready', servedModels: ['qwen', 'qwen-chat', 'qwen-reasoner'],
+      selection: { model: 'iq3' },
+      models: [{ id: 'iq3', name: 'Qwen3.8 Flash Next · IQ3_XXS' }],
+    }
+    const { unmount } = renderHook(() => useTrayStatusSync())
+    await waitFor(() => expect(lastPush()).toMatchObject({
+      model_label: 'Qwen3.8 Flash Next · IQ3_XXS', runtime_label: 'Dstar',
+    }))
+    unmount()
+  })
+
+  it('includes Dstar alongside models served by the core', async () => {
+    sessions = [session('mlx', 'gemma')]
+    dstar = { status: 'ready', servedModels: ['qwen'] }
+    const { unmount } = renderHook(() => useTrayStatusSync())
+    await waitFor(() => expect(lastPush()).toMatchObject({ model_label: '2 models loaded', runtime_label: '2 runtimes' }))
+    unmount()
   })
 
   it('pushes the engine and build the served chat model runs on', async () => {
