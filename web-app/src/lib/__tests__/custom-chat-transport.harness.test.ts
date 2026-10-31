@@ -74,7 +74,7 @@ type ModelStreamPart =
     }
   | {
       type: 'finish'
-      finishReason: 'stop' | 'tool-calls'
+      finishReason: 'stop' | 'tool-calls' | 'length'
       usage: {
         inputTokens: number
         outputTokens: number
@@ -1515,12 +1515,87 @@ describe('Dstar tool catalog persistence', () => {
         abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
       const stored = useMessages.getState().getMessages('persisted-thread')[0]
       expect(stored.metadata?.[DSTAR_TOOLS_METADATA]).toBe('[]')
-      expect(stored.metadata?.[DSTAR_TOOL_PREAMBLE_METADATA]).toBe(true)
+      expect(stored.metadata?.[DSTAR_TOOL_PREAMBLE_METADATA]).toBe('v2')
       expect(useMessages.getState().getMessages('sdk-random-id')).toEqual([])
       expect(modifyMessage.mock.calls[0][0].thread_id).toBe('persisted-thread')
       const request = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0]
       expect(JSON.stringify(request.prompt)).toContain('atomic-tools:v1:[]')
-      expect(JSON.stringify(request.prompt)).toContain('atomic-tool-preamble:v1')
+      expect(JSON.stringify(request.prompt)).toContain('atomic-tool-preamble:v2')
     } finally { vi.unstubAllEnvs() }
+  })
+})
+
+describe('Dstar summary scheduling after the final answer', () => {
+  it.each(['stop', 'tool-calls', 'length'] as const)('schedules only after successful terminal finish: %s', async finishReason => {
+    const { ContextCompaction } = await import('../dstar-context-compaction')
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true'); vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat', context_length: 65536 }] }) }))
+    vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
+    const schedule = vi.spyOn(ContextCompaction.prototype, 'schedule').mockImplementation(() => {})
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never, messages: { modifyMessage: vi.fn(async m => m) } as never })
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: [], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'answer' }, { type: 'text-delta', id: 'answer', delta: 'READY' }, { type: 'text-end', id: 'answer' },
+      { type: 'finish', finishReason, usage: { inputTokens: 50000, outputTokens: 1, totalTokens: 50001 } }])
+    const originalStream = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.getMockImplementation()!
+    ;(model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mockImplementation(async (...args) => { expect(schedule).not.toHaveBeenCalled(); return originalStream(...args) })
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const transport = new CustomChatTransport(undefined, `after-turn-${finishReason}`)
+    const abort = new AbortController()
+    try {
+      await readChunks(await transport.sendMessages({ chatId: `after-turn-${finishReason}`, messages: [userMessage], abortSignal: abort.signal, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+      expect(schedule).toHaveBeenCalledTimes(finishReason === 'stop' ? 1 : 0)
+      if (finishReason === 'stop') {
+        expect(schedule.mock.calls[0][0].at(-1)?.role).toBe('assistant')
+        expect(schedule.mock.calls[0][2]).toBeGreaterThanOrEqual(50001)
+      }
+    } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+})
+
+describe('Dstar emergency full-context recovery', () => {
+  it.each([[true, false], [false, false], [true, true]])('summarizes before inference and retries at most once: recovery=%s provider=%s', async (succeeds, providerReject) => {
+    const { ContextCompaction } = await import('../dstar-context-compaction')
+    const { runIdleSummaryRequest } = await import('../dstar-summary-idle')
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true'); vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat', context_length: 8192 }] }) }))
+    vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
+    let recovered = false
+    vi.spyOn(ContextCompaction.prototype, 'apply').mockImplementation(messages => recovered
+      ? [{ id: 'atomic-context-recovery', role: 'system', parts: [{ type: 'text', text: 'Archived prior facts' }] }, messages.at(-1)!] : messages)
+    vi.spyOn(ContextCompaction.prototype, 'schedule').mockImplementation(() => {})
+    const recover = vi.spyOn(ContextCompaction.prototype, 'recover').mockImplementation(async (_messages, _context, _summarize, signal) => {
+      await runIdleSummaryRequest('http://127.0.0.1:8010/v1', signal!, () => {}, async () => {
+        if (!succeeds) throw new Error('Archive verification failed')
+        recovered = true
+      })
+    })
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never, messages: { modifyMessage: vi.fn(async m => m) } as never })
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: [], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'answer' }, { type: 'text-delta', id: 'answer', delta: 'RECOVERED' }, { type: 'text-end', id: 'answer' },
+      { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 1, totalTokens: 101 } }])
+    const doStream = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream
+    const successfulStream = doStream.getMockImplementation()!
+    if (providerReject) doStream.mockImplementation(async (...args) => {
+      if (!recovered) throw new Error('the request exceeds the available context size.')
+      return successfulStream(...args)
+    })
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const transport = new CustomChatTransport(undefined, `full-recovery-${succeeds}-${providerReject}`)
+    const messages = [{ ...userMessage, id: 'old-user', parts: [{ type: 'text' as const, text: 'old data '.repeat(providerReject ? 1 : 10000) }] },
+      { id: 'old-answer', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'confirmed' }] }, userMessage]
+    const abort = new AbortController()
+    try {
+      const response = transport.sendMessages({ chatId: `full-recovery-${succeeds}`, messages, abortSignal: abort.signal, trigger: 'submit-message', messageId: undefined })
+      if (succeeds) {
+        const chunks = await readChunks(await response as ReadableStream<Record<string, unknown>>)
+        expect(JSON.stringify(chunks)).toContain('RECOVERED')
+        expect(doStream).toHaveBeenCalledTimes(providerReject ? 2 : 1)
+        expect(chunks.filter(chunk => chunk.type === 'start')).toHaveLength(1)
+      } else await expect(response).rejects.toThrow('Archive verification failed')
+      expect(recover).toHaveBeenCalledTimes(1)
+      expect(recover.mock.calls[0][0].at(-1)?.id).toBe(userMessage.id)
+    } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
 })

@@ -29,7 +29,7 @@ export function isToolSnapshot(value: unknown): value is string {
  * allowlist; these historical definitions never grant execution permission. */
 export function withDstarToolUpdates(messages: UIMessage[]): UIMessage[] {
   let previous: string | undefined
-  let preambleSent = false
+  let preambleSent: true | 'v2' | undefined
   const result: UIMessage[] = []
   for (const message of messages) {
     const metadata = message.metadata as Record<string, unknown> | undefined
@@ -39,14 +39,15 @@ export function withDstarToolUpdates(messages: UIMessage[]): UIMessage[] {
         result.push({ id: `atomic-tools-${message.id}`, role: 'system',
           parts: [{ type: 'text', text: marker + snapshot }] })
         previous = snapshot
-        preambleSent = false
+        preambleSent = undefined
       }
       // Versioned policy starts only at a newly recorded turn. Never rewrite
       // historical catalog instructions to add the new behavior retroactively.
-      if (!preambleSent && metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true) {
+      const policy = metadata?.[DSTAR_TOOL_PREAMBLE_METADATA]
+      if ((policy === true || policy === 'v2') && policy !== preambleSent) {
         result.push({ id: `atomic-tool-preamble-${message.id}`, role: 'system',
-          parts: [{ type: 'text', text: 'atomic-tool-preamble:v1' }] })
-        preambleSent = true
+          parts: [{ type: 'text', text: policy === 'v2' ? 'atomic-tool-preamble:v2' : 'atomic-tool-preamble:v1' }] })
+        preambleSent = policy
       }
     }
     result.push(message)
@@ -65,7 +66,7 @@ export function replayDstarToolSnapshots(
     const tools = metadata?.[DSTAR_TOOLS_METADATA]
     return isToolSnapshot(tools)
       ? { ...message, metadata: { ...(message.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools,
-          ...(metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true ? { [DSTAR_TOOL_PREAMBLE_METADATA]: true } : {}) } }
+          ...((metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true || metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === 'v2') ? { [DSTAR_TOOL_PREAMBLE_METADATA]: metadata[DSTAR_TOOL_PREAMBLE_METADATA] } : {}) } }
       : message
   })
 }

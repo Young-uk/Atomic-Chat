@@ -11,6 +11,7 @@
 */
 
 pub mod commands;
+pub mod context_archive;
 pub mod constants;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod db;

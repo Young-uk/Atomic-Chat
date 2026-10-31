@@ -297,6 +297,10 @@ fn launch(root: &Path, selection: &Selection, port: u16) -> Result<Child, String
         use std::os::unix::process::CommandExt;
         cmd.as_std_mut().process_group(0);
     }
+    // Opt-in local test build only; ordinary Personal builds remain single-slot.
+    if option_env!("ATOMIC_DSTAR_SUMMARY_TEST") == Some("true") {
+        cmd.arg("--summary-slot");
+    }
     cmd.spawn().map_err(|e| e.to_string())
 }
 

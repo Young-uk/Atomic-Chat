@@ -45,5 +45,17 @@
     "thinking": "생각하는 중",
     "generating": "답변 생성 중",
     "preparing": "답변 준비 중"
+  },
+  "contextSummary": {
+    "paused": "대화 우선 처리 · 요약 일시정지",
+    "queued": "요약 준비 중",
+    "summarizing": "이전 대화 요약 중",
+    "saving": "요약 저장 중",
+    "ready": "요약 준비 완료",
+    "failed": "요약 실패 · 원문 보존됨",
+    "sections": "{{count}}개 묶음 처리됨",
+    "archived": "원문이 대화 보관 파일에 저장되어 있어요.",
+    "retained": "원문은 그대로 보존되어 있어요.",
+    "background": "백그라운드에서 처리하며 서버 대기 시간도 포함해요."
   }
 }

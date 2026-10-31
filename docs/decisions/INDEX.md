@@ -611,3 +611,21 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Prospective model-authored progress updates](2026-10-30-prospective-dstar-progress-updates.md)
 
 - [Dstar checkpoint shutdown grace](2026-10-30-dstar-checkpoint-shutdown.md)
+
+- **2026-10-31** — [Background context summaries with searchable original archives](2026-10-31-background-context-archives.md)
+
+- **2026-10-31** — [Disable concurrent compaction after long-context Metal OOM](2026-10-31-disable-concurrent-compaction-after-oom.md)
+
+- [Bounded summary slot experiment](2026-10-31-bounded-summary-slot-experiment.md) — 8K summary cache, sequential evidence merging and foreground priority; deployment remains gated.
+
+- [Summary status indicator](2026-10-31-summary-status-indicator.md) — Thread-scoped background work, elapsed time and completed fragments without inferred GPU states.
+
+- [Summarize after the complete turn](2026-10-31-summarize-after-turn.md) — Post-answer trigger and endpoint-scoped foreground priority with resumable summary fragments.
+
+- [Recover an already full context before answering](2026-10-31-recover-full-context-before-answer.md) — bounded emergency summary before one transport retry.
+
+- [Retry truncated summary fragments](2026-10-31-retry-truncated-summary-fragments.md) — preserve completed merges and bound smaller-fragment retries.
+
+- [Repack and checkpoint summary memory](2026-10-31-repack-and-checkpoint-summary-memory.md) — bounded cumulative-memory repacking and durable resume.
+
+- [Preserve open work and tool follow-through](2026-10-31-preserve-open-work-and-tool-followthrough.md)

@@ -1,3 +1,4 @@
+import { ContextSummaryProgress } from '@/components/ContextSummaryProgress'
 import { InferenceProgress } from '@/components/InferenceProgress'
 import { useInferenceProgress } from '@/lib/inference-progress'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -2155,6 +2156,7 @@ function ThreadDetail() {
                     </div>
                   )}
                   {!hasActiveAssistantMessage && <InferenceProgress threadId={threadId} />}
+                  <ContextSummaryProgress threadId={threadId} />
                   {shownError &&
                     !isAutoIncreasingContext &&
                     (() => {

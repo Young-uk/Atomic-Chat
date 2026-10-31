@@ -326,5 +326,18 @@
     "thinking": "Thinking",
     "generating": "Generating response",
     "preparing": "Preparing response"
+  },
+  "contextSummary": {
+    "paused": "Summary paused · Chat has priority",
+    "queued": "Preparing summary",
+    "summarizing": "Summarizing earlier messages",
+    "saving": "Saving summary",
+    "ready": "Summary ready",
+    "failed": "Summary failed · Original messages retained",
+    "sections_one": "{{count}} section processed",
+    "sections_other": "{{count}} sections processed",
+    "archived": "Original messages saved in the conversation archive.",
+    "retained": "Original messages retained.",
+    "background": "Runs in the background. Waiting for the server is included."
   }
 }

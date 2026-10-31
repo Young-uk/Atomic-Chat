@@ -69,3 +69,14 @@ it('adds narration policy prospectively without changing legacy history or repea
   expect(withDstarToolUpdates(restored)[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v1' }])
   expect(old.metadata).not.toHaveProperty(DSTAR_TOOL_PREAMBLE_METADATA)
 })
+
+it('upgrades preamble policy only at a new turn and persists the version through replay', () => {
+  const old = turn('old-v1', [schema]); old.metadata = { ...old.metadata, [DSTAR_TOOL_PREAMBLE_METADATA]: true }
+  const next = turn('new-v2', [schema]); next.metadata = { ...next.metadata, [DSTAR_TOOL_PREAMBLE_METADATA]: 'v2' }
+  const prefix = withDstarToolUpdates([old])
+  const wire = withDstarToolUpdates([old, next, { ...next, id: 'later-v2' }])
+  expect(wire.slice(0, prefix.length)).toEqual(prefix)
+  expect(wire.filter(m => m.parts.some(p => p.type === 'text' && p.text === 'atomic-tool-preamble:v2'))).toHaveLength(1)
+  const restored = replayDstarToolSnapshots([{ ...next, metadata: undefined }], JSON.parse(JSON.stringify([next])))
+  expect(withDstarToolUpdates(restored)[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v2' }])
+})

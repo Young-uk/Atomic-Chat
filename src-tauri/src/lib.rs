@@ -253,6 +253,7 @@ pub fn run() {
         core::mcp::oauth::mcp_oauth_cancel,
         core::mcp::oauth::mcp_oauth_logout,
         // Threads
+        core::threads::context_archive::context_archive,
         core::threads::commands::list_threads,
         core::threads::commands::create_thread,
         core::threads::commands::modify_thread,
@@ -443,6 +444,7 @@ pub fn run() {
         core::mcp::oauth::mcp_oauth_cancel,
         core::mcp::oauth::mcp_oauth_logout,
         // Threads
+        core::threads::context_archive::context_archive,
         core::threads::commands::list_threads,
         core::threads::commands::create_thread,
         core::threads::commands::modify_thread,
