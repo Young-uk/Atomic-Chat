@@ -9,7 +9,6 @@ import {
   type HTMLAttributes,
   useContext,
   useEffect,
-  useRef,
   useState,
 } from 'react'
 import { type BundledLanguage, codeToHtml, type ShikiTransformer } from 'shiki'
@@ -102,19 +101,20 @@ export const CodeBlock = ({
 }: CodeBlockProps) => {
   const [html, setHtml] = useState<string>('')
   const [darkHtml, setDarkHtml] = useState<string>('')
-  const mounted = useRef(false)
 
   useEffect(() => {
+    // Each effect owns its result; late highlights must not update an unmounted
+    // block or replace a newer code/language selection.
+    let cancelled = false
     highlightCode(code, language, showLineNumbers).then(([light, dark]) => {
-      if (!mounted.current) {
+      if (!cancelled) {
         setHtml(light)
         setDarkHtml(dark)
-        mounted.current = true
       }
     })
 
     return () => {
-      mounted.current = false
+      cancelled = true
     }
   }, [code, language, showLineNumbers])
 

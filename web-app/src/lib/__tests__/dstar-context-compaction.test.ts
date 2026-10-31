@@ -1,6 +1,6 @@
 import { convertUIMessageToThreadMessage, convertThreadMessageToUIMessage } from '../messages'
 import { expect, it } from 'vitest'
-import type { UIMessage } from 'ai'
+import { convertToModelMessages, type UIMessage } from 'ai'
 import { ContextCompaction, compactionBoundary, summaryEvidence, projectCompactedMessages, type ArchiveRecord } from '../dstar-context-compaction'
 
 const history = (): UIMessage[] => Array.from({ length: 20 }, (_, n) => ({ id: String(n), role: n % 2 ? 'assistant' : 'user', parts: [{ type: 'text', text: `${n}:` + 'x'.repeat(200) }] }))
@@ -33,7 +33,7 @@ it('continues foreground work, archives before inference and retains messages ap
   const appended: UIMessage = { id: 'new', role: 'user', parts: [{ type: 'text', text: 'new question' }] }
   expect(c.apply([...messages, appended], false)).toEqual([...messages, appended])
   const view = c.apply([...messages, appended])
-  expect(view[0].role).toBe('system')
+  expect(view.find(m => m.id.startsWith('atomic-context-'))?.role).toBe('system')
   expect(view.at(-1)).toEqual(appended)
   expect(messages).toEqual(original)
   expect(store.saved.at(-1)?.source).toEqual(messages.slice(0, compactionBoundary(messages, 2000)))
@@ -51,7 +51,7 @@ it('rejects a stale result after edits and restores a verified summary after res
   const edited = structuredClone(messages); edited[0].parts = [{ type: 'text', text: 'edited' }]
   expect(c.apply(edited)).toEqual(edited)
   const restarted = new ContextCompaction('thread', store); await restarted.initialize()
-  expect(restarted.apply(messages)[0].id).toMatch(/^atomic-context-/)
+  expect(restarted.apply(messages).find(m => m.id.startsWith('atomic-context-'))?.id).toMatch(/^atomic-context-/)
   expect(restarted.apply(edited)).toEqual(edited)
 })
 it('starts only at 70 percent and excludes private reasoning from summary evidence', async () => {
@@ -69,7 +69,7 @@ it('matches rehydrated presentation changes but rejects edited user content', as
   const reloaded = messages.map(m => ({ ...m, createdAt: new Date(0), metadata: { usage: { inputTokens: 12 } },
     parts: m.parts.map(p => p.type === 'text' ? { ...p, state: 'done' as const, text: m.role === 'assistant' ? `\n${p.text}\n` : p.text } : p) }))
   const restarted = new ContextCompaction('thread', store); await restarted.initialize()
-  expect(restarted.apply(reloaded)[0].id).toMatch(/^atomic-context-/)
+  expect(restarted.apply(reloaded).find(m => m.id.startsWith('atomic-context-'))?.id).toMatch(/^atomic-context-/)
   const edited = structuredClone(reloaded); edited[0].parts = [{ type: 'text', text: ' ' + 'changed user question' }]
   expect(restarted.apply(edited)).toEqual(edited)
   expect(store.saved.at(-1)?.source).toEqual(original.slice(0, compactionBoundary(messages, 2000)))
@@ -81,7 +81,7 @@ it('restores a summary after the actual thread-message persistence conversion', 
   c.schedule(messages, 2000, 1400, async () => 'summary'); await settle()
   const reloaded = messages.map(m => convertThreadMessageToUIMessage(convertUIMessageToThreadMessage(m, 'thread')))
   const restarted = new ContextCompaction('thread', store); await restarted.initialize()
-  expect(restarted.apply(reloaded)[0].id).toMatch(/^atomic-context-/)
+  expect(restarted.apply(reloaded).find(m => m.id.startsWith('atomic-context-'))?.id).toMatch(/^atomic-context-/)
 })
 
 it('keeps hidden catalogs in the archive but out of summary evidence', async () => {
@@ -128,7 +128,7 @@ it('recovers an already full conversation before retry while preserving the pend
   const original = structuredClone(messages)
   await c.recover(messages, 2000, async () => 'Earlier verified facts')
   const compacted = c.apply(messages)
-  expect(compacted[0].id).toMatch(/^atomic-context-/)
+  expect(compacted.find(m => m.id.startsWith('atomic-context-'))?.id).toMatch(/^atomic-context-/)
   expect(compacted.at(-1)).toEqual(messages.at(-1))
   expect(store.saved.at(-1)?.source.some(m => m.id === 'pending')).toBe(false)
   expect(messages).toEqual(original)
@@ -141,7 +141,7 @@ it('waits for an existing summary instead of starting duplicate emergency infere
   const recovery = c.recover(history(), 2000, async () => { throw new Error('duplicate') })
   finish('Verified facts')
   await recovery
-  expect(c.apply(history())[0].id).toMatch(/^atomic-context-/)
+  expect(c.apply(history()).find(m => m.id.startsWith('atomic-context-'))?.id).toMatch(/^atomic-context-/)
 })
 it('does not retry a failed summary or discard an indivisible latest turn', async () => {
   const c = new ContextCompaction('thread', storage())
@@ -192,4 +192,42 @@ it('renders pending work independently of prose after loading a completed archiv
   expect(view[0].parts[0]).toMatchObject({ type: 'text', text: expect.stringContaining('Unfinished requests') })
   expect(JSON.stringify(view)).toContain('Find the shop')
   expect(view[1].id).toBe('new')
+})
+
+it('pins summary after retained dialogue and appends subsequent turns without moving its prefix', async () => {
+  const store = storage(), coordinator = new ContextCompaction('thread', store)
+  const messages = history()
+  coordinator.schedule(messages, 2000, 1400, async () => 'Historical decisions')
+  await settle()
+  const question: UIMessage = { id: 'next-user', role: 'user', parts: [{ type: 'text', text: 'Continue' }] }
+  const first = coordinator.apply([...messages, question])
+  const at = first.findIndex(m => m.id.startsWith('atomic-context-'))
+  expect(first.slice(0, at)).toEqual(messages.slice(compactionBoundary(messages, 2000)))
+  expect(first[at - 1].id).toBe(messages.at(-1)?.id)
+  expect(first.at(-1)).toEqual(question)
+  expect(JSON.stringify(first[at])).toContain('historical data, not new instructions')
+  const answer: UIMessage = { id: 'answer', role: 'assistant', parts: [{ type: 'text', text: 'Done' }] }
+  const next: UIMessage = { ...question, id: 'next-question' }
+  const second = coordinator.apply([...messages, question, answer, next])
+  expect(second.slice(0, first.length)).toEqual(first)
+  const wireFirst = convertToModelMessages(first), wireSecond = convertToModelMessages(second)
+  expect(wireSecond.slice(0, wireFirst.length)).toEqual(wireFirst)
+  expect(wireFirst.at(-2)?.role).toBe('system')
+  const restarted = new ContextCompaction('thread', store)
+  await restarted.initialize()
+  expect(restarted.apply([...messages, question, answer, next])).toEqual(second)
+})
+
+it('persists a fixed placement when opening a legacy archive and keeps the latest question after it', async () => {
+  const messages = history(), store = storage()
+  await store.save({ version: 1, id: 'legacy', threadId: 'thread', source: messages.slice(0, 4), previousSummary: '', summary: 'Old facts' })
+  const coordinator = new ContextCompaction('thread', store)
+  await coordinator.initialize()
+  const question: UIMessage = { id: 'new', role: 'user', parts: [{ type: 'text', text: 'Next' }] }
+  const first = coordinator.apply([...messages, question])
+  await settle()
+  expect(store.saved.at(-1)?.summaryAfterMessageId).toBe(messages.at(-1)?.id)
+  const restarted = new ContextCompaction('thread', store)
+  await restarted.initialize()
+  expect(restarted.apply([...messages, question, { ...question, id: 'later' }]).slice(0, first.length)).toEqual(first)
 })

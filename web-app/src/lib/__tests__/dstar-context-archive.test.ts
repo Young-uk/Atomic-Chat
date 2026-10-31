@@ -252,3 +252,90 @@ it('resumes the independent work ledger from its durable checkpoint after an int
   expect(saved.at(-1)?.requests?.open[0].id).toBe('request-resume')
   expect(saved.at(-1)?.offset).toBe(Array.from(evidence).length)
 })
+
+it('checkpoints and completes every fragment despite unsupported completion claims', async () => {
+  const source = [{ id: 'pending', role: 'user' as const, parts: [{ type: 'text' as const, text: 'Verify the shop address.' }] }]
+  const saved: import('../dstar-context-compaction').SummaryCheckpoint[] = []
+  let calls = 0
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+    const content = JSON.stringify({ summary: 'The address still needs verification.',
+      openRequests: ++calls === 1 ? [{ id: 'pending', request: 'Verify shop address' }] : [],
+      resolvedRequests: [{ id: 'pending', evidenceId: 'missing', quote: 'unsupported completion' }] })
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) }
+  }))
+  const evidence = 'Historical evidence. '.repeat(400)
+  const result = await summarizeWithDstar('http://localhost/v1', 'model')('', evidence, new AbortController().signal, undefined,
+    { requestSources: source, save: async c => { saved.push(structuredClone(c)) } })
+  expect(result).toBe('The address still needs verification.')
+  expect(calls).toBeGreaterThan(1)
+  expect(saved.at(-1)?.offset).toBe(Array.from(evidence).length)
+  expect(saved.every(c => c.requests?.open[0]?.id === 'pending' && c.requests.resolved.length === 0)).toBe(true)
+})
+
+it('repairs an assistant-as-user source against the same evidence and saves only the validated ledger', async () => {
+  const source = [
+    { id: 'ask', role: 'user' as const, parts: [{ type: 'text' as const, text: 'Verify the address.' }] },
+    { id: 'promise', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'I will check.' }] },
+  ]
+  const bodies: { messages: { content: string }[] }[] = []
+  const saved: import('../dstar-context-compaction').SummaryCheckpoint[] = []
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url, init) => {
+    const body = JSON.parse(init.body); bodies.push(body)
+    const content = JSON.stringify({ summary: 'The address is unverified.',
+      openRequests: [{ id: bodies.length === 1 ? 'promise' : 'ask', request: 'Verify address' }], resolvedRequests: [] })
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) }
+  }))
+  await summarizeWithDstar('http://localhost/v1', 'model')('', 'Short evidence', new AbortController().signal, undefined,
+    { requestSources: source, save: async point => { saved.push(structuredClone(point)) } })
+  expect(bodies).toHaveLength(2)
+  expect(bodies[1].messages[1].content).toBe(bodies[0].messages[1].content)
+  expect(bodies[1].messages[0].content).toContain('user-only allowlist: ["ask"]')
+  expect(saved).toHaveLength(1)
+  expect(saved[0].requests?.open[0].id).toBe('ask')
+})
+it('bounds invalid-source repair to three additional requests without saving invalid progress', async () => {
+  const source = [{ id: 'ask', role: 'user' as const, parts: [{ type: 'text' as const, text: 'Verify the address.' }] }]
+  const previous = { open: [{ id: 'ask', request: 'Verify address', sourceText: 'Verify the address.' }], resolved: [] }
+  const before = structuredClone(previous)
+  const save = vi.fn(), bodies: string[] = []
+  const fetch = vi.fn().mockImplementation(async (_url, init) => {
+    bodies.push(JSON.parse(init.body).messages[1].content)
+    const content = JSON.stringify({ summary: 'Memory', openRequests: [{ id: 'invented', request: 'Verify address' }], resolvedRequests: [] })
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) }
+  })
+  vi.stubGlobal('fetch', fetch)
+  await expect(summarizeWithDstar('http://localhost/v1', 'model')('', 'Short evidence', new AbortController().signal, undefined,
+    { requestSources: source, previousRequests: previous, save })).rejects.toThrow('three repair attempts')
+  expect(fetch).toHaveBeenCalledTimes(4)
+  expect(new Set(bodies).size).toBe(1)
+  expect(save).not.toHaveBeenCalled()
+  expect(previous).toEqual(before)
+})
+
+
+it('repacks short prose when the retained request ledger fills the input envelope', async () => {
+  const source = Array.from({ length: 4 }, (_, i) => ({ id: `request-${i}`, role: 'user' as const,
+    parts: [{ type: 'text' as const, text: `Verify obligation ${i}` }] }))
+  const previousRequests = { open: source.map(m => ({ id: m.id, request: '한'.repeat(130), sourceText: m.parts[0].text })), resolved: [] }
+  const saved: import('../dstar-context-compaction').SummaryCheckpoint[] = []
+  let repacks = 0, merges = 0
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url, init) => {
+    const body = JSON.parse(init.body), input = JSON.parse(body.messages[1].content)
+    expect(new TextEncoder().encode(body.messages[0].content).length + new TextEncoder().encode(body.messages[1].content).length).toBeLessThanOrEqual(5632)
+    const repack = 'historicalHandoff' in input
+    if (repack) repacks++
+    else {
+      merges++
+      expect(input.newEvidence).toBe('last fragment')
+      expect(input.openRequests).toEqual(previousRequests.open.map(({ id, request }) => ({ id, request })))
+    }
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: repack ? 'Compact confirmed memory' : JSON.stringify({ summary: 'Final memory', openRequests: [], resolvedRequests: [] }) } }] }) }
+  }))
+  await summarizeWithDstar('http://localhost/v1', 'model')('한'.repeat(1060), 'last fragment', new AbortController().signal, undefined,
+    { requestSources: source, previousRequests, save: async c => { saved.push(structuredClone(c)) } })
+  expect(repacks).toBe(1)
+  expect(merges).toBe(1)
+  expect(saved.at(-1)?.offset).toBe(13)
+  expect(saved.every(c => c.requests?.open.length === 4)).toBe(true)
+  expect(previousRequests.open).toHaveLength(4)
+})

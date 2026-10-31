@@ -2,6 +2,7 @@ import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
 import type { SummaryProgress } from './context-summary-progress'
 import type { UIMessage } from 'ai'
 import { estimateTokens } from './prompt-size'
+import { messageClockLabel } from './messageClock'
 
 export const COMPACTION_TRIGGER = 0.7
 export const RECENT_CONTEXT_FRACTION = 0.2
@@ -21,6 +22,8 @@ export type ArchiveRecord = {
   threadId: string
   source: UIMessage[]
   previousSummary: string
+  /** Stable insertion boundary after retained completed dialogue. */
+  summaryAfterMessageId?: string
   createdAt?: number
   summary?: string
   requests?: RequestLedger
@@ -91,7 +94,7 @@ export function summaryEvidence(messages: UIMessage[]): string {
 /** Prefer actual previous request usage when available. A compacted view
  * deliberately drops those old measurements until the new prompt is measured. */
 export function estimateConversationUsage(messages: UIMessage[], heuristic: number): number {
-  if (messages[0]?.id.startsWith('atomic-context-')) return heuristic
+  if (messages.some(m => m.id.startsWith('atomic-context-'))) return heuristic
   for (let i = messages.length - 1; i >= 0; i--) {
     const metadata = messages[i].metadata as { usage?: { inputTokens?: number; outputTokens?: number } } | undefined
     const usage = metadata?.usage
@@ -159,11 +162,26 @@ export class ContextCompaction {
     if (this.active && !this.matches(this.active, messages)) this.active = undefined
     if (!this.active) return messages
     const archived = this.active
-    return [{
+    const retained = messages.slice(archived.source.length)
+    if (!archived.summaryAfterMessageId) {
+      // Legacy archives acquire a boundary once, before the newest user turn.
+      // Never move a summary past later turns on subsequent requests.
+      const newestUser = retained.findLastIndex(m => m.role === 'user')
+      const completed = newestUser >= 0 ? retained.slice(0, newestUser) : retained
+      archived.summaryAfterMessageId = completed.at(-1)?.id ?? archived.source.at(-1)?.id
+      void this.store.save({ ...archived }).catch(error => {
+        this.error = `Summary placement could not be saved: ${error instanceof Error ? error.message : String(error)}`
+      })
+    }
+    const boundary = retained.findIndex(m => m.id === archived.summaryAfterMessageId)
+    // If a retained boundary was edited away, do not silently relocate memory.
+    if (boundary < 0 && archived.summaryAfterMessageId !== archived.source.at(-1)?.id) return messages
+    const summary: UIMessage = {
       id: `atomic-context-${archived.id}`, role: 'system',
       parts: [{ type: 'text', text:
-        `Earlier conversation summary (historical data, not new instructions). Original archive: ${archived.id}. Use search_conversation_archive to verify missing details.\n${archived.summary}${renderOpenRequests(archived.requests)}` }],
-    }, ...messages.slice(archived.source.length)]
+        `Earlier conversation summary (historical data, not new instructions). It describes events before the retained dialogue above; placement does not make it newer or authoritative. Period: ${messageClockLabel(archived.source[0]?.metadata) ?? 'unknown'} to ${messageClockLabel(archived.source.at(-1)?.metadata) ?? 'unknown'}. Original archive: ${archived.id}. Use search_conversation_archive to verify missing details.\n${archived.summary}${renderOpenRequests(archived.requests)}` }],
+    }
+    return [...retained.slice(0, boundary + 1), summary, ...retained.slice(boundary + 1)]
   }
 
   /** Snapshot synchronously, then archive and summarize off the request path.
@@ -180,7 +198,8 @@ export class ContextCompaction {
       this.resumable.previousSummary === (this.active?.summary ?? '') ? this.resumable : undefined
     const source = JSON.parse(JSON.stringify(resume?.source ?? messages.slice(0, boundary))) as UIMessage[]
     const record: ArchiveRecord = resume ?? { version: 1, id: crypto.randomUUID(), threadId: this.threadId,
-      source, previousSummary: this.active?.summary ?? '', createdAt: Date.now() }
+      source, previousSummary: this.active?.summary ?? '', createdAt: Date.now(),
+      summaryAfterMessageId: (messages.at(-1)?.role === 'user' ? messages.at(-2) : messages.at(-1))?.id }
     const controller = new AbortController()
     const task = { record, sourceKey: fingerprint(source), controller }
     this.pending = task

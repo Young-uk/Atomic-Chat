@@ -1,5 +1,12 @@
 import type { UIMessage } from 'ai'
 
+export class InvalidRequestSourceError extends Error {
+  constructor() {
+    super('Summary work item has no valid user-message source')
+    this.name = 'InvalidRequestSourceError'
+  }
+}
+
 export type OpenRequest = { id: string; request: string; sourceText: string }
 export type RequestResolution = { id: string; evidenceId: string; quote: string }
 export type RequestLedger = { open: OpenRequest[]; resolved: RequestResolution[] }
@@ -26,7 +33,7 @@ export function mergeRequestLedger(previous: RequestLedger, value: unknown,
     const source = typeof item?.id === 'string' ? sources.get(item.id) : undefined
     if (!source || source.role !== 'user' || !source.text.trim() ||
       typeof item.request !== 'string' || !item.request.trim() || Array.from(item.request).length > 280) {
-      throw new Error('Summary work item has no valid user-message source')
+      throw new InvalidRequestSourceError()
     }
     // Reopening requires an explicit model update, never a lost list entry.
     open.set(item.id, { id: item.id, request: item.request.trim(), sourceText: source.text })
@@ -36,7 +43,10 @@ export function mergeRequestLedger(previous: RequestLedger, value: unknown,
     const source = typeof item?.evidenceId === 'string' ? sources.get(item.evidenceId) : undefined
     if ((!open.has(item?.id) && !resolved.has(item?.id)) || !source || !['user', 'assistant'].includes(source.role) ||
       typeof item.quote !== 'string' || !item.quote.trim() || !source.text.includes(item.quote)) {
-      throw new Error('Summary work-item resolution has no visible completion evidence')
+      // Reject this completion claim, not the entire verified summary fragment.
+      // An unsupported resolution must never remove or rewrite an open item;
+      // earlier checkpoints and other independently valid updates remain usable.
+      continue
     }
     open.delete(item.id)
     resolved.set(item.id, { id: item.id, evidenceId: item.evidenceId, quote: item.quote })

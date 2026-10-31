@@ -633,3 +633,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Search when external evidence is needed](2026-10-31-search-when-evidence-is-needed.md) — Versioned search criteria with existing tool permissions.
 
 - [Personal build feature profile](2026-10-31-personal-build-feature-profile.md) — Keep cumulative Personal runtime features enabled in one build command.
+
+- [Unsupported summary resolutions](2026-10-31-reject-unsupported-summary-resolutions.md) — Retain open requests while continuing valid summary fragments.
+
+- [Pinned historical summary placement](2026-11-01-pin-summary-after-retained-dialogue.md) — Retained dialogue, fixed summary, then appended new turns.
