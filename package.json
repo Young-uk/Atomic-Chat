@@ -14,6 +14,7 @@
     "ios": "yarn tauri ios dev",
     "android": "yarn tauri android dev",
     "build": "yarn build:web && yarn build:tauri",
+    "build:personal": "cross-env VITE_PERSONAL_BUILD=true VITE_DSTAR_APPEND_EFFORT=true VITE_DSTAR_BACKGROUND_COMPACTION=true ATOMIC_DSTAR_SUMMARY_TEST=true tauri build --no-bundle",
     "build:macos:notarized": "bash scripts/macos-build-signed-notarized.sh",
     "clean:dev-cache": "bash scripts/clean-dev-cache.sh",
     "test": "vitest run",

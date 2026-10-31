@@ -80,3 +80,17 @@ it('upgrades preamble policy only at a new turn and persists the version through
   const restored = replayDstarToolSnapshots([{ ...next, metadata: undefined }], JSON.parse(JSON.stringify([next])))
   expect(withDstarToolUpdates(restored)[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v2' }])
 })
+
+
+it('adds search criteria after v2 without rewriting its cached prefix or replay version', () => {
+  const old = turn('old-v2', [schema])
+  old.metadata = { ...old.metadata, [DSTAR_TOOL_PREAMBLE_METADATA]: 'v2' }
+  const next = turn('new-v3', [schema])
+  next.metadata = { ...next.metadata, [DSTAR_TOOL_PREAMBLE_METADATA]: 'v3' }
+  const prefix = withDstarToolUpdates([old])
+  const wire = withDstarToolUpdates([old, next, { ...next, id: 'later-v3' }])
+  expect(wire.slice(0, prefix.length)).toEqual(prefix)
+  expect(wire.filter(m => m.parts.some(p => p.type === 'text' && p.text === 'atomic-tool-preamble:v3'))).toHaveLength(1)
+  const restored = replayDstarToolSnapshots([{ ...next, metadata: undefined }], JSON.parse(JSON.stringify([next])))
+  expect(withDstarToolUpdates(restored)[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v3' }])
+})

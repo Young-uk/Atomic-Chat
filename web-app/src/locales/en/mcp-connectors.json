@@ -43,7 +43,8 @@
     "firecrawlApiKey": "Firecrawl API key",
     "perplexityApiKey": "Perplexity API key",
     "zapierToken": "Zapier MCP token",
-    "resendApiKey": "Resend API key"
+    "resendApiKey": "Resend API key",
+    "tavilyApiKey": "Tavily API key"
   },
   "toast": {
     "connected": "{{name}} connected"
@@ -70,7 +71,8 @@
     "perplexity": "Real-time web research with cited answers from Perplexity.",
     "zapier": "Run actions across thousands of apps through your Zapier MCP server.",
     "resend": "Send transactional emails through the Resend API.",
-    "shopify-dev": "Shopify developer docs and GraphQL schemas for building apps."
+    "shopify-dev": "Shopify developer docs and GraphQL schemas for building apps.",
+    "tavily": "Search the web and read page content with Tavily. Requires your own API key."
   },
   "taglines": {
     "exa": "Web search",
@@ -94,6 +96,7 @@
     "zapier": "App automations",
     "resend": "Transactional email",
     "shopify-dev": "Shopify dev docs",
-    "github": "Repos & pull requests"
+    "github": "Repos & pull requests",
+    "tavily": "Web search and extraction"
   }
 }

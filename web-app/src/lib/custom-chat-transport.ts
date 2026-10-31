@@ -1319,7 +1319,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const snapshot = stored?.metadata?.[DSTAR_TOOLS_METADATA] ??
           (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOLS_METADATA]
         const tools = isToolSnapshot(snapshot) ? snapshot : stableToolJson(toOpenAiTools(activeTools))
-        const preamble = !isToolSnapshot(snapshot) ? 'v2' :
+        const preamble = !isToolSnapshot(snapshot) ? 'v3' :
           stored?.metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] ??
           (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOL_PREAMBLE_METADATA]
         if (stored && !isToolSnapshot(snapshot)) {

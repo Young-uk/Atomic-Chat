@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { findWebSearchServer, isWebSearchEnabled } from '../web-search'
+import { findWebSearchServer, isWebSearchEnabled, isWebSearchServer } from '../web-search'
 
 const http = (url: string, active = false) => ({
   command: '',
@@ -75,4 +75,10 @@ describe('web search availability shared with agent requests', () => {
       )
     ).toBe(false)
   })
+})
+
+
+it('recognizes renamed Tavily endpoints for web search permissions', () => {
+  expect(isWebSearchServer('custom', { command: '', args: [], env: {}, type: 'http', url: 'https://mcp.tavily.com/mcp' })).toBe(true)
+  expect(isWebSearchServer('custom', { command: '', args: [], env: {}, type: 'http', url: 'https://example.com/mcp.tavily.com' })).toBe(false)
 })

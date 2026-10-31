@@ -29,7 +29,7 @@ export function isToolSnapshot(value: unknown): value is string {
  * allowlist; these historical definitions never grant execution permission. */
 export function withDstarToolUpdates(messages: UIMessage[]): UIMessage[] {
   let previous: string | undefined
-  let preambleSent: true | 'v2' | undefined
+  let preambleSent: true | 'v2' | 'v3' | undefined
   const result: UIMessage[] = []
   for (const message of messages) {
     const metadata = message.metadata as Record<string, unknown> | undefined
@@ -44,9 +44,9 @@ export function withDstarToolUpdates(messages: UIMessage[]): UIMessage[] {
       // Versioned policy starts only at a newly recorded turn. Never rewrite
       // historical catalog instructions to add the new behavior retroactively.
       const policy = metadata?.[DSTAR_TOOL_PREAMBLE_METADATA]
-      if ((policy === true || policy === 'v2') && policy !== preambleSent) {
+      if ((policy === true || policy === 'v2' || policy === 'v3') && policy !== preambleSent) {
         result.push({ id: `atomic-tool-preamble-${message.id}`, role: 'system',
-          parts: [{ type: 'text', text: policy === 'v2' ? 'atomic-tool-preamble:v2' : 'atomic-tool-preamble:v1' }] })
+          parts: [{ type: 'text', text: policy === true ? 'atomic-tool-preamble:v1' : `atomic-tool-preamble:${policy}` }] })
         preambleSent = policy
       }
     }
@@ -66,7 +66,7 @@ export function replayDstarToolSnapshots(
     const tools = metadata?.[DSTAR_TOOLS_METADATA]
     return isToolSnapshot(tools)
       ? { ...message, metadata: { ...(message.metadata as Record<string, unknown>), [DSTAR_TOOLS_METADATA]: tools,
-          ...((metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true || metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === 'v2') ? { [DSTAR_TOOL_PREAMBLE_METADATA]: metadata[DSTAR_TOOL_PREAMBLE_METADATA] } : {}) } }
+          ...((metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === true || metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === 'v2' || metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] === 'v3') ? { [DSTAR_TOOL_PREAMBLE_METADATA]: metadata[DSTAR_TOOL_PREAMBLE_METADATA] } : {}) } }
       : message
   })
 }

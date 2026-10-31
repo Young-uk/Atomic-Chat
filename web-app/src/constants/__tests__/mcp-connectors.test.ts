@@ -218,3 +218,14 @@ describe('locale hygiene', () => {
     }
   })
 })
+
+
+it('connects Tavily using a header key without modifying the shared template', async () => {
+  const tavily = MCP_CONNECTORS.find(c => c.serverKey === 'tavily')!
+  const config = await buildConnectorConfig(tavily, '  test-only-key  ')
+  expect(config.url).toBe('https://mcp.tavily.com/mcp')
+  expect(config.headers?.Authorization).toBe('Bearer test-only-key')
+  expect(tavily.config.headers?.Authorization).toBeUndefined()
+  expect(config.url).not.toContain('test-only-key')
+  expect(findInstalledServer(tavily, { custom: config })?.key).toBe('custom')
+})

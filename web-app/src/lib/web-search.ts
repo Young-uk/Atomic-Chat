@@ -28,7 +28,10 @@ const knownKeyRank = (key: string) => {
 
 export const isWebSearchServer = (key: string, config: MCPServerConfig) =>
   KNOWN_WEB_SEARCH_KEYS.includes(normalizeKey(key)) ||
-  (config.url ?? '').includes('exa.ai')
+  (config.url ?? '').includes('exa.ai') ||
+  (() => {
+    try { return new URL(config.url ?? '').hostname === 'mcp.tavily.com' } catch { return false }
+  })()
 
 /**
  * Pick the server the globe button in the composer drives. An already active

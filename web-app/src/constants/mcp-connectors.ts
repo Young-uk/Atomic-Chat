@@ -110,6 +110,31 @@ export const MCP_CONNECTORS: MCPConnector[] = [
     },
   },
   {
+    serverKey: 'tavily',
+    name: 'Tavily',
+    author: 'Tavily',
+    descriptionKey: 'mcp-connectors:descriptions.tavily',
+    taglineKey: 'mcp-connectors:taglines.tavily',
+    icon: { bg: '#2563eb' },
+    docsUrl: 'https://docs.tavily.com/documentation/mcp',
+    matchUrls: ['mcp.tavily.com'],
+    config: {
+      type: 'http',
+      url: 'https://mcp.tavily.com/mcp',
+      command: '',
+      args: [],
+      env: {},
+    },
+    // Keep credentials out of the URL, history and model-visible tool schema.
+    secret: {
+      kind: 'header',
+      key: 'Authorization',
+      labelKey: 'mcp-connectors:secrets.tavilyApiKey',
+      placeholder: 'tvly-…',
+      format: (value) => `Bearer ${value}`,
+    },
+  },
+  {
     serverKey: 'atomicmail',
     name: 'Atomic Mail',
     author: 'Atomic Mail',

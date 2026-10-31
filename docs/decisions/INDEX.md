@@ -629,3 +629,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Repack and checkpoint summary memory](2026-10-31-repack-and-checkpoint-summary-memory.md) — bounded cumulative-memory repacking and durable resume.
 
 - [Preserve open work and tool follow-through](2026-10-31-preserve-open-work-and-tool-followthrough.md)
+
+- [Search when external evidence is needed](2026-10-31-search-when-evidence-is-needed.md) — Versioned search criteria with existing tool permissions.
+
+- [Personal build feature profile](2026-10-31-personal-build-feature-profile.md) — Keep cumulative Personal runtime features enabled in one build command.
