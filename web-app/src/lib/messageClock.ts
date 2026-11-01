@@ -5,7 +5,13 @@ export type MessageClockOptions = {
   include_time?: boolean
 }
 
-export type MessageClock = { date?: string; time?: string }
+export type MessageClock = {
+  date?: string
+  time?: string
+  format?: 2
+  timeZone?: string
+  utcOffsetMinutes?: number
+}
 
 /** Capture once at send time. Never rewrite historical message text or clocks. */
 export function captureMessageClock(
@@ -18,7 +24,17 @@ export function captureMessageClock(
     clock.date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   if (options?.include_time)
     clock.time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
-  return clock.date || clock.time ? clock : undefined
+  if (!clock.date && !clock.time) return undefined
+  // Version only newly captured clocks. Historical wire text must stay byte
+  // identical, including when an old conversation is replayed after an upgrade.
+  clock.format = 2
+  clock.utcOffsetMinutes = -now.getTimezoneOffset()
+  try {
+    clock.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    // The captured numeric offset still identifies local time without Intl.
+  }
+  return clock
 }
 
 /** Only explicit app metadata is rendered; never parse date-looking user text. */
@@ -43,7 +59,17 @@ export function readMessageClock(metadata: unknown): MessageClock | undefined {
     /^\d{2}:\d{2}:\d{2}$/.test(value.time)
       ? value.time
       : undefined
-  return date || time ? { date, time } : undefined
+  if (!date && !time) return undefined
+  const clock: MessageClock = { date, time }
+  if ('format' in value && value.format === 2 &&
+    'utcOffsetMinutes' in value && typeof value.utcOffsetMinutes === 'number' &&
+    Number.isInteger(value.utcOffsetMinutes) && Math.abs(value.utcOffsetMinutes) <= 840) {
+    clock.format = 2
+    clock.utcOffsetMinutes = value.utcOffsetMinutes
+    if ('timeZone' in value && typeof value.timeZone === 'string' &&
+      /^[A-Za-z0-9_+/-]{1,80}$/.test(value.timeZone)) clock.timeZone = value.timeZone
+  }
+  return clock
 }
 
 export function messageClockLabel(metadata: unknown): string | undefined {
@@ -62,6 +88,13 @@ export function prependStoredMessageClock(
     clock.date && `Date: ${clock.date}`,
     clock.time && `Time: ${clock.time}`,
   ].filter(Boolean)
+  if (clock.format === 2) {
+    const offset = clock.utcOffsetMinutes ?? 0
+    const absolute = Math.abs(offset)
+    const zone = `UTC${offset >= 0 ? '+' : '-'}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`
+    fields.push(`Time zone: ${clock.timeZone ? `${clock.timeZone} (${zone})` : zone}`)
+    return `[Message sent at | ${fields.join(' | ')}]\nTime reference: Use the latest user message timestamp as the reference for this request. Earlier message timestamps are historical; web-page publication times are source dates, not the current time. Do not combine a date from one message with a time from another. This timestamp stays fixed while tools run and is not a live clock.\n${text}`
+  }
   return `[${fields.join(' | ')}]\n${text}`
 }
 

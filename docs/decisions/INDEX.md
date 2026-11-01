@@ -641,3 +641,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Pinned historical summary placement](2026-11-01-pin-summary-after-retained-dialogue.md) — Retained dialogue, fixed summary, then appended new turns.
 
 - [2026-11-01 — Key Qwen tool frontiers by rendered client history](2026-11-01-qwen-tool-replay-cache-key.md)
+
+- [2026-11-02 — Freeze explicit time references on newly sent messages](2026-11-02-freeze-explicit-message-time-reference.md)

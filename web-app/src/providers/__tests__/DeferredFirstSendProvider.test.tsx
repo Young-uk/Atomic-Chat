@@ -167,7 +167,7 @@ describe('DeferredFirstSendProvider', () => {
     const persisted = mocks.addMessage.mock.calls[0][0]
     const sent = mocks.sendMessage.mock.calls[0][0]
     expect(persisted.content[0].text.value).toBe('Queued prompt')
-    expect(persisted.metadata.message_clock).toEqual({
+    expect(persisted.metadata.message_clock).toMatchObject({
       date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       time: expect.stringMatching(/^\d{2}:\d{2}:\d{2}$/),
     })

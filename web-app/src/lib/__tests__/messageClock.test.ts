@@ -27,10 +27,9 @@ describe('separate persisted message clocks', () => {
     'date=%s/time=%s is model-only context',
     (include_date, include_time, expected, wire) => {
       const clock = captureMessageClock({ include_date, include_time }, now)
-      expect(clock).toEqual(expected)
-      expect(prependStoredMessageClock('hello', { message_clock: clock })).toBe(
-        wire
-      )
+      expect(clock).toEqual(expected ? { ...expected, format: 2, timeZone: expect.any(String), utcOffsetMinutes: -now.getTimezoneOffset() } : undefined)
+      expect(prependStoredMessageClock('hello', { message_clock: expected })).toBe(wire)
+      if (clock) expect(prependStoredMessageClock('hello', { message_clock: clock })).toContain('Time reference: Use the latest user message timestamp')
     }
   )
 
@@ -60,7 +59,7 @@ describe('separate persisted message clocks', () => {
     expect(messageClockLabel(second.metadata)).toBe('2026-10-24 00:00:01')
     expect(wire[0].parts[0]).toEqual({
       type: 'text',
-      text: '[Date: 2026-10-23 | Time: 23:59:59]\nfirst',
+      text: prependStoredMessageClock('first', restored.metadata),
     })
     expect(withMessageClocksForModel(ui)).toEqual(wire)
     expect(JSON.stringify(ui)).toBe(snapshot)
@@ -104,7 +103,7 @@ describe('separate persisted message clocks', () => {
     )
     message.metadata = { ...message.metadata, agent_input_text: 'inspect' }
     expect(buildAgentSessionSyncMessages([message])).toEqual([
-      { role: 'user', text: '[Time: 01:37:56]\ninspect' },
+      { role: 'user', text: prependStoredMessageClock('inspect', message.metadata) },
     ])
     const imageOnly: UIMessage = {
       id: 'image',
@@ -120,8 +119,21 @@ describe('separate persisted message clocks', () => {
     }
     expect(withMessageClocksForModel([imageOnly])[0].parts[0]).toEqual({
       type: 'text',
-      text: '[Time: 01:37:56]\n',
+      text: prependStoredMessageClock('', message.metadata),
     })
+  })
+
+  it('pins the reference and timezone across tool results, midnight and later turns', () => {
+    const metadata = { message_clock: { format: 2, date: '2026-11-02', time: '02:10:37', timeZone: 'Asia/Seoul', utcOffsetMinutes: 540 } }
+    const first: UIMessage = { id: 'first', role: 'user', metadata, parts: [{ type: 'text', text: 'Tomorrow?' }] }
+    const wire = withMessageClocksForModel([first])
+    expect(wire[0].parts[0]).toEqual({ type: 'text', text: '[Message sent at | Date: 2026-11-02 | Time: 02:10:37 | Time zone: Asia/Seoul (UTC+09:00)]\nTime reference: Use the latest user message timestamp as the reference for this request. Earlier message timestamps are historical; web-page publication times are source dates, not the current time. Do not combine a date from one message with a time from another. This timestamp stays fixed while tools run and is not a live clock.\nTomorrow?' })
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-03T15:00:00Z'))
+    const later: UIMessage = { id: 'later', role: 'user', metadata: { message_clock: { ...metadata.message_clock, date: '2026-11-04' } }, parts: [{ type: 'text', text: 'Again' }] }
+    expect(withMessageClocksForModel([first, later])[0]).toEqual(wire[0])
+    expect(withMessageClocksForModel(JSON.parse(JSON.stringify([first, later])))[0]).toEqual(wire[0])
+    expect(first.parts[0]).toEqual({ type: 'text', text: 'Tomorrow?' })
   })
 
   it('ignores malformed metadata and clocks on assistant messages', () => {
