@@ -96,6 +96,8 @@ decision is reversed, add a new one that says which record it supersedes.
 
 ## Agent mode — autonomous loop, tools, skills, workspace (53)
 
+- **2026-11-01** — [Personal Chat agent capabilities through a bounded MCP worker](2026-11-01-personal-chat-agent-tools.md)
+
 - **2026-10-20** — [Always offer chat commands, with no Run commands switch](2026-10-20-always-offer-chat-commands-without-a-switch.md)
 - **2026-10-17** — [Confine a secure project's commands to its folders with MXC](2026-10-17-confine-secure-projects-commands-to-their-folders-with-mxc.md)
 - **2026-10-15** — [Grant directory enumeration and decode Windows chat output](2026-10-15-fix-windows-chat-directory-enumeration-and-output.md)
@@ -637,3 +639,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Unsupported summary resolutions](2026-10-31-reject-unsupported-summary-resolutions.md) — Retain open requests while continuing valid summary fragments.
 
 - [Pinned historical summary placement](2026-11-01-pin-summary-after-retained-dialogue.md) — Retained dialogue, fixed summary, then appended new turns.
+
+- [2026-11-01 — Key Qwen tool frontiers by rendered client history](2026-11-01-qwen-tool-replay-cache-key.md)

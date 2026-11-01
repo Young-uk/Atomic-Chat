@@ -454,7 +454,11 @@ typecheck:
 test-telemetry-props:
 	node scripts/check-telemetry-props.mjs
 
+test-personal-tools:
+	node --test scripts/personal-agent-tools/*.test.mjs
+
 verify-fast:
+	"$(MAKE)" test-personal-tools
 	yarn lint
 	"$(MAKE)" typecheck
 	"$(MAKE)" test-telemetry-props

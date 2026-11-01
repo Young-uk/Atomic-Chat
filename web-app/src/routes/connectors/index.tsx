@@ -12,6 +12,7 @@ import {
 } from '@/constants/mcp-connectors'
 import HeaderPage from '@/containers/HeaderPage'
 import { Card, CardItem } from '@/containers/Card'
+import { PersonalToolsPanel } from '@/containers/connectors/PersonalToolsPanel'
 import { ConnectorCard } from '@/containers/connectors/ConnectorCard'
 import AddEditMCPServer from '@/containers/dialogs/AddEditMCPServer'
 import ConnectorSecretDialog from '@/containers/dialogs/ConnectorSecretDialog'
@@ -488,6 +489,7 @@ function ConnectorsPage() {
         </HeaderPage>
         <div className="h-[calc(100%-var(--page-header-height))] overflow-y-auto p-4 pt-0">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pt-4">
+            {import.meta.env.VITE_PERSONAL_BUILD === 'true' && mcpServers['atomic-personal-tools']?.active && <PersonalToolsPanel />}
             <section className="flex flex-col gap-3">
               <div>
                 <h1 className="font-studio text-lg font-medium text-foreground">

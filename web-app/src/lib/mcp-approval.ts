@@ -1,3 +1,4 @@
+import { useMCPServers } from '@/hooks/useMCPServers'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { useToolApproval } from '@/hooks/useToolApproval'
 import { offeredChatExecToolNames } from '@/lib/chat-exec-tools'
@@ -38,7 +39,9 @@ export function approveChatToolCall(
   threadId: string,
   input: object
 ): Promise<boolean> {
-  const autoApprove = offeredChatExecToolNames().has(toolName)
+  // Personal desktop tools can manipulate windows, browser sessions and
+  // persistent memory. The global MCP switch must not grant those rights.
+  const autoApprove = (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
     ? resolveExecAutoApprove(threadId)
     : resolveMcpAutoApprove(threadId)
   return autoApprove
@@ -46,4 +49,10 @@ export function approveChatToolCall(
     : useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
         bypassGlobalAutoApprove: true,
       })
+}
+
+/** Agent IPC has a turn-wide MCP flag; keep it manual when desktop tools are connected. */
+export function resolveAgentMcpAutoApprove(threadId: string): boolean {
+  if (useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) return resolveExecAutoApprove(threadId)
+  return resolveMcpAutoApprove(threadId)
 }

@@ -140,7 +140,7 @@ import { LinkifiedText } from '@/components/LinkifiedText'
 import { IconAlertCircle, IconRefresh } from '@tabler/icons-react'
 import {
   approveChatToolCall,
-  resolveMcpAutoApprove,
+  resolveAgentMcpAutoApprove,
 } from '@/lib/mcp-approval'
 import {
   offeredChatExecToolNames,
@@ -1235,7 +1235,7 @@ function ThreadDetail() {
               useToolAvailable.getState().getMutedServersForThread(threadId)
             ),
             mcp_enabled: true,
-            auto_approve_mcp: resolveMcpAutoApprove(threadId),
+            auto_approve_mcp: resolveAgentMcpAutoApprove(threadId),
             disabled_mcp_tools: useToolAvailable
               .getState()
               .getDisabledToolsForThread(threadId),

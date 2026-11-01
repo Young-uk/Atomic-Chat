@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useMCPServers } from '@/hooks/useMCPServers'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { useChatExecStatus } from '@/hooks/useChatExecStatus'
 import { useToolApproval } from '@/hooks/useToolApproval'
 import {
   approveChatToolCall,
   resolveExecAutoApprove,
+  resolveAgentMcpAutoApprove,
   resolveMcpAutoApprove,
 } from '@/lib/mcp-approval'
 
@@ -91,6 +93,12 @@ describe('approveChatToolCall', () => {
     expect(showApprovalModal).not.toHaveBeenCalled()
   })
 
+  it('requires explicit approval for personal desktop tools despite the global MCP switch', async () => {
+    showApprovalModal.mockResolvedValueOnce(false)
+    expect(await approveChatToolCall('personal_browser', 't1', { action: 'click' })).toBe(false)
+    expect(showApprovalModal).toHaveBeenCalledWith('personal_browser', 't1', { action: 'click' }, { bypassGlobalAutoApprove: true })
+  })
+
   it('keeps the MCP rule for every other tool', async () => {
     await expect(approveChatToolCall('search', 't1', {})).resolves.toBe(true)
     expect(showApprovalModal).not.toHaveBeenCalled()
@@ -103,5 +111,17 @@ describe('approveChatToolCall', () => {
       true
     )
     expect(showApprovalModal).not.toHaveBeenCalled()
+  })
+})
+
+describe('Agent personal-tool approval', () => {
+  afterEach(() => useMCPServers.setState({ mcpServers: {} }))
+  it('does not let the global MCP switch approve desktop tools in Agent IPC', () => {
+    useAgentMode.setState({ approvalModes: {} })
+    useToolApproval.setState({ allowAllMCPPermissions: true })
+    useMCPServers.setState({ mcpServers: { 'atomic-personal-tools': { active: true, command: 'node', args: [], env: {} } } })
+    expect(resolveAgentMcpAutoApprove('t1')).toBe(false)
+    useAgentMode.setState({ approvalModes: { t1: 'skip' } })
+    expect(resolveAgentMcpAutoApprove('t1')).toBe(true)
   })
 })

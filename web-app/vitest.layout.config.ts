@@ -86,7 +86,8 @@ export default defineConfig({
       enabled: true,
       provider: 'playwright',
       headless: true,
-      instances: [{ browser: 'chromium' }],
+      // Local QA can reuse installed Chrome when the test browser cache is absent.
+      instances: [{ browser: 'chromium', ...(process.env.ATOMIC_LAYOUT_CHROME === '1' ? { launch: { channel: 'chrome' } } : {}) }],
       // The app's default desktop window, wide enough that `sm:` applies.
       viewport: { width: 1280, height: 800 },
       // A failing layout assertion already says which pixel is off; the

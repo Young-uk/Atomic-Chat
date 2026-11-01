@@ -13714,6 +13714,7 @@ __metadata:
     cross-env: "npm:^7.0.3"
     husky: "npm:^9.1.5"
     jsdom: "npm:^26.1.0"
+    playwright-core: "npm:1.59.1"
     rimraf: "npm:^3.0.2"
     run-script-os: "npm:^1.1.6"
     tar: "npm:^4.4.19"
@@ -16690,6 +16691,15 @@ __metadata:
     mlly: "npm:^1.7.4"
     pathe: "npm:^2.0.1"
   checksum: 10c0/19e6cb8b66dcc66c89f2344aecfa47f2431c988cfa3366bdfdcfb1dd6695f87dcce37fbd90fe9d1605e2f4440b77f391e83c23255347c35cf84e7fd774d7fcea
+  languageName: node
+  linkType: hard
+
+"playwright-core@npm:1.59.1":
+  version: 1.59.1
+  resolution: "playwright-core@npm:1.59.1"
+  bin:
+    playwright-core: cli.js
+  checksum: 10c0/d41a74d9681ce3beb3d5239e9ed577710b4ad099a6ca2476219c6599d51e9cb4b80bd72ed82c528da6a5d929c18ae3b872cf02bb83f78fa1c2cb9199c501abee
   languageName: node
   linkType: hard
 

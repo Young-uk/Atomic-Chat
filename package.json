@@ -86,5 +86,8 @@
     "@types/react": "19.1.2",
     "@types/react-dom": "19.1.2"
   },
-  "packageManager": "yarn@4.5.3"
+  "packageManager": "yarn@4.5.3",
+  "dependencies": {
+    "playwright-core": "1.59.1"
+  }
 }
