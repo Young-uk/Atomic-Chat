@@ -52,6 +52,22 @@ function describeExecCall(
   }
 }
 
+/** Descriptions come from known adapter operations, never a model-written
+ * permission explanation. Unknown operations retain the raw parameter view. */
+function describeNativeCall(toolName: string, parameters: object | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string) {
+  if (toolName !== 'personal_native') return null
+  const args = (parameters ?? {}) as Record<string, unknown>
+  const action = args.action
+  if (!['catalog', 'describe', 'inspect', 'run', 'confirm'].includes(String(action))) return null
+  const target = action === 'confirm' ? args.nativeTool : action === 'inspect' ? args.pendingId : args.name
+  return {
+    title: t(`tools:toolApproval.native.${action}Title`),
+    description: t(`tools:toolApproval.native.${action}Description`),
+    target: typeof target === 'string' ? target : undefined,
+  }
+}
+
 function sandboxNotice(
   secure: SecureEnvironment | undefined,
   t: (key: string, options?: Record<string, unknown>) => string
@@ -92,6 +108,7 @@ export default function ToolApproval() {
 
   const { toolName, threadId, toolParameters, onApprove, onDeny } = modalProps
   const exec = describeExecCall(toolName, toolParameters, t)
+  const native = describeNativeCall(toolName, toolParameters, t)
   const secure = exec ? secureEnvironmentForThread(threadId) : undefined
 
   const handleAllowOnce = () => {
@@ -116,7 +133,7 @@ export default function ToolApproval() {
   return (
     <Dialog open={isModalOpen} onOpenChange={handleDialogOpen}>
       <DialogContent
-        className="sm:max-w-lg lg:max-w-lg xl:max-w-lg"
+        className="sm:max-w-lg lg:max-w-lg xl:max-w-lg max-h-[90vh] overflow-y-auto"
         showCloseButton={false}
       >
         <DialogHeader>
@@ -124,13 +141,15 @@ export default function ToolApproval() {
             <div className="shrink-0 text-muted-foreground">
               <AlertTriangle className="size-4" />
             </div>
-            <div>
+            <div className="min-w-0 break-words">
               <DialogTitle>
-                {exec ? exec.title : t('tools:toolApproval.title')}
+                {exec ? exec.title : native ? native.title : t('tools:toolApproval.title')}
               </DialogTitle>
               <DialogDescription className="mt-1 text-muted-foreground">
                 {exec ? (
                   t('tools:toolApproval.exec.description')
+                ) : native ? (
+                  native.description
                 ) : (
                   <>
                     {t('tools:toolApproval.description')}{' '}
@@ -145,6 +164,18 @@ export default function ToolApproval() {
           </div>
         </DialogHeader>
 
+        {native && (
+          <div className="min-w-0 rounded-lg border p-3 text-sm break-words">
+            {native.target && <p className="whitespace-pre-wrap break-all">
+              <span className="font-medium">{t('tools:toolApproval.native.target')}: </span>{native.target}
+            </p>}
+            <p className="text-muted-foreground">{t('tools:toolApproval.permissionScope')}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t('tools:toolApproval.native.threadScope')}
+            </p>
+          </div>
+        )}
+
         {exec && (
           <pre
             data-testid="exec-approval-source"
@@ -155,12 +186,12 @@ export default function ToolApproval() {
         )}
 
         {!exec && toolParameters && Object.keys(toolParameters).length > 0 && (
-          <div className="bg-background p-2 border rounded-lg overflow-x-scroll">
+          <div className="min-w-0 bg-background p-2 border rounded-lg">
             <h4 className="text-sm font-medium mb-2">
               {t('tools:toolApproval.parameters')}
             </h4>
             <div className="relative bg-secondary rounded-md p-2 text-sm font-mono border overflow-x-auto">
-              <pre className="whitespace-pre-wrap">
+              <pre className="whitespace-pre-wrap break-all">
                 {JSON.stringify(toolParameters, null, 2)}
               </pre>
             </div>

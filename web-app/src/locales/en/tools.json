@@ -19,6 +19,20 @@
       "secureFolderEditable": "{{path}} — can change",
       "secureFolderReadOnly": "{{path}} — read only",
       "secureOffline": "No internet access."
+    },
+    "native": {
+      "catalogTitle": "View available tools?",
+      "catalogDescription": "Lists tool names, descriptions and availability. This does not read file contents, change files or run commands.",
+      "describeTitle": "View a tool’s instructions?",
+      "describeDescription": "Shows the selected tool’s description and accepted parameters. It does not execute that tool.",
+      "inspectTitle": "View a pending action?",
+      "inspectDescription": "Shows a stored action awaiting approval. It does not execute the action.",
+      "runTitle": "Request a native tool action?",
+      "runDescription": "Requests the tool shown below with the supplied parameters. Actions requiring a separate confirmation will be shown before execution.",
+      "confirmTitle": "Approve this stored action?",
+      "confirmDescription": "Executes the pending action shown below using its stored arguments. Review the target and parameters before allowing it.",
+      "target": "Target",
+      "threadScope": "Allow Once covers this request. Allow in thread remembers access to Personal native tools in this chat; stored action confirmations still require separate approval."
     }
   }
 }

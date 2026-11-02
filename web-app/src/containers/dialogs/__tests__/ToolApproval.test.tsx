@@ -100,3 +100,26 @@ describe('ToolApproval for commands and scripts', () => {
     expect(screen.queryByTestId('exec-approval-source')).not.toBeInTheDocument()
   })
 })
+
+
+describe('Personal native approval descriptions', () => {
+  it('explains catalog discovery without suggesting file or command execution', () => {
+    open('personal_native', { action: 'catalog' })
+    expect(screen.getByText('tools:toolApproval.native.catalogTitle')).toBeInTheDocument()
+    expect(screen.getByText('tools:toolApproval.native.catalogDescription')).toBeInTheDocument()
+    expect(screen.getByText('tools:toolApproval.native.threadScope')).toBeInTheDocument()
+    expect(screen.getByText(/"action": "catalog"/)).toBeInTheDocument()
+  })
+  it('shows the actual native tool for a stored confirmation', () => {
+    open('personal_native', { action: 'confirm', nativeTool: 'os.fs.write', arguments: { path: '/long/path/file.txt' }, approval: { reason: 'write file' } })
+    expect(screen.getByText('tools:toolApproval.native.confirmTitle')).toBeInTheDocument()
+    expect(screen.getByText('os.fs.write')).toBeInTheDocument()
+    expect(screen.getByText(/long\/path\/file.txt/)).toBeInTheDocument()
+    expect(screen.queryByText('tools:toolApproval.native.catalogDescription')).not.toBeInTheDocument()
+  })
+  it('does not describe an unknown operation as harmless discovery', () => {
+    open('personal_native', { action: 'unknown' })
+    expect(screen.getByText('tools:toolApproval.title')).toBeInTheDocument()
+    expect(screen.queryByText('tools:toolApproval.native.catalogDescription')).not.toBeInTheDocument()
+  })
+})

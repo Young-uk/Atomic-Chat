@@ -7,6 +7,20 @@
     "allowOnce": "한 번 허용",
     "alwaysAllow": "스레드에서 허용",
     "parameters": "도구 매개변수",
-    "permissionScope": "부여된 권한은 이 대화에만 적용됩니다."
+    "permissionScope": "부여된 권한은 이 대화에만 적용됩니다.",
+    "native": {
+      "catalogTitle": "사용 가능한 도구 목록을 조회할까요?",
+      "catalogDescription": "도구 이름, 설명, 사용 가능 여부를 조회합니다. 파일 내용을 읽거나 변경하지 않으며 명령을 실행하지 않습니다.",
+      "describeTitle": "도구 사용 방법을 조회할까요?",
+      "describeDescription": "선택한 도구의 설명과 입력 항목을 조회합니다. 해당 도구를 실행하지 않습니다.",
+      "inspectTitle": "승인 대기 중인 작업을 조회할까요?",
+      "inspectDescription": "저장된 승인 대기 작업을 조회합니다. 작업을 실행하지 않습니다.",
+      "runTitle": "아래 도구에 작업을 요청할까요?",
+      "runDescription": "아래 도구와 매개변수로 작업을 요청합니다. 별도 확인이 필요한 작업은 실행 전에 다시 표시됩니다.",
+      "confirmTitle": "저장된 작업을 실행할까요?",
+      "confirmDescription": "아래 승인 대기 작업을 저장된 매개변수로 실행합니다. 허용하기 전에 대상과 매개변수를 확인하세요.",
+      "target": "대상",
+      "threadScope": "한 번 허용은 이번 요청에만 적용됩니다. 대화에서 허용하면 이 대화의 Personal 기본 도구 접근을 기억하며, 저장된 작업 실행은 별도 승인을 받습니다."
+    }
   }
 }
