@@ -52,7 +52,7 @@ export async function searchConversationArchive(threadId: string, query: string)
   return [...hits.values()].sort((a, b) => b.score - a.score).slice(0, 6)
 }
 
-export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
+export function summarizeWithDstar(baseUrl: string, model: string, options?: { tokenCounting?: boolean }): Summarize {
   return async (previous, evidence, signal, progress, checkpoints) => {
     // Bound serialized UTF-8 bytes rather than characters: byte-level tokenizers
     // cannot exceed this evidence budget, even for multilingual or escaped JSON.
@@ -60,7 +60,25 @@ export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
     // output allowance before filling input in the 8K slot. UTF-8 byte counts are
     // a conservative input-token upper bound for this byte-level tokenizer.
     const bytes = (value: string) => new TextEncoder().encode(value).length
-    const inputLimit = 8192 - 512 - 2048
+    // New servers count the exact rendered prompt. Legacy servers keep the
+    // byte upper bound above; never assume a larger slot without capability.
+    const tokenCounting = options?.tokenCounting === true
+    const inputLimit = tokenCounting ? 16384 - 1024 - 2048 : 8192 - 512 - 2048
+    const fits = async (system: string, content: string, reserve = 0): Promise<boolean> => {
+      signal.throwIfAborted()
+      if (!tokenCounting) return bytes(system) + bytes(content) <= inputLimit - reserve
+      const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
+        method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, atomic_summary: true, think: false, max_tokens: 2048,
+          messages: [{ role: 'system', content: system }, { role: 'user', content }] }),
+      })
+      if (!response.ok) throw new Error(`Summary token counting failed (${response.status})`)
+      const counted = await response.json()
+      if (!Number.isSafeInteger(counted.input_tokens) || counted.input_tokens < 1 || counted.context_length !== 16384)
+        throw new Error('Summary token counter returned an incompatible budget')
+      return counted.input_tokens <= inputLimit - reserve
+    }
     const ledgerEnabled = !!checkpoints?.requestSources
     const sources = requestSources(checkpoints?.requestSources ?? [])
     let ledger: RequestLedger = checkpoints?.previousRequests ?? { open: [], resolved: [] }
@@ -107,7 +125,7 @@ export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
           const payload = (length: number) => JSON.stringify({ historicalHandoff: source.slice(start, start + length).join('') })
           while (low < high) {
             const mid = Math.ceil((low + high) / 2)
-            if (bytes(base) + 256 + bytes(payload(mid)) <= inputLimit) low = mid
+            if (await fits(base, payload(mid), 256)) low = mid
             else high = mid - 1
           }
           if (!low) throw new Error('Historical summary repack has no input space')
@@ -115,12 +133,13 @@ export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
           for (let attempt = 0; attempt < 3; attempt++) {
             const instruction = base + (attempt ? ' The previous attempt was too large. Use shorter phrases and omit repeated context; do not add explanations.' : '')
             const inputBytes = bytes(instruction) + bytes(payload(low))
+            if (!(await fits(instruction, payload(low)))) throw new Error('Historical summary repack exceeds input budget')
             const choice = await runIdleSummaryRequest(baseUrl, signal, paused => progress?.(completed, paused), async idleSignal => {
               const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
                 method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]),
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model, atomic_summary: true, stream: false, think: false,
-                  temperature: 0, max_tokens: Math.min(2048, 8192 - 512 - inputBytes), messages: [
+                  temperature: 0, max_tokens: tokenCounting ? 2048 : Math.min(2048, 8192 - 512 - inputBytes), messages: [
                     { role: 'system', content: instruction }, { role: 'user', content: payload(low) },
                   ] }),
               })
@@ -151,7 +170,7 @@ export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
       // Reserve evidence space using the complete serialized envelope. A short
       // prose summary can still overflow once independently retained work items
       // are included; never shrink or discard those items to make room.
-      const memoryLimit = Math.min(3500, 4000 - envelopeBytes('') + bytes(JSON.stringify('')))
+      const memoryLimit = tokenCounting ? 3500 : Math.min(3500, 4000 - envelopeBytes('') + bytes(JSON.stringify('')))
       if (memoryLimit <= bytes(JSON.stringify(''))) throw new Error('Summary work ledger exceeds the bounded input budget')
       if (bytes(JSON.stringify(summary)) > memoryLimit) {
         summary = await repack(summary, memoryLimit)
@@ -161,7 +180,7 @@ export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
       // the last completed summary, halving only this fragment while retaining
       // the same summary guidance. Four attempts bound pathological model behavior.
       let merged = false
-      let fragmentCap = 2400
+      let fragmentCap = tokenCounting ? Math.min(points.length - offset, 16384 * 8) : 2400
       let sourceRepairs = 0
       for (let attempt = 0; attempt < 4; attempt++) {
         signal.throwIfAborted()
@@ -172,15 +191,15 @@ export function summarizeWithDstar(baseUrl: string, model: string): Summarize {
           newEvidence: points.slice(offset, offset + length).join('') })
         while (low < high) {
           const mid = Math.ceil((low + high) / 2)
-          if (bytes(retryInstructions) + bytes(payload(mid)) <= inputLimit) low = mid
+          if (await fits(retryInstructions, payload(mid))) low = mid
           else high = mid - 1
         }
-        if (bytes(retryInstructions) + bytes(payload(low)) > inputLimit || (low === 0 && offset < points.length)) throw new Error('Summary exceeds the bounded evidence budget')
-        const maxOutput = Math.min(2048, 8192 - 512 - bytes(retryInstructions) - bytes(payload(low)))
+        if (!(await fits(retryInstructions, payload(low))) || (low === 0 && offset < points.length)) throw new Error('Summary exceeds the bounded evidence budget')
+        const maxOutput = tokenCounting ? 2048 : Math.min(2048, 8192 - 512 - bytes(retryInstructions) - bytes(payload(low)))
         const requestMerge = async (system: string) => {
           // Repair the same evidence/previous ledger; never silently reduce or
           // advance this fragment merely to bypass source validation.
-          if (bytes(system) + bytes(payload(low)) > inputLimit) throw new Error('Summary source repair exceeds the bounded input budget')
+          if (!(await fits(system, payload(low)))) throw new Error('Summary source repair exceeds the bounded input budget')
           return runIdleSummaryRequest(baseUrl, signal, paused => progress?.(completed, paused), async idleSignal => {
             const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
               method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]),

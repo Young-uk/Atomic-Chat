@@ -648,3 +648,5 @@ decision is reversed, add a new one that says which record it supersedes.
 
 - [2026-11-02 — Deliver scheduled results with captured assistant voice](2026-11-02-deliver-scheduled-results-with-voice-context.md)
 - [Review unfinished tool work without replacing the foreground cache](2026-11-02-review-unfinished-tool-work.md)
+
+- [Size summary fragments by rendered tokens](2026-11-02-size-summary-fragments-by-rendered-tokens.md)

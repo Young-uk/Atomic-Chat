@@ -1311,6 +1311,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     let compaction: ContextCompaction | undefined
     let summaryAfterTurn: ((response: UIMessage) => void) | undefined
     let completionReviewSupported = false
+    let summaryTokenCounting = false
     let compactionContext = 0
     const compactionThread = this.threadId ?? options.chatId
     if (appendOnlyDstar && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && compactionThread !== TEMPORARY_CHAT_ID) {
@@ -1319,6 +1320,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const runtime = await runtimeResponse.json()
         if (runtimeResponse.ok && runtime.atomic_summary_slot === true) {
           completionReviewSupported = runtime.atomic_completion_review === true
+          summaryTokenCounting = runtime.atomic_summary_token_count === true && runtime.atomic_summary_context === 16384
           compactionContext = runtime.data?.find((m: { id: string }) => m.id === modelId)?.context_length ?? 0
           compaction = threadCompactions.get(compactionThread)
           if (!compaction) {
@@ -1394,13 +1396,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
         this.contextRecovery = () => coordinator.recover(original, compactionContext,
-          summarizeWithDstar(provider.base_url!, modelId!), options.abortSignal)
+          summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal)
         summaryAfterTurn = response => {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
           coordinator.schedule(history, compactionContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            summarizeWithDstar(provider.base_url!, modelId!))
+            summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }))
         }
       }
       preparedMessages = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(preparedMessages)))
