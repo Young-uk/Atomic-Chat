@@ -654,3 +654,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Manage persistent Chat tool permissions](2026-11-02-manage-persistent-personal-tool-permissions.md)
 
 - [Wire optional semantic memory and idle consolidation](2026-11-02-wire-optional-semantic-memory-and-idle-consolidation.md)
+
+- [Allow full 64K Personal cache checkpoints](2026-11-03-allow-full-64k-personal-cache-checkpoints.md)

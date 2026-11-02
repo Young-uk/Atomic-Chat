@@ -261,7 +261,8 @@ fn launch(root: &Path, selection: &Selection, port: u16) -> Result<Child, String
         .open(logs.join("atomic-dstar.log"))
         .map_err(|e| e.to_string())?;
     let stderr = log.try_clone().map_err(|e| e.to_string())?;
-    // Keep the existing IQ3 KV directory and 2 GiB disk cap. Other quants get
+    // Keep the existing IQ3 KV directory with a 4 GiB disk cap.
+    // A full 64K checkpoint exceeds 2 GiB; reserve room for it and shared prefixes. Other quants get
     // separate directories; model payloads are never moved or downloaded here.
     let cache = if selection.model == "iq3" {
         root.join("kv-cache-iq3")
@@ -282,7 +283,7 @@ fn launch(root: &Path, selection: &Selection, port: u16) -> Result<Child, String
             "--kv-disk-dir",
         ])
         .arg(cache)
-        .args(["--kv-disk-space-mb", "2048"])
+        .args(["--kv-disk-space-mb", "4096"])
         .current_dir(root)
         .env("DSTAR_MODELS", root.join("models"))
         .env("HOST", "127.0.0.1")

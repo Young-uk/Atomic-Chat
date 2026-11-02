@@ -130,3 +130,7 @@ benchmarks/
 
 # Local copy of the recommendations manifest for `make dev-onboarding-low-spec`.
 web-app/public/dev-recommended.json
+
+# Vendored source for Personal archive tools is not a generated archive.
+!scripts/personal-agent-tools/agent-source/suite/tools/os/archive/
+!scripts/personal-agent-tools/agent-source/suite/tools/os/archive/**
