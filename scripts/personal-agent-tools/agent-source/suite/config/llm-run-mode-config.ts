@@ -1,0 +1,381 @@
+import { ConfigValidationError } from "./config-validation-error.mjs";
+
+/**
+ * Operator-facing run mode. Names *how* a chat runs, not a single model:
+ *
+ * - `local`  — the active provider is a llama-server one; everything
+ *   runs on this machine.
+ * - `cloud`  — the active provider is a cloud one; everything runs there.
+ * - `fusion` — a cloud model orchestrates and several local-model
+ *   workers execute the parts it delegates. See README.md.
+ *
+ * `llm.activeTextProvider` stays authoritative in every mode; this block
+ * is additive (see `resolveRunMode`).
+ */
+export type RunModeName = "local" | "cloud" | "fusion";
+
+/** `llm.runMode.fusion.workerReasoning` — same levels as `ReasoningEffort`. */
+export type FusionWorkerReasoning = "low" | "medium" | "high";
+export const FUSION_WORKER_REASONING_LEVELS: readonly FusionWorkerReasoning[] = [
+  "low",
+  "medium",
+  "high",
+];
+/** Upper bound on `workerMaxOutputTokens`; anything larger is a typo. */
+export const FUSION_WORKER_MAX_OUTPUT_TOKENS_MAX = 1_000_000;
+
+export type UserLlmFusionConfig = {
+  /**
+   * The orchestrator leg. Must name a configured provider whose kind is
+   * NOT `llama-server`. Default: the active provider when it is a cloud
+   * one, else the first cloud provider in `llm.providers`.
+   */
+  orchestratorProvider?: string;
+  /**
+   * Informational pin for the orchestrator model. The wire request
+   * carries no model field — the provider entry's `defaultChatModel` is
+   * what actually serves — so this only overrides what is *displayed*
+   * and priced. Left unset by the TUI.
+   */
+  orchestratorModel?: string;
+  /**
+   * The worker leg. Must name a configured `llama-server` provider.
+   * Default: the first `llama-server` provider in `llm.providers`.
+   */
+  workerProvider?: string;
+  /**
+   * Informational pin for the worker model. The managed daemon serves
+   * whatever `localModels.managed.modelId` names; this only overrides
+   * the label. Left unset by the TUI.
+   */
+  workerModel?: string;
+  /**
+   * Default fan-out width, 1..8. Default 2.
+   *
+   * **Not a ceiling.** The orchestrator sizes each `fusion.delegate`
+   * call itself — it is the party that knows how divisible the job is,
+   * and the `### fusion` guidance tells it what this machine can serve
+   * — so a call that names `maxWorkers` gets the number it asked for.
+   * This value only fills in for a call that named nothing. What still
+   * bounds the width is physical: the task count, and the llama-server
+   * request slots (`localModels.managed.parallel`) on a worker leg with
+   * slot affinity.
+   */
+  workers?: number;
+  /**
+   * Ceiling on the fan-out width when the workers run on a cloud leg,
+   * 1..32. Default 4. A local leg is bounded by its request slots; a
+   * cloud leg has no such limit, only a bill, so an over-ambitious
+   * `maxWorkers` is clamped here and the result says so.
+   */
+  cloudWorkers?: number;
+  /**
+   * Reasoning effort sent with every worker completion, mapped per
+   * provider family (OpenRouter `reasoning.effort`, OpenAI-compatible
+   * `reasoning_effort`). Unset by default: the provider's own default.
+   * A run spent 87 % of its worker output on hidden reasoning and 41K
+   * tokens deciding to read a file; this is the knob for that.
+   */
+  workerReasoning?: FusionWorkerReasoning;
+  /**
+   * Per-step output cap for worker completions, in tokens. Unset by
+   * default (the model's maximum). Keep it above the largest single
+   * write a worker makes (~10K tokens) or it re-creates the 8192 wall.
+   */
+  workerMaxOutputTokens?: number;
+  /** Step ceiling per worker turn. Default 40. */
+  workerMaxSteps?: number;
+  /** Wall-clock ceiling per worker turn, in ms. Default 600 000. */
+  workerTimeoutMs?: number;
+  /**
+   * How many consecutive read-only orchestrator steps without a
+   * `fusion.delegate` count as a stalled review (F41). At N the model
+   * is told once to delegate or reply; at 2N the step admits only
+   * `fusion.delegate`, `reply` and `finish`. Halved (rounded up) when
+   * the turn's message reads as a repair request. `0` disables both.
+   * Default 6. See `src/agent/review-stall.ts`.
+   */
+  reviewStallSteps?: number;
+};
+
+export type UserLlmRunModeConfig = {
+  mode?: RunModeName;
+  fusion?: UserLlmFusionConfig;
+};
+
+export const RUN_MODE_NAMES: readonly RunModeName[] = [
+  "local",
+  "cloud",
+  "fusion",
+];
+
+/** Provider kind that identifies a local (worker-capable) leg. */
+export const LOCAL_PROVIDER_KIND = "llama-server";
+
+export const FUSION_WORKERS_MIN = 1;
+export const FUSION_WORKERS_MAX = 8;
+export const DEFAULT_FUSION_WORKERS = 2;
+export const FUSION_CLOUD_WORKERS_MAX = 32;
+/**
+ * Cloud fan-out cap. Four, not `workers`' two: a seven-task cloud fan-out
+ * took three minutes at full width and would take ten at two, and the
+ * cap exists to stop a runaway forty, not to slow an ordinary fan-out.
+ */
+export const DEFAULT_FUSION_CLOUD_WORKERS = 4;
+export const DEFAULT_FUSION_WORKER_MAX_STEPS = 60;
+/**
+ * How long one worker may take before its leg is cancelled.
+ *
+ * 45 minutes, and both earlier figures were guesses that cut real work
+ * in half. At 600s two of three tasks died; at 1200s a worker that had
+ * already written four of its six files was cancelled mid-run, and
+ * another was cut after writing one. Neither was stuck — a 12B model
+ * writing a module and its tests takes the time it takes.
+ *
+ * The asymmetry is the argument. A worker that is genuinely stuck still
+ * ends, and the orchestrator gets a task it can split and re-send; a
+ * worker cut while working loses everything it had not yet written and
+ * teaches the orchestrator that the fan-out does not work, which is how
+ * a turn ends with the cloud model doing the job itself.
+ */
+export const DEFAULT_FUSION_WORKER_TIMEOUT_MS = 2_700_000;
+/**
+ * Read-only orchestrator steps before a review counts as stalled. Six:
+ * live, two local planners each read for 90 minutes on one failing
+ * check line and never fanned out; a planner that has read for six
+ * steps has what it needs to brief a worker or to say what stands.
+ */
+export const DEFAULT_FUSION_REVIEW_STALL_STEPS = 6;
+export const FUSION_REVIEW_STALL_STEPS_MAX = 1000;
+
+export type RunModeProviderRef = { readonly id: string; readonly kind: string };
+
+function parseLegProviderId(
+  raw: unknown,
+  providers: ReadonlyArray<RunModeProviderRef>,
+  field: string,
+): string {
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new ConfigValidationError(field, "expected non-empty string");
+  }
+  const entry = providers.find((p) => p.id === raw);
+  if (!entry) {
+    throw new ConfigValidationError(
+      field,
+      `unknown provider id ${JSON.stringify(raw)}`,
+    );
+  }
+  // Neither leg is nailed to a kind. Cloud orchestrator + local workers
+  // is the default pairing and the economics the mode was built for, but
+  // a local model planning for cloud executors is a legitimate setup and
+  // the schema is the wrong place to forbid it — it does not refuse a
+  // file, it refuses to BOOT on one, which is how an operator ends up
+  // hand-editing JSON to start the app again.
+  //
+  // What is still checked is that the id names a configured provider,
+  // above. The one pairing the runtime rejects — both legs on the same
+  // provider — is caught by `resolveRunMode`, which can see both at once
+  // and degrades instead of throwing.
+  return raw;
+}
+
+function parseBoundedInt(
+  raw: unknown,
+  field: string,
+  min: number,
+  max: number,
+): number {
+  if (
+    typeof raw !== "number" ||
+    !Number.isInteger(raw) ||
+    raw < min ||
+    raw > max
+  ) {
+    throw new ConfigValidationError(
+      field,
+      `expected an integer ${min}-${max}, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return raw;
+}
+
+function parseOptionalLabel(raw: unknown, field: string): string {
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new ConfigValidationError(field, "expected non-empty string");
+  }
+  return raw;
+}
+
+function parseFusion(
+  raw: unknown,
+  providers: ReadonlyArray<RunModeProviderRef>,
+  field: string,
+): UserLlmFusionConfig {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const out: UserLlmFusionConfig = {};
+  if (obj.orchestratorProvider !== undefined) {
+    out.orchestratorProvider = parseLegProviderId(
+      obj.orchestratorProvider,
+      providers,
+      `${field}.orchestratorProvider`,
+    );
+  }
+  if (obj.orchestratorModel !== undefined) {
+    out.orchestratorModel = parseOptionalLabel(
+      obj.orchestratorModel,
+      `${field}.orchestratorModel`,
+    );
+  }
+  if (obj.workerProvider !== undefined) {
+    out.workerProvider = parseLegProviderId(
+      obj.workerProvider,
+      providers,
+      `${field}.workerProvider`,
+    );
+  }
+  if (obj.workerModel !== undefined) {
+    out.workerModel = parseOptionalLabel(
+      obj.workerModel,
+      `${field}.workerModel`,
+    );
+  }
+  if (obj.workers !== undefined) {
+    out.workers = parseBoundedInt(
+      obj.workers,
+      `${field}.workers`,
+      FUSION_WORKERS_MIN,
+      FUSION_WORKERS_MAX,
+    );
+  }
+  if (obj.cloudWorkers !== undefined) {
+    out.cloudWorkers = parseBoundedInt(
+      obj.cloudWorkers,
+      `${field}.cloudWorkers`,
+      FUSION_WORKERS_MIN,
+      FUSION_CLOUD_WORKERS_MAX,
+    );
+  }
+  if (obj.workerReasoning !== undefined) {
+    const level = obj.workerReasoning;
+    if (
+      typeof level !== "string" ||
+      !FUSION_WORKER_REASONING_LEVELS.includes(level as FusionWorkerReasoning)
+    ) {
+      throw new ConfigValidationError(
+        `${field}.workerReasoning`,
+        `expected ${FUSION_WORKER_REASONING_LEVELS.join("|")}`,
+      );
+    }
+    out.workerReasoning = level as FusionWorkerReasoning;
+  }
+  if (obj.workerMaxOutputTokens !== undefined) {
+    out.workerMaxOutputTokens = parseBoundedInt(
+      obj.workerMaxOutputTokens,
+      `${field}.workerMaxOutputTokens`,
+      1,
+      FUSION_WORKER_MAX_OUTPUT_TOKENS_MAX,
+    );
+  }
+  if (obj.workerMaxSteps !== undefined) {
+    out.workerMaxSteps = parseBoundedInt(
+      obj.workerMaxSteps,
+      `${field}.workerMaxSteps`,
+      1,
+      1000,
+    );
+  }
+  if (obj.workerTimeoutMs !== undefined) {
+    out.workerTimeoutMs = parseBoundedInt(
+      obj.workerTimeoutMs,
+      `${field}.workerTimeoutMs`,
+      1_000,
+      86_400_000,
+    );
+  }
+  if (obj.reviewStallSteps !== undefined) {
+    out.reviewStallSteps = parseBoundedInt(
+      obj.reviewStallSteps,
+      `${field}.reviewStallSteps`,
+      0,
+      FUSION_REVIEW_STALL_STEPS_MAX,
+    );
+  }
+  return out;
+}
+
+/**
+ * Validate the `llm.runMode` block against the sibling `llm.providers`
+ * array. A pinned leg that names a provider which does not exist, or
+ * one of the wrong kind, is a config error rather than a silent
+ * degradation: the operator meant something specific.
+ */
+export function parseLlmRunModeConfig(
+  raw: unknown,
+  providers: ReadonlyArray<RunModeProviderRef>,
+  field: string,
+): UserLlmRunModeConfig {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const out: UserLlmRunModeConfig = {};
+  if (obj.mode !== undefined) {
+    const mode = obj.mode;
+    if (
+      typeof mode !== "string" ||
+      !RUN_MODE_NAMES.includes(mode as RunModeName)
+    ) {
+      throw new ConfigValidationError(
+        `${field}.mode`,
+        `expected ${RUN_MODE_NAMES.join("|")}`,
+      );
+    }
+    out.mode = mode as RunModeName;
+  }
+  if (obj.fusion !== undefined) {
+    out.fusion = parseFusion(obj.fusion, providers, `${field}.fusion`);
+  }
+  return out;
+}
+
+/**
+ * Drop fusion leg pins that name a provider being removed. The parser
+ * refuses a pin to an unknown id, so leaving one behind would make the
+ * file unreadable on the next start. A leg's model pin goes with its
+ * provider pin: it named a model of the removed provider, and left
+ * behind it would label and price the leg that takes over. Returns the
+ * input untouched when nothing is pinned to `removedId`.
+ */
+export function scrubRunModeProviderPins(
+  runMode: UserLlmRunModeConfig | undefined,
+  removedId: string,
+): UserLlmRunModeConfig | undefined {
+  if (!runMode?.fusion) return runMode;
+  const {
+    orchestratorProvider,
+    orchestratorModel,
+    workerProvider,
+    workerModel,
+    ...rest
+  } = runMode.fusion;
+  const keepOrchestrator = orchestratorProvider !== removedId;
+  const keepWorker = workerProvider !== removedId;
+  if (keepOrchestrator && keepWorker) return runMode;
+  return {
+    ...runMode,
+    fusion: {
+      ...rest,
+      ...(orchestratorProvider && keepOrchestrator
+        ? { orchestratorProvider }
+        : {}),
+      ...(orchestratorModel !== undefined && keepOrchestrator
+        ? { orchestratorModel }
+        : {}),
+      ...(workerProvider && keepWorker ? { workerProvider } : {}),
+      ...(workerModel !== undefined && keepWorker ? { workerModel } : {}),
+    },
+  };
+}

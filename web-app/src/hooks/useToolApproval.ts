@@ -9,6 +9,8 @@ export type ShowApprovalModalOptions = {
    * composer select outranks the global switch there.
    */
   bypassGlobalAutoApprove?: boolean
+  /** A stored native proposal is one action, never a remembered tool grant. */
+  requireFreshApproval?: boolean
 }
 
 export type ToolApprovalModalProps = {
@@ -79,14 +81,14 @@ export const useToolApproval = create<ToolApprovalState>()(
           // Auto-approve if the user has enabled auto-approval setting
           if (
             state.allowAllMCPPermissions &&
-            !options?.bypassGlobalAutoApprove
+            !options?.bypassGlobalAutoApprove && !options?.requireFreshApproval
           ) {
             resolve(true)
             return
           }
 
           // Check if tool is already approved for this thread
-          if (state.isToolApproved(threadId, toolName)) {
+          if (!options?.requireFreshApproval && state.isToolApproved(threadId, toolName)) {
             resolve(true)
             return
           }
@@ -98,7 +100,7 @@ export const useToolApproval = create<ToolApprovalState>()(
               threadId,
               toolParameters,
               onApprove: (allowOnce: boolean) => {
-                if (!allowOnce) {
+                if (!allowOnce && !options?.requireFreshApproval) {
                   // If not "allow once", add to approved tools for this thread
                   get().approveToolForThread(threadId, toolName)
                 }

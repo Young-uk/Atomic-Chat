@@ -88,6 +88,28 @@
   },
   "packageManager": "yarn@4.5.3",
   "dependencies": {
-    "playwright-core": "1.59.1"
+    "@mozilla/readability": "0.6.0",
+    "better-sqlite3": "12.9.0",
+    "chokidar": "5.0.0",
+    "clipboardy": "5.3.1",
+    "cron-parser": "5.5.0",
+    "diff": "9.0.0",
+    "exceljs": "4.4.0",
+    "fast-xml-parser": "5.7.1",
+    "fuzzysort": "3.1.0",
+    "grammy": "1.42.0",
+    "html-to-text": "10.0.0",
+    "jszip": "3.10.1",
+    "linkedom": "0.18.12",
+    "mammoth": "1.12.0",
+    "marked": "18.0.2",
+    "node-notifier": "10.0.1",
+    "pdfjs-dist": "4.10.38",
+    "playwright-core": "1.59.1",
+    "tar-stream": "3.1.8",
+    "turndown": "7.2.4",
+    "undici": "8.11.2",
+    "word-extractor": "1.0.4",
+    "yaml": "2.8.3"
   }
 }

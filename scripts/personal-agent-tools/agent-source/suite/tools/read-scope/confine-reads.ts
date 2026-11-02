@@ -1,0 +1,218 @@
+import type { DangerousToolOptions } from "../../approval/dangerous-tool.mjs";
+import type { ReadScope } from "../../config/index.mjs";
+import { isFusionWorkerSessionId } from "../../session/fusion-worker-session.mjs";
+import type { ToolDefinition, ToolRegistry } from "../tool-registry.mjs";
+import {
+  checkWorkerRead,
+  findSessionReadOutside,
+  workerReadRefusal,
+} from "./read-scope.mjs";
+import {
+  ReadOutsideApprover,
+  readOutsidePrompt,
+  shellReadOutsidePrompt,
+} from "./read-scope-approval.mjs";
+import {
+  findShellPathOutsideScope,
+  shellCommandLine,
+  type ShellScopeEnv,
+} from "./read-scope-shell.mjs";
+import { READ_TOOL_TARGETS, SHELL_TOOL } from "./read-scope-targets.mjs";
+import {
+  findShellStateSecrets,
+  findStateSecretReads,
+  stateSecretReadPrompt,
+  stateSecretShellPrompt,
+  type StateSecrets,
+} from "./state-secrets.mjs";
+
+export interface ConfineReadsOptions {
+  /** The directories a fusion worker's fan-out may write in. */
+  grantedDirs: (sessionId: string) => readonly string[];
+  /**
+   * The live `agent.readScope`. Read on every call, so a config change
+   * takes effect without a restart. Omitted: only fusion workers are
+   * confined and the shell is not wrapped — the pre-v67 install
+   * (`confineWorkerReads`).
+   */
+  readScope?: () => ReadScope;
+  /**
+   * The ladder a read outside the scope asks through (`fs_read_outside`,
+   * `read-scope-approval.ts`). Required with `readScope`: the session
+   * scope is a question, and a question needs a gate — an install that
+   * forgot the gate would silently be a refusal, which is exactly the
+   * half-wiring the throw below exists to catch.
+   */
+  approvals?: DangerousToolOptions;
+  /** The shell check's notion of home and platform; a test seam. */
+  shellEnv?: ShellScopeEnv;
+  /**
+   * The agent's own secret files (`state-secrets.ts`). A read-class call
+   * targeting one, or a shell command naming one, asks as `state_secret`
+   * for every session and whatever `readScope` says. Requires
+   * `approvals`; omitted, nothing is checked (embedders, tests).
+   */
+  stateSecrets?: StateSecrets;
+}
+
+/** Definitions this module produced, so a second install does not wrap twice. */
+const CONFINED = new WeakSet<ToolDefinition>();
+
+/**
+ * Wrap every registered read-class tool (and, under a session scope, the
+ * shell) so a call is checked before it runs. Call once, after the
+ * native tools are registered. Returns the names it confined.
+ *
+ * Wrapping at the registry rather than inside each tool keeps the rule
+ * in one place, and `registry.invoke` is the single path every call —
+ * native, batched, or recovered from text — takes. A worker session
+ * gets the worker check first (always on, a refusal); then a call that
+ * touches one of the agent's own secret files asks as `state_secret`
+ * (`state-secrets.ts`, any scope); then, when the scope is
+ * `working-dir`, every other session's call outside the roots is asked
+ * about, and runs or is refused by the answer.
+ */
+export function confineReads(
+  registry: Pick<ToolRegistry, "has" | "get" | "register">,
+  options: ConfineReadsOptions,
+): string[] {
+  if (options.readScope !== undefined && options.approvals === undefined) {
+    throw new Error(
+      "confineReads: a session read scope asks through the approval ladder; pass `approvals` with `readScope`",
+    );
+  }
+  if (options.stateSecrets !== undefined && options.approvals === undefined) {
+    throw new Error(
+      "confineReads: the secret-file guard asks through the approval ladder; pass `approvals` with `stateSecrets`",
+    );
+  }
+  const asker =
+    options.approvals === undefined
+      ? null
+      : new ReadOutsideApprover(options.approvals);
+  const secrets = options.stateSecrets ?? null;
+  const confined: string[] = [];
+  const scoped = () => options.readScope?.() === "working-dir";
+  const install = (name: string, run: ToolDefinition["run"]): void => {
+    const inner = registry.get(name);
+    confined.push(name);
+    if (CONFINED.has(inner)) return;
+    const wrapped: ToolDefinition = { ...inner, run };
+    CONFINED.add(wrapped);
+    registry.register(wrapped);
+  };
+
+  for (const name of READ_TOOL_TARGETS.keys()) {
+    if (!registry.has(name)) continue;
+    const inner = registry.get(name);
+    install(name, async (args, ctx) => {
+      const worker = checkWorkerRead(
+        name,
+        args,
+        ctx,
+        options.grantedDirs(ctx.sessionId),
+      );
+      if (worker !== null) return worker;
+      // Before the scope: a secret file asks even where reads are
+      // unrestricted. Once approved, that file needs no scope question
+      // on top for this call (and is not remembered for the next one).
+      const secretPaths =
+        asker === null || secrets === null
+          ? []
+          : findStateSecretReads(name, args, ctx, secrets);
+      if (asker !== null && secretPaths.length > 0) {
+        await asker.confirmStateSecret(
+          name,
+          ctx,
+          { reason: stateSecretReadPrompt(secretPaths) },
+          secretPaths,
+        );
+      }
+      if (asker === null || !scoped()) return inner.run(args, ctx);
+      const refusal = await asker.admit(
+        name,
+        ctx,
+        (roots) =>
+          findSessionReadOutside(name, args, ctx, [...roots, ...secretPaths]),
+        (path, root) => readOutsidePrompt(path, ctx.workingDir, root),
+      );
+      return refusal ?? inner.run(args, ctx);
+    });
+  }
+
+  if (asker !== null && registry.has(SHELL_TOOL)) {
+    const inner = registry.get(SHELL_TOOL);
+    install(SHELL_TOOL, async (args, ctx) => {
+      // A command naming a secret file asks at every level below full
+      // trust, though the shell itself runs unasked from level 4 and a
+      // fan-out's directory scope would let it through: neither a level
+      // nor a `shell` grant speaks for the agent's keys (ATO-877,
+      // ATO-760). A fusion worker's question is refused by its session
+      // policy, like any other it cannot have answered.
+      const secretPaths =
+        secrets === null
+          ? []
+          : findShellStateSecrets(args, ctx, secrets, options.shellEnv);
+      if (secretPaths.length > 0) {
+        const commandLine = shellCommandLine(args);
+        await asker.confirmStateSecret(
+          SHELL_TOOL,
+          ctx,
+          {
+            reason: stateSecretShellPrompt(commandLine, secretPaths),
+            preview: commandLine,
+          },
+          secretPaths,
+        );
+      }
+      if (!scoped()) return inner.run(args, ctx);
+      if (isFusionWorkerSessionId(ctx.sessionId)) {
+        // A worker's world is its task's directories, and there is
+        // nobody to ask: the refusal, as for its reads.
+        const granted = options.grantedDirs(ctx.sessionId);
+        const outside = findShellPathOutsideScope(
+          args,
+          ctx,
+          [ctx.workingDir, ...granted, ...secretPaths],
+          options.shellEnv,
+        );
+        return outside === null
+          ? inner.run(args, ctx)
+          : workerReadRefusal(SHELL_TOOL, outside, ctx, granted);
+      }
+      const refusal = await asker.admit(
+        SHELL_TOOL,
+        ctx,
+        (roots) =>
+          findShellPathOutsideScope(
+            args,
+            ctx,
+            [...roots, ...secretPaths],
+            options.shellEnv,
+          ),
+        (path, root) =>
+          shellReadOutsidePrompt(
+            shellCommandLine(args),
+            path,
+            ctx.workingDir,
+            root,
+          ),
+      );
+      return refusal ?? inner.run(args, ctx);
+    });
+  }
+  return confined;
+}
+
+/**
+ * The fusion-only install: workers confined to their working directory
+ * and fan-out scope, every other session untouched, the shell not
+ * wrapped. Kept for callers that want exactly that; the runtime installs
+ * `confineReads` with the live `agent.readScope` and the ladder instead.
+ */
+export function confineWorkerReads(
+  registry: Pick<ToolRegistry, "has" | "get" | "register">,
+  options: { grantedDirs: (sessionId: string) => readonly string[] },
+): string[] {
+  return confineReads(registry, { grantedDirs: options.grantedDirs });
+}

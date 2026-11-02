@@ -8,9 +8,19 @@ import {
   resolveExecAutoApprove,
   resolveAgentMcpAutoApprove,
   resolveMcpAutoApprove,
+  agentDisabledMcpTools,
 } from '@/lib/mcp-approval'
 
+it('keeps host-only endpoints and the custom proposal adapter out of the other runner', () => {
+  expect(agentDisabledMcpTools(['other::disabled'])).toEqual([
+    'other::disabled', 'atomic-personal-tools::personal_native',
+    'atomic-personal-tools::personal_memory_lifecycle', 'atomic-personal-tools::personal_task_delivery',
+  ])
+})
+
 const platformFeatures = vi.hoisted(() => ({}) as Record<string, boolean>)
+const nativeCall = vi.hoisted(() => vi.fn())
+vi.mock('@/hooks/useServiceHub', () => ({ getServiceHub: () => ({ mcp: () => ({ callTool: nativeCall }) }) }))
 vi.mock('@/lib/platform/const', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/platform/const')>()
   Object.assign(platformFeatures, actual.PlatformFeatures, { chatExec: true })
@@ -51,6 +61,7 @@ describe('approveChatToolCall', () => {
 
   beforeEach(() => {
     showApprovalModal.mockReset().mockResolvedValue(true)
+    nativeCall.mockReset()
     useAgentMode.setState({ approvalModes: {} })
     useToolApproval.setState({
       allowAllMCPPermissions: true,
@@ -101,6 +112,32 @@ describe('approveChatToolCall', () => {
 
   it('keeps the MCP rule for every other tool', async () => {
     await expect(approveChatToolCall('search', 't1', {})).resolves.toBe(true)
+    expect(showApprovalModal).not.toHaveBeenCalled()
+  })
+
+  it('shows the stored native proposal instead of model-supplied preview text', async () => {
+    const proposal = { id: 'pending', name: 'os.fs.write', args: { path: '/synthetic', content: 'real content' }, request: { category: 'fs_write', reason: 'actual request' }, expiresAt: Date.now() + 10000 }
+    nativeCall.mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify(proposal) }] })
+    expect(await approveChatToolCall('personal_native', 't1', { action: 'confirm', pendingId: 'pending', preview: 'misleading' })).toBe(true)
+    expect(showApprovalModal).toHaveBeenCalledWith('personal_native', 't1', {
+      action: 'confirm', pendingId: 'pending', nativeTool: proposal.name,
+      arguments: proposal.args, approval: proposal.request,
+    }, { bypassGlobalAutoApprove: true, requireFreshApproval: true })
+  })
+
+  it('requires a human for a valid nested proposal even on Full access', async () => {
+    useAgentMode.setState({ approvalModes: { t1: 'skip' } })
+    const proposal = { id: 'pending', name: 'os.fs.write', args: { path: 'synthetic.txt' }, request: { category: 'fs_write' }, expiresAt: Date.now() + 10000 }
+    nativeCall.mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify(proposal) }] })
+    showApprovalModal.mockResolvedValueOnce(false)
+    expect(await approveChatToolCall('personal_native', 't1', { action: 'confirm', pendingId: 'pending' })).toBe(false)
+    expect(showApprovalModal).toHaveBeenCalledWith('personal_native', 't1', expect.objectContaining({ nativeTool: 'os.fs.write', arguments: proposal.args }), { bypassGlobalAutoApprove: true, requireFreshApproval: true })
+  })
+
+  it('refuses missing or expired native confirmations even on Full access', async () => {
+    useAgentMode.setState({ approvalModes: { t1: 'skip' } })
+    nativeCall.mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify({ id: 'pending', name: 'os.fs.write', args: {}, request: {}, expiresAt: 0 }) }] })
+    expect(await approveChatToolCall('personal_native', 't1', { action: 'confirm', pendingId: 'pending' })).toBe(false)
     expect(showApprovalModal).not.toHaveBeenCalled()
   })
 

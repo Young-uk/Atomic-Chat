@@ -141,6 +141,7 @@ import { IconAlertCircle, IconRefresh } from '@tabler/icons-react'
 import {
   approveChatToolCall,
   resolveAgentMcpAutoApprove,
+  agentDisabledMcpTools,
 } from '@/lib/mcp-approval'
 import {
   offeredChatExecToolNames,
@@ -1236,9 +1237,9 @@ function ThreadDetail() {
             ),
             mcp_enabled: true,
             auto_approve_mcp: resolveAgentMcpAutoApprove(threadId),
-            disabled_mcp_tools: useToolAvailable
+            disabled_mcp_tools: agentDisabledMcpTools(useToolAvailable
               .getState()
-              .getDisabledToolsForThread(threadId),
+              .getDisabledToolsForThread(threadId)),
             rag,
           },
           applyAgentEvent

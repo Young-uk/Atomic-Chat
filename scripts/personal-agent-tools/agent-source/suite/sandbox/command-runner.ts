@@ -1,0 +1,213 @@
+import { spawn } from "node:child_process";
+
+import { killProcessTree } from "./kill-process-tree.mjs";
+
+const IS_WINDOWS = process.platform === "win32";
+
+/**
+ * Stdin errors that all mean the same thing: the far end of the pipe is
+ * gone because the child exited (or was killed) before it drained its
+ * input. Expected whenever a command rejects the request without reading
+ * it, so they are absorbed rather than raised — see the handler below.
+ */
+const BROKEN_PIPE_CODES = new Set([
+  "EPIPE",
+  "ECONNRESET",
+  "EOF",
+  "ERR_STREAM_DESTROYED",
+  "ERR_STREAM_WRITE_AFTER_END",
+]);
+
+export function isBrokenPipe(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && BROKEN_PIPE_CODES.has(code);
+}
+
+export interface CommandOptions {
+  cwd: string;
+  timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+  shell?: boolean;
+  input?: string;
+  signal?: AbortSignal;
+  maxOutputBytes?: number;
+  /**
+   * Windows only, ignored elsewhere: hand argv to the child verbatim
+   * instead of letting Node quote it. Only for callers that have already
+   * built a `cmd.exe /c "…"` command line with cmd's own escaping.
+   * Omitted by default, which keeps Node's normal quoting.
+   */
+  windowsVerbatimArguments?: boolean;
+}
+
+export interface CommandResult {
+  command: string;
+  args: string[];
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timedOut: boolean;
+  truncated: boolean;
+  /**
+   * The child stopped reading before `input` was fully written, so it
+   * answered a prompt we only partially delivered. Only reachable with
+   * payloads past the pipe buffer (~64 KiB); a non-zero `exitCode`
+   * usually says why, but a CLI that exits 0 regardless would otherwise
+   * look like a clean run over a truncated prompt.
+   */
+  inputTruncated: boolean;
+}
+
+/**
+ * What one stream keeps when the caller names no `maxOutputBytes`: the
+ * first bytes of it, with `truncated` set once a stream runs past this.
+ * Exported so a caller that reports the loss can name the real limit.
+ */
+export const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
+
+/**
+ * Runs an external command with timeout + output-size cap + abort signal.
+ * Both stdout and stderr are captured as UTF-8 strings; binary-only tools
+ * are not part of the MVP scope. This runner is used by run_test as well
+ * as by git plumbing inside the sandbox.
+ *
+ * Timeout semantics: when `timeoutMs` is omitted it falls back to 60s.
+ * A non-positive or non-finite `timeoutMs` (e.g. `0`) disables the timeout
+ * entirely — the command runs unbounded and is only stoppable via the abort
+ * signal. Long-running tools (e.g. `brew install`) rely on this. Whatever
+ * was captured before the stop is kept in the result.
+ *
+ * The stop is a tree-kill of the direct child. A command whose lifetime
+ * must outlast one `await` — the shell tool's detached jobs — goes
+ * through `startCommandJob` (command-job.ts) instead.
+ */
+export async function runCommand(
+  command: string,
+  args: string[],
+  options: CommandOptions,
+): Promise<CommandResult> {
+  const started = Date.now();
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  return new Promise<CommandResult>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      shell: options.shell ?? false,
+      stdio: ["pipe", "pipe", "pipe"],
+      // Prevent a console window flashing when the runtime is launched
+      // from a GUI/TUI host on Windows.
+      ...(IS_WINDOWS ? { windowsHide: true } : {}),
+      ...(options.windowsVerbatimArguments === undefined
+        ? {}
+        : { windowsVerbatimArguments: options.windowsVerbatimArguments }),
+    });
+    const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let inputTruncated = false;
+    let timedOut = false;
+    let settled = false;
+
+    const killIt = (reason: "timeout" | "abort") => {
+      if (settled) return;
+      timedOut = reason === "timeout";
+      // On Windows `child.kill` only targets the direct child, leaving a
+      // subshell's descendants (cmd.exe -> foo.exe) running, so this goes
+      // through `taskkill /T`. Same treatment, same fallback — the shared
+      // helper exists because the streaming CLI runner needs it too.
+      killProcessTree(child, { force: true });
+    };
+
+    const timer =
+      timeoutMs > 0 && Number.isFinite(timeoutMs)
+        ? setTimeout(() => killIt("timeout"), timeoutMs)
+        : null;
+    const onAbort = () => killIt("abort");
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    /** One exit for every terminal path: timers off, listener off. */
+    const finish = () => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutBytes + chunk.length > maxOutputBytes) {
+        const slice = chunk.slice(0, Math.max(0, maxOutputBytes - stdoutBytes));
+        if (slice.length > 0) {
+          chunks.stdout.push(slice);
+          stdoutBytes += slice.length;
+        }
+        truncated = true;
+        return;
+      }
+      chunks.stdout.push(chunk);
+      stdoutBytes += chunk.length;
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrBytes + chunk.length > maxOutputBytes) {
+        const slice = chunk.slice(0, Math.max(0, maxOutputBytes - stderrBytes));
+        if (slice.length > 0) {
+          chunks.stderr.push(slice);
+          stderrBytes += slice.length;
+        }
+        truncated = true;
+        return;
+      }
+      chunks.stderr.push(chunk);
+      stderrBytes += chunk.length;
+    });
+
+    child.on("error", (err) => {
+      if (settled) return;
+      finish();
+      reject(err);
+    });
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      finish();
+      resolve({
+        command,
+        args,
+        exitCode: code,
+        signal,
+        stdout: Buffer.concat(chunks.stdout).toString("utf8"),
+        stderr: Buffer.concat(chunks.stderr).toString("utf8"),
+        durationMs: Date.now() - started,
+        timedOut,
+        truncated,
+        inputTruncated,
+      });
+    });
+
+    // A child that rejects the request — signed out, unknown model,
+    // rate-limited — exits without draining stdin, so an `input` larger
+    // than the pipe buffer (~64 KiB) cannot flush and raises EPIPE.
+    // Node treats an `error` on a stream with no listener as fatal and
+    // `installGlobalErrorHandlers` preserves that, which would tear the
+    // whole runtime down instead of reporting the child's own failure.
+    // Absorb the broken pipe — `close` still carries the exit code and
+    // stderr that explain it, and `inputTruncated` keeps a run that
+    // exits 0 over a half-delivered prompt from passing for a good one.
+    // Any other stdin error is a genuine local failure and rejects.
+    child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+      if (isBrokenPipe(err)) {
+        inputTruncated = true;
+        return;
+      }
+      if (settled) return;
+      finish();
+      reject(err);
+    });
+
+    if (options.input) {
+      child.stdin.write(options.input);
+    }
+    child.stdin.end();
+  });
+}

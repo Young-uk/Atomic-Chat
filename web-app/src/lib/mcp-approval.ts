@@ -2,6 +2,7 @@ import { useMCPServers } from '@/hooks/useMCPServers'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { useToolApproval } from '@/hooks/useToolApproval'
 import { offeredChatExecToolNames } from '@/lib/chat-exec-tools'
+import { getServiceHub } from '@/hooks/useServiceHub'
 
 /**
  * Whether MCP/RAG tool calls on this thread run without asking. One rule for
@@ -34,20 +35,44 @@ export function resolveExecAutoApprove(threadId: string): boolean {
 }
 
 /** The chat pipeline's approval step for one tool call. */
-export function approveChatToolCall(
+export async function approveChatToolCall(
   toolName: string,
   threadId: string,
   input: object
 ): Promise<boolean> {
+  // Confirmation previews come from the worker's immutable pending proposal,
+  // never from model-authored text that could misdescribe the native action.
+  const nativeConfirmation = toolName === 'personal_native' && (input as { action?: string }).action === 'confirm'
+  if (nativeConfirmation) {
+    try {
+      const pendingId = (input as { pendingId?: unknown }).pendingId
+      if (typeof pendingId !== 'string') return false
+      const result = await getServiceHub().mcp().callTool({
+        serverName: 'atomic-personal-tools', toolName,
+        arguments: { action: 'inspect', pendingId },
+      })
+      if (result.error || ('isError' in result && result.isError)) return false
+      const text = result.content?.filter(part => 'text' in part)
+        .map(part => (part as { text: string }).text).join('\n') ?? ''
+      const proposal = JSON.parse(text)
+      if (proposal.id !== pendingId || typeof proposal.name !== 'string' ||
+          !proposal.request || !proposal.args || proposal.expiresAt <= Date.now()) return false
+      input = { action: 'confirm', pendingId, nativeTool: proposal.name,
+        arguments: proposal.args, approval: proposal.request }
+    } catch { return false }
+  }
   // Personal desktop tools can manipulate windows, browser sessions and
   // persistent memory. The global MCP switch must not grant those rights.
-  const autoApprove = (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
+  // A nested source-native proposal always needs its own human confirmation,
+  // even if the surrounding conversation grants ordinary Full access calls.
+  const autoApprove = nativeConfirmation ? false : (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
     ? resolveExecAutoApprove(threadId)
     : resolveMcpAutoApprove(threadId)
   return autoApprove
     ? Promise.resolve(true)
     : useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
         bypassGlobalAutoApprove: true,
+        ...(nativeConfirmation ? { requireFreshApproval: true } : {}),
       })
 }
 
@@ -55,4 +80,13 @@ export function approveChatToolCall(
 export function resolveAgentMcpAutoApprove(threadId: string): boolean {
   if (useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) return resolveExecAutoApprove(threadId)
   return resolveMcpAutoApprove(threadId)
+}
+
+/** The browser Chat path owns stored-proposal previews and fresh approvals.
+ * Do not expose that adapter (or host-only bookkeeping) to a second runner
+ * until it implements the same per-action approval contract. Its built-in
+ * file/Git tools keep their existing native approval path. */
+export function agentDisabledMcpTools(disabled: string[]): string[] {
+  return [...new Set([...disabled, ...['personal_native', 'personal_memory_lifecycle', 'personal_task_delivery']
+    .map(name => `atomic-personal-tools::${name}`)])]
 }

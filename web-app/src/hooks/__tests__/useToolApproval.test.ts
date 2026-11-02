@@ -20,6 +20,17 @@ vi.mock('zustand/middleware', () => ({
 }))
 
 describe('useToolApproval', () => {
+  it('requires a fresh decision for each native proposal despite a remembered tool grant', async () => {
+    useToolApproval.setState({ approvedTools: { fresh: ['personal_native'] }, allowAllMCPPermissions: true, isModalOpen: false, modalProps: null })
+    const pending = useToolApproval.getState().showApprovalModal('personal_native', 'fresh', { pendingId: 'one' }, { requireFreshApproval: true })
+    expect(useToolApproval.getState().isModalOpen).toBe(true)
+    useToolApproval.getState().modalProps?.onApprove(false)
+    expect(await pending).toBe(true)
+    const again = useToolApproval.getState().showApprovalModal('personal_native', 'fresh', { pendingId: 'two' }, { requireFreshApproval: true })
+    expect(useToolApproval.getState().isModalOpen).toBe(true)
+    useToolApproval.getState().modalProps?.onDeny()
+    expect(await again).toBe(false)
+  })
   beforeEach(() => {
     vi.clearAllMocks()
     // Reset store state to defaults (auto-approve is ON by default so the

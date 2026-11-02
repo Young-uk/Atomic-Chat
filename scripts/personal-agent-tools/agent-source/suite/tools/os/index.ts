@@ -1,0 +1,338 @@
+import { resolve } from "node:path";
+import type { ToolRegistry } from "../tool-registry.mjs";
+import type { DangerousToolOptions } from "../../approval/dangerous-tool.mjs";
+import type { AtomicAgentConfig } from "../../config/index.mjs";
+import { buildOsShellTool } from "./shell/shell.mjs";
+import type { ShellGuardPolicy } from "./shell-command-guard/index.mjs";
+import type { ShellJobRegistry } from "./shell/shell-jobs.mjs";
+import { osFsReadTool } from "./fs/fs-read.mjs";
+import { buildOsFsWriteTool } from "./fs/fs-write.mjs";
+import { buildOsFsTrashTool } from "./fs/fs-trash.mjs";
+import { osFsListTool } from "./fs/fs-list.mjs";
+import { osFsGlobTool } from "./fs/fs-glob.mjs";
+import { buildOsFsLocateProjectTool } from "./fs/fs-locate-project.mjs";
+import type { RecentSessionDir } from "./fs/fs-locate-project-sources.mjs";
+import { buildOsFsGrepTool } from "./fs/fs-grep.mjs";
+import { buildOsFsEditTool } from "./fs/fs-edit.mjs";
+import { buildOsFsReadDocumentTool } from "./read-document/index.mjs";
+import {
+  buildOsFsArchiveListTool,
+  buildOsFsArchiveReadEntryTool,
+  buildOsFsArchiveExtractTool,
+} from "./archive/index.mjs";
+import { buildOsHttpRequestTool } from "./web/http-request.mjs";
+import { buildOsWebFetchTool } from "./web/web-fetch.mjs";
+import { buildOsWebSearchTool, type WebSearchKeyHelp } from "./web-search/index.mjs";
+import { osClipboardReadTool, osClipboardWriteTool } from "./clipboard.mjs";
+import { osWindowListTool, osWindowFocusTool } from "./window.mjs";
+import { buildOsEmailInboxTool, buildOsEmailSendTool } from "./email.mjs";
+import { osNotifyTool } from "./notify.mjs";
+import { osFsHashTool } from "./fs/fs-hash.mjs";
+import { osFsDiffTool } from "./fs/fs-diff.mjs";
+import { buildOsFsPatchTool } from "./fs/fs-patch.mjs";
+import { buildOsFsRestoreTool } from "./fs/fs-restore.mjs";
+import { buildOsFsMoveTool } from "./fs/fs-move.mjs";
+import { FileRestoreStore } from "./fs/fs-restore-store.mjs";
+import type { DeclaredInputsRegistry } from "./fs/fs-declared-inputs.mjs";
+import { osFsWatchTool } from "./fs/fs-watch.mjs";
+import {
+  osGitStatusTool,
+  osGitLogTool,
+  osGitDiffTool,
+  osGitShowTool,
+  osGitBlameTool,
+  osGitBranchTool,
+  buildOsGitInitTool,
+  buildOsGitAddTool,
+  buildOsGitCheckoutTool,
+  buildOsGitCommitTool,
+  buildOsGitRemoteTool,
+  buildOsGitFetchTool,
+  buildOsGitPullTool,
+  buildOsGitPushTool,
+  buildOsGitCloneTool,
+} from "./git/index.mjs";
+import { osProcListTool, buildOsProcKillTool } from "./proc/index.mjs";
+
+export { buildOsShellTool } from "./shell/shell.mjs";
+export { osFsReadTool } from "./fs/fs-read.mjs";
+export { buildOsFsWriteTool } from "./fs/fs-write.mjs";
+export { buildOsFsTrashTool } from "./fs/fs-trash.mjs";
+export { osFsListTool } from "./fs/fs-list.mjs";
+export { osFsGlobTool } from "./fs/fs-glob.mjs";
+export {
+  buildOsFsLocateProjectTool,
+  type OsFsLocateProjectDeps,
+} from "./fs/fs-locate-project.mjs";
+export type { RecentSessionDir } from "./fs/fs-locate-project-sources.mjs";
+export { buildOsFsGrepTool } from "./fs/fs-grep.mjs";
+export { buildOsFsEditTool } from "./fs/fs-edit.mjs";
+export { buildOsFsReadDocumentTool } from "./read-document/index.mjs";
+export {
+  buildOsFsArchiveListTool,
+  buildOsFsArchiveReadEntryTool,
+  buildOsFsArchiveExtractTool,
+} from "./archive/index.mjs";
+export { buildOsHttpRequestTool } from "./web/http-request.mjs";
+export { buildOsWebFetchTool } from "./web/web-fetch.mjs";
+export { buildOsWebSearchTool } from "./web-search/index.mjs";
+export type { WebSearchKeyHelp } from "./web-search/index.mjs";
+export { osClipboardReadTool, osClipboardWriteTool } from "./clipboard.mjs";
+export { osWindowListTool, osWindowFocusTool } from "./window.mjs";
+export { osNotifyTool } from "./notify.mjs";
+export { OS_SCREEN_TOOL_NAMES, registerOsScreenTools } from "./screen/index.mjs";
+export type { RegisterOsScreenToolsOptions } from "./screen/index.mjs";
+export { buildOsEmailInboxTool, buildOsEmailSendTool } from "./email.mjs";
+export { osFsHashTool } from "./fs/fs-hash.mjs";
+export { osFsDiffTool } from "./fs/fs-diff.mjs";
+export { buildOsFsPatchTool } from "./fs/fs-patch.mjs";
+export { buildOsFsRestoreTool } from "./fs/fs-restore.mjs";
+export { buildOsFsMoveTool, type OsFsMoveDeps } from "./fs/fs-move.mjs";
+export { FileRestoreStore } from "./fs/fs-restore-store.mjs";
+export { checkInputReplacement, refuseInputReplacement } from "./fs/fs-input-guard.mjs";
+export type { InputGuardInput, InputRefusal } from "./fs/fs-input-guard.mjs";
+export { DeclaredInputsRegistry } from "./fs/fs-declared-inputs.mjs";
+export { osFsWatchTool } from "./fs/fs-watch.mjs";
+export {
+  osGitStatusTool,
+  osGitLogTool,
+  osGitDiffTool,
+  osGitShowTool,
+  osGitBlameTool,
+  osGitBranchTool,
+  buildOsGitInitTool,
+  buildOsGitAddTool,
+  buildOsGitCheckoutTool,
+  buildOsGitCommitTool,
+  buildOsGitRemoteTool,
+  buildOsGitFetchTool,
+  buildOsGitPullTool,
+  buildOsGitPushTool,
+  buildOsGitCloneTool,
+} from "./git/index.mjs";
+export { osProcListTool, buildOsProcKillTool } from "./proc/index.mjs";
+export { isGogCommand } from "./shell-command-guard/index.mjs";
+export type { ShellGuardPolicy } from "./shell-command-guard/index.mjs";
+export {
+  describeShellTimeoutDefault,
+  formatShellDetachNotice,
+  formatShellDuration,
+  formatShellElapsed,
+  formatShellTimeoutNotice,
+  resolveShellTimeout,
+} from "./shell/shell-timeout.mjs";
+export type {
+  ResolvedShellTimeout,
+  ShellTimeoutSource,
+} from "./shell/shell-timeout.mjs";
+export {
+  DEFAULT_SHELL_JOB_MAX_MS,
+  DEFAULT_SHELL_MAX_JOBS,
+  ShellJobRegistry,
+} from "./shell/shell-jobs.mjs";
+export type {
+  ShellJobRecord,
+  ShellJobRegistryOptions,
+  ShellJobState,
+  ShellJobStopReason,
+} from "./shell/shell-jobs.mjs";
+
+export interface RegisterOsToolsOptions extends DangerousToolOptions {
+  config: Pick<AtomicAgentConfig, "http" | "web" | "projects" | "tools">;
+  /**
+   * Column-only recent-session projection for `os.fs.locate_project`
+   * (`SessionStore.listRecentWorkingDirs`). A closure so the caller
+   * decides which store backs it; must be callable by the time the
+   * first tool invocation happens.
+   */
+  listRecentSessionDirs: (limit: number) => readonly RecentSessionDir[];
+  /**
+   * Absolute paths of the agent's trust config (`config.json`, `.env`),
+   * resolved once by the bootstrap from `config.paths`
+   * (`getTrustConfigPaths`) and threaded into every fs-mutating tool. The
+   * tools layer never derives this — it does not know *where* the trust
+   * surface lives. Omitted / empty disables the `trust_config` guard.
+   */
+  trustConfigPaths?: readonly string[];
+  /**
+   * Absolute state directory (`config.paths.stateDir`), resolved by the
+   * bootstrap and threaded into `os.web.search` so its result cache and
+   * provider cooldown can survive the process (#256), and into the fs
+   * mutation tools as `<stateDir>/restore/` — where a replaced user
+   * file's previous content is kept for `os.fs.restore`. Omitted keeps
+   * the search cache in-memory and turns the replace guard off, which is
+   * what existing embedders and tests get.
+   */
+  stateDir?: string;
+  /**
+   * The operator's request behind the turn running on a session (the
+   * bootstrap's per-turn record the workers' briefs quote), for the
+   * input refusal of `os.fs.write` (`fs-input-guard.ts`). Omitted
+   * (embedders, tests) leaves only the F36 warn-and-save path.
+   */
+  resolveOriginalRequest?: (sessionId: string) => string | undefined;
+  /** The agent's reply before the turn's user message, for the same refusal (ATO-860). */
+  resolvePreviousReply?: (sessionId: string) => string | undefined;
+  /** A fan-out's declared inputs per worker session (`fs-declared-inputs.ts`); omitted declares nothing. */
+  declaredInputs?: Pick<DeclaredInputsRegistry, "inputsOf">;
+  /**
+   * Operator policy for the shell guard — today the git remote-sync
+   * switch. Predicates rather than values so a toggle flipped live in
+   * the Integrations hub is honoured on the next command. Omitted
+   * disables the policy layer (embedders, tests).
+   */
+  shellPolicy?: ShellGuardPolicy;
+  /**
+   * The registry of commands `os.shell.run` detached at the default
+   * timeout (F47). The bootstrap owns it so the turn-end, session-end
+   * and shutdown paths can stop the jobs; omitted (embedders, tests)
+   * the tool keeps a private one whose jobs die only at the ceiling.
+   */
+  shellJobs?: ShellJobRegistry;
+  /**
+   * Where the user adds an Exa key, for the advice in an `os.web.search`
+   * error (ATO-345). The terminal UI passes `integrations-hub`; omitted
+   * keeps the desktop / `.env` advice.
+   */
+  webSearchKeyHelp?: WebSearchKeyHelp;
+}
+
+export function registerOsTools(
+  registry: ToolRegistry,
+  options: RegisterOsToolsOptions,
+): void {
+  registry.register(
+    buildOsShellTool({
+      approvals: options.approvals,
+      approvalRequired: options.approvalRequired,
+      defaultTimeoutMs: options.config.tools.shell.defaultTimeoutMs,
+      envPassthrough: options.config.tools.shell.envPassthrough,
+      ...(options.shellPolicy === undefined
+        ? {}
+        : { shellPolicy: options.shellPolicy }),
+      ...(options.shellJobs === undefined ? {} : { jobs: options.shellJobs }),
+    }),
+  );
+  // One option bag for every tool that replaces file content, so the
+  // write, the edit, the patch and the restore share the store that
+  // remembers what each session created and what was replaced in each
+  // working directory (by any session — a fusion worker's included).
+  const fsMutation = {
+    approvals: options.approvals,
+    approvalRequired: options.approvalRequired,
+    trustConfigPaths: options.trustConfigPaths,
+    ...(options.stateDir === undefined
+      ? {}
+      : { restore: new FileRestoreStore(resolve(options.stateDir, "restore")) }),
+    ...(options.resolveOriginalRequest === undefined
+      ? {}
+      : { resolveOriginalRequest: options.resolveOriginalRequest }),
+    ...(options.resolvePreviousReply === undefined
+      ? {}
+      : { resolvePreviousReply: options.resolvePreviousReply }),
+    ...(options.declaredInputs === undefined
+      ? {}
+      : { declaredInputs: options.declaredInputs }),
+  };
+  registry.register(osFsReadTool);
+  registry.register(buildOsFsWriteTool(fsMutation));
+  registry.register(buildOsFsTrashTool(options));
+  registry.register(osFsListTool);
+  registry.register(osFsGlobTool);
+  registry.register(
+    buildOsFsLocateProjectTool({
+      listRecentSessions: options.listRecentSessionDirs,
+      projectRoots: options.config.projects.roots,
+    }),
+  );
+  registry.register(buildOsFsGrepTool());
+  registry.register(buildOsFsEditTool(fsMutation));
+  registry.register(buildOsFsReadDocumentTool());
+  registry.register(buildOsFsArchiveListTool());
+  registry.register(buildOsFsArchiveReadEntryTool());
+  registry.register(
+    buildOsFsArchiveExtractTool({
+      approvals: options.approvals,
+      approvalRequired: options.approvalRequired,
+      trustConfigPaths: options.trustConfigPaths,
+    }),
+  );
+  registry.register(
+    buildOsHttpRequestTool({
+      approvals: options.approvals,
+      approvalRequired: options.approvalRequired,
+      config: options.config,
+    }),
+  );
+  registry.register(
+    buildOsWebSearchTool({
+      config: options.config,
+      stateDir: options.stateDir,
+      ...(options.webSearchKeyHelp === undefined
+        ? {}
+        : { keyHelp: options.webSearchKeyHelp }),
+    }),
+  );
+  registry.register(buildOsWebFetchTool({ config: options.config }));
+  registry.register(osClipboardReadTool);
+  registry.register(osClipboardWriteTool);
+  registry.register(osWindowListTool);
+  registry.register(osWindowFocusTool);
+  registry.register(osNotifyTool);
+  registry.register(
+    buildOsEmailInboxTool({
+      approvals: options.approvals,
+      approvalRequired: options.approvalRequired,
+    }),
+  );
+  registry.register(
+    buildOsEmailSendTool({
+      approvals: options.approvals,
+      approvalRequired: options.approvalRequired,
+    }),
+  );
+  registry.register(osFsHashTool);
+  registry.register(osFsDiffTool);
+  registry.register(buildOsFsPatchTool(fsMutation));
+  registry.register(buildOsFsRestoreTool(fsMutation));
+  registry.register(buildOsFsMoveTool(fsMutation));
+  registry.register(osFsWatchTool);
+  registry.register(osGitStatusTool);
+  registry.register(osGitLogTool);
+  registry.register(osGitDiffTool);
+  registry.register(osGitShowTool);
+  registry.register(osGitBlameTool);
+  registry.register(osGitBranchTool);
+  // Local git writes ride the fs approval ladder against the repo root.
+  const gitWriteOptions = {
+    approvals: options.approvals,
+    approvalRequired: options.approvalRequired,
+    trustConfigPaths: options.trustConfigPaths,
+  };
+  registry.register(buildOsGitInitTool(gitWriteOptions));
+  registry.register(buildOsGitAddTool(gitWriteOptions));
+  registry.register(buildOsGitCheckoutTool(gitWriteOptions));
+  registry.register(buildOsGitCommitTool(gitWriteOptions));
+  // Network git shares the shell guard's remote-sync predicate so the
+  // dedicated tools and the escape hatch can never disagree. With no
+  // policy injected (embedders, tests) the repository stays closed —
+  // the conservative reading of "nobody said it may leave".
+  const gitRemote = {
+    approvals: options.approvals,
+    approvalRequired: options.approvalRequired,
+    isRemoteSyncEnabled:
+      options.shellPolicy?.isGitRemoteSyncEnabled ?? (() => false),
+  };
+  registry.register(buildOsGitRemoteTool(gitRemote));
+  registry.register(buildOsGitFetchTool(gitRemote));
+  registry.register(buildOsGitPullTool(gitRemote));
+  registry.register(buildOsGitPushTool(gitRemote));
+  registry.register(buildOsGitCloneTool(gitRemote));
+  registry.register(osProcListTool);
+  registry.register(
+    buildOsProcKillTool({
+      approvals: options.approvals,
+      approvalRequired: options.approvalRequired,
+    }),
+  );
+}

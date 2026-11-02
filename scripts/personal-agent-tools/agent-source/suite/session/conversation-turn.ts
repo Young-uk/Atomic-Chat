@@ -1,0 +1,1199 @@
+import type { ToolApprovalRecord } from "../approval/approval-ledger.mjs";
+import { estimateTokens } from "../prompt/token-budget.mjs";
+
+/**
+ * A single entry in the chat transcript. We use the every-step layout:
+ * every `assistant_tool_call` and `tool_result` is its own turn so the
+ * model can observe the full action chain during multi-turn runs. A
+ * macro-turn (one user message → 0..N tool steps → one reply) is a
+ * contiguous slice of this list.
+ */
+export type ConversationTurn =
+  | {
+      kind: "user";
+      text: string;
+      /**
+       * Sent while a turn was already running and folded into it at a
+       * step boundary (mid-turn steering), rather than opening a turn of
+       * its own. The model keeps working on the request that opened the
+       * turn, so a transcript that drew this row like an ordinary prompt
+       * would present that request's answer as the reply to it.
+       */
+      steered?: true;
+      at: number;
+    }
+  | {
+      kind: "assistant_tool_call";
+      tool: string;
+      args: Record<string, unknown>;
+      reasoning?: string;
+      at: number;
+    }
+  | {
+      kind: "tool_result";
+      tool: string;
+      status: "ok" | "error";
+      summary: string;
+      truncated?: boolean;
+      /**
+       * Approvals the operator was asked for while this call ran, in the
+       * order they were answered. Transcript-only: never rendered into the
+       * prompt. A host replaying the session puts the approval back under
+       * the call that raised it instead of dropping it.
+       */
+      approvals?: readonly ToolApprovalRecord[];
+      /**
+       * For an `os.fs.read` that returned lines: which file version and
+       * which lines they were. Lets the prompt show a repeat of a read that
+       * is still in view as a pointer to it instead of the same text twice
+       * (`findReadRepeats`). Absent on every other result, and on rows
+       * written before it existed — those always render in full.
+       */
+      read?: ReadTurnIdentity;
+      at: number;
+    }
+  | {
+      kind: "assistant_reply";
+      text: string;
+      /** Content of `<think>` blocks that preceded the final reply, if any. */
+      reasoning?: string;
+      /** Absolute paths of files delivered with the reply, if any. */
+      attachments?: readonly string[];
+      /**
+       * A `reply` the model batched with work tools: recorded as an
+       * interim note while the turn went on, so it does not end the
+       * macro-turn the way a sole `reply` does (`agent/progress-note-reply.ts`).
+       */
+      progressNote?: true;
+      /**
+       * Not a reply at all: the stand-in a turn the user stopped leaves
+       * behind ({@link stoppedTurnMarker}). It closes the macro-turn like
+       * a reply, so the stopped request reads as finished business, but
+       * nothing that wants the agent's words — the reply a client is
+       * handed, a reflection pair, a session's title — may take it for one.
+       */
+      stopped?: true;
+      at: number;
+    };
+
+/**
+ * What an `os.fs.read` result row remembers about the read, taken from the
+ * tool's own coverage detail (`tools/os/fs-read-coverage.ts`): the
+ * symlink-resolved file, a digest of the bytes the read looked at, the
+ * 1-based inclusive range that came back, and whether the lines carried
+ * `LINE_NUMBER|` prefixes. Two rows with the same identity read the same
+ * lines of the same content the same way — the digest, not mtime or size,
+ * is what says "unchanged", so a same-size in-place edit is still a new
+ * version and a touched-but-identical file is not.
+ */
+export interface ReadTurnIdentity {
+  path: string;
+  contentHash: string;
+  startLine: number;
+  endLine: number;
+  numbered: boolean;
+}
+
+/**
+ * Whether a turn is a reply that closed its macro-turn. A progress note
+ * is an `assistant_reply` row too, but the turn continued past it, so a
+ * scan for "the reply that answered the user" must skip it.
+ *
+ * A stop marker does close its macro-turn and is counted here: the
+ * boundaries, the packer's freshness and the request picker all need to
+ * see the stopped task as over. A scan for the agent's actual words
+ * also checks {@link isStoppedTurnMarker}.
+ */
+export function isFinalReplyTurn(
+  turn: ConversationTurn | undefined,
+): turn is Extract<ConversationTurn, { kind: "assistant_reply" }> {
+  return turn?.kind === "assistant_reply" && turn.progressNote !== true;
+}
+
+/**
+ * What the model reads where a stopped turn would have answered.
+ *
+ * Before it, a turn the user stopped left only its `user` row: the
+ * cancel path records no reply, so the next message landed straight
+ * after the stopped one and the model read the two as one request —
+ * "write a 1000-word story", stop, "how are you?" was answered with the
+ * story. The "(stopped)" a client draws is the client's own and never
+ * reaches the prompt; this line is the model's copy of it. It says the
+ * work done before the stop stands, because tool calls that already ran
+ * did take effect, and that only the rest is dropped.
+ */
+export const STOPPED_TURN_MARKER_TEXT =
+  "(stopped by the user before this turn finished: the request above was not completed. Do not continue it or come back to it unless the user asks for it again. Anything already done before the stop stays done.)";
+
+/** The `assistant_reply` row a turn the user stopped ends on. */
+export function stoppedTurnMarker(at = Date.now()): ConversationTurn {
+  return {
+    kind: "assistant_reply",
+    text: STOPPED_TURN_MARKER_TEXT,
+    stopped: true,
+    at,
+  };
+}
+
+/** Whether a row is a stop marker rather than something the agent said. */
+export function isStoppedTurnMarker(
+  turn: ConversationTurn | undefined,
+): boolean {
+  return turn?.kind === "assistant_reply" && turn.stopped === true;
+}
+
+export function userTurn(text: string, at = Date.now()): ConversationTurn {
+  return { kind: "user", text, at };
+}
+
+/** A user message folded into the running turn (see `steered`). */
+export function steeredUserTurn(
+  text: string,
+  at = Date.now(),
+): ConversationTurn {
+  return { kind: "user", text, steered: true, at };
+}
+
+export function assistantToolCallTurn(params: {
+  tool: string;
+  args: Record<string, unknown>;
+  reasoning?: string;
+  at?: number;
+}): ConversationTurn {
+  let turn: ConversationTurn = {
+    kind: "assistant_tool_call",
+    tool: params.tool,
+    args: params.args,
+    at: params.at ?? Date.now(),
+  };
+  if (params.reasoning !== undefined && params.reasoning.length > 0) {
+    turn = { ...turn, reasoning: params.reasoning };
+  }
+  return turn;
+}
+
+export function toolResultTurn(params: {
+  tool: string;
+  status: "ok" | "error";
+  summary: string;
+  truncated?: boolean;
+  approvals?: readonly ToolApprovalRecord[];
+  read?: ReadTurnIdentity;
+  at?: number;
+}): ConversationTurn {
+  let turn: ConversationTurn = {
+    kind: "tool_result",
+    tool: params.tool,
+    status: params.status,
+    summary: params.summary,
+    at: params.at ?? Date.now(),
+  };
+  if (params.truncated) turn = { ...turn, truncated: true };
+  if (params.approvals !== undefined && params.approvals.length > 0) {
+    turn = { ...turn, approvals: [...params.approvals] };
+  }
+  if (params.read !== undefined) turn = { ...turn, read: { ...params.read } };
+  return turn;
+}
+
+/**
+ * Build an `assistant_reply` turn. The second argument is either the
+ * legacy positional `at` timestamp or an options object with optional
+ * `at` and `reasoning`. Keeping both shapes means existing callers (and
+ * tests) that passed a bare number stay valid.
+ */
+export function assistantReplyTurn(
+  text: string,
+  atOrOptions:
+    | number
+    | {
+        at?: number;
+        reasoning?: string;
+        attachments?: readonly string[];
+        progressNote?: boolean;
+      } = {},
+): ConversationTurn {
+  const options =
+    typeof atOrOptions === "number" ? { at: atOrOptions } : atOrOptions;
+  const at = options.at ?? Date.now();
+  let turn: ConversationTurn = { kind: "assistant_reply", text, at };
+  if (options.reasoning !== undefined && options.reasoning.length > 0) {
+    turn = { ...turn, reasoning: options.reasoning };
+  }
+  if (options.attachments !== undefined && options.attachments.length > 0) {
+    turn = { ...turn, attachments: [...options.attachments] };
+  }
+  if (options.progressNote === true) {
+    turn = { ...turn, progressNote: true };
+  }
+  return turn;
+}
+
+/**
+ * Upper bound on the number of characters of a `tool_result.summary` that
+ * we are willing to paste back into `### conversation`. Tools like
+ * `os.fs.read_document` and `os.fs.read` cap their own summary at the
+ * read budget (`maxBytes`, up to 5MB), which — uncapped at render — would
+ * dump the entire file into the prompt tail and keep it there on every
+ * subsequent turn. The model still sees the full `summary` on the step
+ * that produced it (up to this cap), and retains structured metadata on
+ * `details`. Concrete value: ~1000 tokens, which covers 3-4 PDF pages or
+ * a short code file and matches the `maxTailLines` budget most tools use.
+ */
+const TOOL_RESULT_RENDER_CAP_CHARS = 8000;
+const GOG_TOOL_RESULT_RENDER_CAP_CHARS = 16_000;
+
+/**
+ * Tools whose `tool_result.summary` is rendered **uncapped** into
+ * `### conversation` while the result is "fresh" (still inside the
+ * current macro-turn — i.e. no `assistant_reply` has been emitted since
+ * the call). Once the macro-turn closes with an `assistant_reply`, these
+ * results revert to the standard `TOOL_RESULT_RENDER_CAP_CHARS` cap so
+ * the conversation history does not pay full token cost forever.
+ *
+ * The semantic: the model needs the full body **on the inference that
+ * consumes the result**. After the agent has produced its reply for the
+ * user, the body is no longer load-bearing — a compact tail is enough
+ * for "did this happen?" recall.
+ */
+const TOOLS_FULL_BODY_WHEN_FRESH: ReadonlySet<string> = new Set([
+  "os.http.request",
+  // The listing tools (see src/compressor/listing-caps.ts). Their
+  // summaries are an ordered list of rows: the model needs the rows on
+  // the turn it is choosing a commit, a PR, a branch, a process or a
+  // tab from, and a header plus the newest few is enough afterwards
+  // for "what did I look at?". Without this entry a wide listing —
+  // `os.proc.list` at its default `limit` runs to the full 8 000
+  // chars, ~2 000 tokens — would sit in `### conversation` at that
+  // size for the rest of the session; with it, that width is paid for
+  // once and the standing cost drops to TOOL_RESULT_HISTORY_CAP_CHARS,
+  // the same 400 chars these results cost before the caps changed.
+  // `os.shell.run` is deliberately absent: its `{"jobs": true}` form
+  // is a listing, but the tool's other forms are not, and its render
+  // budget is decided below.
+  "os.git.log",
+  "os.git.status",
+  "os.git.branch",
+  "os.proc.list",
+  "os.window.list",
+  "browser.tabs",
+  "github.pr.list",
+  "github.issue.list",
+]);
+
+/**
+ * Cap applied to fresh-bypass tool results once they age out of the
+ * current macro-turn. Matches the original `compressToolResult` default
+ * (400 chars) so the historical "summary" footprint stays unchanged.
+ */
+const TOOL_RESULT_HISTORY_CAP_CHARS = 400;
+
+export interface RenderTurnOptions {
+  /**
+   * `true` when this turn is part of the **current macro-turn** — i.e.
+   * the slice of turns after the most recent `assistant_reply`. The
+   * caller is responsible for computing this; defaults to `false` (safe
+   * — applies the standard render cap).
+   */
+  inCurrentMacroTurn?: boolean;
+  /**
+   * File line an `os.fs.read` result starts at — its call's `offset`, or 1
+   * when the call had none. Lets a read that is cut at render time name the
+   * exact `offset` of the rest. Left unset when unknown (a negative offset,
+   * or the call is out of view), and the hint then carries no number.
+   */
+  readStartLine?: number;
+  /**
+   * Set when this `os.fs.read` result repeats one that is in the same
+   * prompt — see `findReadRepeats`, the only thing that should set it. The
+   * body then renders as a short pointer to that result instead of the
+   * same text again. Never set it for a row whose earlier read is not in
+   * view: the pointer would name text the model cannot see.
+   */
+  readRepeat?: ReadRepeatRef;
+}
+
+/** Where the full text of a repeated read is, counted in the prompt. */
+export interface ReadRepeatRef {
+  /**
+   * Tool results from the full read up to this one: `1` when it is the
+   * result just before, counting the full read itself.
+   */
+  resultsBack: number;
+}
+
+/**
+ * Render a single turn as a compact line for the prompt's `### conversation`
+ * section. The format mirrors the one used by ChatML/Hermes-style models so
+ * a small LLM can recognise the turn boundaries without a custom template.
+ */
+export function renderTurnForPrompt(
+  turn: ConversationTurn,
+  options: RenderTurnOptions = {},
+): string {
+  switch (turn.kind) {
+    case "user":
+      return `user: ${turn.text}`;
+    case "assistant_tool_call": {
+      const argsJson = JSON.stringify(turn.args);
+      return `assistant_tool_call: ${turn.tool} ${argsJson}`;
+    }
+    case "tool_result": {
+      const prefix = `tool_result[${turn.tool} ${turn.status}]`;
+      const stub = readRepeatStub(turn, options);
+      if (stub !== null) return `${prefix}: ${stub}`;
+      const body = renderToolResultBody(turn, options);
+      return `${prefix}: ${body}${turn.truncated ? " (truncated)" : ""}`;
+    }
+    case "assistant_reply":
+      // The model should remember what it shipped, on the same single
+      // line every other turn kind renders to.
+      return turn.attachments !== undefined && turn.attachments.length > 0
+        ? `assistant: ${turn.text} (attached: ${turn.attachments.join(", ")})`
+        : `assistant: ${turn.text}`;
+  }
+}
+
+/**
+ * The body of a tool result as the prompt shows it — the same caps
+ * whether it lands on a `tool_result[…]:` text line or in a native
+ * `tool` message, which is why it is exported rather than inlined.
+ */
+export function renderToolResultBody(
+  turn: Extract<ConversationTurn, { kind: "tool_result" }>,
+  options: RenderTurnOptions,
+): string {
+  const stub = readRepeatStub(turn, options);
+  if (stub !== null) return stub;
+  if (isGogShellResult(turn)) {
+    if (options.inCurrentMacroTurn === true)
+      return capSummary(turn.summary, GOG_TOOL_RESULT_RENDER_CAP_CHARS);
+  } else if (turn.tool === "os.shell.run") {
+    // The tool compressed this at ingestion (`agent.shellToolResultCharCap`,
+    // 16 000 by default); the render budget only decides how much of that
+    // the prompt pays for. Fresh — the inference that has to act on the
+    // command — gets the generic cap; once the macro-turn closes it drops
+    // back to the 400 chars a shell result used to be, so widening
+    // ingestion costs nothing in `### conversation` forever. Both cuts are
+    // taken from the start: a shell summary *is* a tail, and its last
+    // lines (the `exit:` line, the verdict) are the answer. The command
+    // line is not lost with the head — it is on the `assistant_tool_call`
+    // turn immediately above.
+    return capSummaryToTail(
+      turn.summary,
+      options.inCurrentMacroTurn === true
+        ? TOOL_RESULT_RENDER_CAP_CHARS
+        : TOOL_RESULT_HISTORY_CAP_CHARS,
+    );
+  }
+  if (TOOLS_FULL_BODY_WHEN_FRESH.has(turn.tool)) {
+    if (options.inCurrentMacroTurn === true) return turn.summary;
+    return capSummary(turn.summary, TOOL_RESULT_HISTORY_CAP_CHARS);
+  }
+  // The orchestrator's review input. A fan-out report runs past the generic
+  // cap as soon as a few workers answer at length, and a clipped one hid the
+  // task whose declared file was left unchanged — so it is whole for the
+  // turn that reviews it (bounded by the delegate's own output cap) and
+  // keeps the generic cap in history rather than the short one above.
+  if (turn.tool === "fusion.delegate" && options.inCurrentMacroTurn === true) {
+    return turn.summary;
+  }
+  if (turn.tool === "os.fs.read") {
+    return capReadSummary(
+      turn.summary,
+      TOOL_RESULT_RENDER_CAP_CHARS,
+      options.readStartLine,
+    );
+  }
+  return capSummary(turn.summary, TOOL_RESULT_RENDER_CAP_CHARS);
+}
+
+/**
+ * The body a repeated `os.fs.read` renders as, or `null` when it renders
+ * in full.
+ *
+ * Small local models pay for every token of a re-read file twice — in the
+ * window and in prompt evaluation — and the second copy tells them
+ * nothing: the row carries the same identity (same file version, same
+ * lines, same rendering) and the same stored text as a read still in the
+ * prompt. The pointer says which result holds that text and that it is
+ * still current. A pointer longer than the text it replaces is not used,
+ * and neither is one for a row with no identity (an empty read, an
+ * error, a row from before identities were kept).
+ */
+export function readRepeatStub(
+  turn: Extract<ConversationTurn, { kind: "tool_result" }>,
+  options: RenderTurnOptions,
+): string | null {
+  const ref = options.readRepeat;
+  const read = turn.read;
+  if (ref === undefined || read === undefined || turn.tool !== "os.fs.read") {
+    return null;
+  }
+  const lines = read.endLine - read.startLine + 1;
+  const where =
+    ref.resultsBack <= 1
+      ? "the os.fs.read result just above"
+      : `the os.fs.read result ${ref.resultsBack} tool results above`;
+  const stub =
+    `[unchanged since your earlier read: same ${lines} lines ` +
+    `(${read.startLine}-${read.endLine}), identical text — see ${where}; ` +
+    `not repeated here]`;
+  return stub.length < turn.summary.length ? stub : null;
+}
+
+/**
+ * For each turn, the read it repeats: the index of the latest earlier
+ * `os.fs.read` result with the same identity and the same stored text, or
+ * `-1`.
+ *
+ * Both conditions are needed. The identity says the file version, range
+ * and rendering are the same; the text guards the case the identity does
+ * not see — a batch whose results shared one char budget stores a
+ * different cut of the same read (`agent/batch-summary-cap.ts`), and a
+ * pointer to a shorter cut would hide lines this row has.
+ *
+ * The answer is about the list it is given, so it is only as safe as
+ * that list: called on the turns a prompt actually shows, a repeat
+ * always points at a read the model can see. A cut that drops the
+ * earlier read leaves this row with no earlier match, and it renders in
+ * full again.
+ */
+export function findReadRepeats(
+  turns: readonly ConversationTurn[],
+): number[] {
+  const previous: number[] = new Array<number>(turns.length).fill(-1);
+  const latest = new Map<string, number>();
+  for (let i = 0; i < turns.length; i += 1) {
+    const turn = turns[i];
+    if (
+      turn?.kind !== "tool_result" ||
+      turn.tool !== "os.fs.read" ||
+      turn.status !== "ok" ||
+      turn.read === undefined ||
+      turn.read.startLine < 1
+    ) {
+      continue;
+    }
+    const key = readIdentityKey(turn.read);
+    const before = latest.get(key);
+    if (before !== undefined) {
+      const earlier = turns[before];
+      if (earlier?.kind === "tool_result" && earlier.summary === turn.summary) {
+        previous[i] = before;
+      }
+    }
+    latest.set(key, i);
+  }
+  return previous;
+}
+
+/**
+ * The render reference for every repeat `findReadRepeats` found: how far
+ * back the FIRST read of the chain is, since that is the one rendered in
+ * full — a third identical read points past the second (itself a
+ * pointer) to the text.
+ */
+export function readRepeatRefs(
+  turns: readonly ConversationTurn[],
+  previous: readonly number[] = findReadRepeats(turns),
+): (ReadRepeatRef | undefined)[] {
+  const refs: (ReadRepeatRef | undefined)[] = new Array(turns.length);
+  const origin: number[] = new Array<number>(turns.length);
+  // Tool results before each index, so a distance is one subtraction.
+  const resultsBefore: number[] = new Array<number>(turns.length);
+  let results = 0;
+  for (let i = 0; i < turns.length; i += 1) {
+    resultsBefore[i] = results;
+    if (turns[i]?.kind === "tool_result") results += 1;
+    const prev = previous[i] ?? -1;
+    origin[i] = prev === -1 ? i : (origin[prev] ?? prev);
+    if (prev !== -1) {
+      refs[i] = {
+        resultsBack: resultsBefore[i]! - resultsBefore[origin[i]!]!,
+      };
+    }
+  }
+  return refs;
+}
+
+function readIdentityKey(read: ReadTurnIdentity): string {
+  return [
+    read.path,
+    read.contentHash,
+    `${read.startLine}-${read.endLine}`,
+    read.numbered ? "n" : "p",
+  ].join("\n");
+}
+
+function isGogShellResult(
+  turn: Extract<ConversationTurn, { kind: "tool_result" }>,
+): boolean {
+  return turn.tool === "os.shell.run" && turn.summary.includes("$ gog ");
+}
+
+function capSummary(summary: string, capChars: number): string {
+  if (summary.length <= capChars) return summary;
+  const keep = Math.max(1, capChars - 40);
+  return `${summary.slice(0, keep)}\n… [rendering-truncated ${summary.length - keep} chars]`;
+}
+
+/**
+ * `capSummary` taken from the other end: what survives is the end of the
+ * summary rather than its start. For a result the tool already compressed
+ * into a tail, a head-first cut renders the beginning of that tail and
+ * drops the line the call was made for.
+ */
+function capSummaryToTail(summary: string, capChars: number): string {
+  if (summary.length <= capChars) return summary;
+  const keep = Math.max(1, capChars - 40);
+  return `… [rendering-truncated ${summary.length - keep} chars]\n${summary.slice(-keep)}`;
+}
+
+/**
+ * First file line an `os.fs.read` call returns, mirroring the tool's own
+ * argument handling: no numeric `offset` (or `0`) reads from line 1. A
+ * negative offset counts from the end of a file whose length is not known
+ * here, so it yields `undefined`.
+ */
+export function readStartLineOf(
+  args: Record<string, unknown>,
+): number | undefined {
+  const offset = args.offset;
+  if (typeof offset !== "number" || !Number.isFinite(offset)) return 1;
+  const whole = Math.trunc(offset);
+  if (whole < 0) return undefined;
+  return Math.max(1, whole);
+}
+
+/** Room left under the cap for `capReadSummary`'s paging hint. */
+const READ_PAGING_HINT_RESERVE_CHARS = 260;
+
+/**
+ * `capSummary` for file reads, used at prompt render time and when a
+ * batched step's results share one budget (`agent/batch-summary-cap.ts`).
+ * A read cut mid-line with only a char count sends the model back to read
+ * the same file again, which renders the same cut again — a fusion
+ * reviewer re-read a 4.5 KB `main.js` five times and never saw its last
+ * 486 chars. Cut on a line boundary instead and name the range to ask for
+ * next. A result with no usable line break keeps the plain character cut.
+ */
+export function capReadSummary(
+  summary: string,
+  capChars: number,
+  startLine: number | undefined,
+): string {
+  if (summary.length <= capChars) return summary;
+  const budget = Math.max(1, capChars - READ_PAGING_HINT_RESERVE_CHARS);
+  const lastBreak = summary.lastIndexOf("\n", budget);
+  if (lastBreak < budget / 2) return capSummary(summary, capChars);
+  const shown = summary.slice(0, lastBreak);
+  const rest = summary.slice(lastBreak + 1).replace(/\r?\n$/, "");
+  const shownLines = shown.split("\n").length;
+  const hiddenLines = rest.split("\n").length;
+  const next =
+    startLine === undefined
+      ? "the line after the last one shown as `offset`"
+      : `offset: ${startLine + shownLines}`;
+  return (
+    `${shown}\n… [prompt shows the first ${shownLines} lines of this read; ` +
+    `${hiddenLines} more lines are not shown, and reading the same range again shows the same cut. ` +
+    `To see them, call os.fs.read with ${next} and limit: ${shownLines}]`
+  );
+}
+
+/**
+ * Find the index of the first turn that belongs to the current
+ * macro-turn — i.e. the slice of turns strictly after the most recent
+ * `assistant_reply`. Returns `0` when no reply has been emitted yet
+ * (everything is part of the current macro-turn). A progress note did
+ * not close anything, so the scan looks past it.
+ */
+export function findCurrentMacroTurnStart(
+  turns: readonly ConversationTurn[],
+): number {
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (isFinalReplyTurn(turns[i])) return i + 1;
+  }
+  return 0;
+}
+
+/**
+ * Outcome of `packConversation`. `droppedSummary`, when present, is a
+ * single-line deterministic recap that callers are expected to render
+ * above the visible tail so the model can tell something was compressed.
+ */
+export interface PackedConversation {
+  visibleTurns: ConversationTurn[];
+  droppedSummary: string | null;
+  droppedCount: number;
+  /** Macro-turns with at least one row in the visible tail. */
+  visiblePairs: number;
+  /** Macro-turns dropped whole. */
+  droppedPairs: number;
+  /**
+   * Which limit actually made the cut, so the readout can name it
+   * instead of inferring it from numbers that look alike.
+   */
+  boundBy: "pairs" | "tokens" | null;
+  /**
+   * Where this pack cut the transcript, for the next pack to hold —
+   * `null` when nothing was dropped. See {@link ConversationPackStart}.
+   */
+  packStart: ConversationPackStart | null;
+}
+
+/**
+ * The cut a previous pack made, remembered on the session so the next
+ * steps keep it.
+ *
+ * Without it every step past the budget dropped just enough to fit, so
+ * the transcript's first line — and with it the `summary:` line and
+ * everything after — changed on every step. A model whose attention
+ * cannot roll back (Gemma 4's sliding window) then re-read the whole
+ * prompt each step: 40 of one turn's 79 minutes went to prompt
+ * evaluation. Held between cuts, the prompt only ever grows at the end.
+ */
+export interface ConversationPackStart {
+  /** Index into `turns` of the first turn kept. Always `> 0`. */
+  index: number;
+  /**
+   * `at` of that turn. A guard, not an id: the transcript this cut was
+   * made on is append-only, so a mismatch means the turns were rewritten
+   * under the pin (an import, a rebuilt session) and the cut no longer
+   * addresses anything.
+   */
+  at: number;
+  /** The limit that made the cut, reported unchanged while it holds. */
+  boundBy: "pairs" | "tokens";
+}
+
+/**
+ * Default share of the budget kept after a cut. Chosen so the cut is
+ * spent once per third of the window, not per step; `1` restores the
+ * cut-just-enough behaviour.
+ */
+export const DEFAULT_CONVERSATION_LOW_WATER = 0.65;
+
+export interface PackConversationOptions {
+  /** Compacted histories pin requests outside this suffix. */
+  pinCurrentTask?: boolean;
+  /**
+   * Keep at most this many macro-turns. An *additional* constraint, never
+   * a replacement for `maxTokens`: a pair has no bounded size — one task
+   * can run `agent.maxSteps` tool calls, and a fresh `os.http.request`
+   * body renders uncapped — so N pairs can exceed any window. Whichever
+   * limit cuts more wins.
+   */
+  maxPairs?: number;
+  /**
+   * Boundaries recorded by the session (`SessionState.macroTurnStarts`).
+   * Preferred over deriving them, because a task ended with `finish`
+   * writes no `assistant_reply` and a derived scan would fuse it into
+   * the next task. (A cancelled one did not either, before it left a
+   * stop marker; sessions stored then still have such tasks.)
+   */
+  macroTurnStarts?: readonly number[];
+  /**
+   * Share of a limit kept when that limit overflows, in `(0, 1]`. A cut
+   * drops down to `floor(limit × lowWater)` — tokens of the budget,
+   * macro-turns of `maxPairs` — and the start then holds until the tail
+   * overflows again. Defaults to {@link DEFAULT_CONVERSATION_LOW_WATER}.
+   */
+  lowWater?: number;
+  /**
+   * The cut the previous pack made (`SessionState.conversationPackStart`).
+   * Held as the start while the tail from it still fits both limits;
+   * ignored when it no longer addresses this transcript.
+   */
+  packStart?: ConversationPackStart | null;
+}
+
+/**
+ * Start index of every macro-turn, always beginning with `0`.
+ *
+ * Prefers the session's recorded boundaries. Falling back to derivation,
+ * a macro-turn opens at a `user` row whose predecessor is an
+ * `assistant_reply` — *not* at every `user` row, because steering
+ * appends extra user rows inside a single task and each one would
+ * otherwise read as a task of its own.
+ */
+export function macroTurnBoundaries(
+  turns: readonly ConversationTurn[],
+  recorded?: readonly number[],
+): number[] {
+  if (turns.length === 0) return [];
+  if (recorded && recorded.length > 0) {
+    const seen = new Set<number>([0]);
+    for (const index of recorded) {
+      if (Number.isInteger(index) && index > 0 && index < turns.length) {
+        seen.add(index);
+      }
+    }
+    return [...seen].sort((a, b) => a - b);
+  }
+  const derived = [0];
+  for (let i = 1; i < turns.length; i += 1) {
+    if (turns[i]?.kind === "user" && isFinalReplyTurn(turns[i - 1])) {
+      derived.push(i);
+    }
+  }
+  return derived;
+}
+
+/**
+ * Token cost of each macro-turn, oldest first.
+ *
+ * For the readout, not the packer: it lets the UI answer "what would N
+ * tasks cost?" with a prefix sum, so moving the pairs dial redraws the
+ * gauge immediately instead of one prompt build later. Costs come from
+ * the same memoised estimator the packer uses, with the same
+ * `inCurrentMacroTurn` freshness flag, so the projection and the real
+ * thing agree.
+ */
+export function pairTokenCosts(
+  turns: readonly ConversationTurn[],
+  recorded?: readonly number[],
+): number[] {
+  const boundaries = macroTurnBoundaries(turns, recorded);
+  if (boundaries.length === 0) return [];
+  const currentStart = findCurrentMacroTurnStart(turns);
+  const repeats = readRepeatCosts(turns, currentStart);
+  const costs: number[] = [];
+  for (let k = 0; k < boundaries.length; k += 1) {
+    const from = boundaries[k] ?? 0;
+    const to = boundaries[k + 1] ?? turns.length;
+    let sum = 0;
+    for (let i = from; i < to; i += 1) {
+      const turn = turns[i];
+      if (!turn) continue;
+      // A repeated read is priced as its pointer only when the read it
+      // points at is in the same task, i.e. in view whenever this task is.
+      // One in an earlier task may be cut away first, so it is priced in
+      // full — the projection may run high, never low.
+      const previous = repeats.previous[i] ?? -1;
+      sum +=
+        previous >= from
+          ? (repeats.costs[i] ?? 0)
+          : tokenCostForTurn(turn, i >= currentStart);
+    }
+    costs.push(sum);
+  }
+  return costs;
+}
+
+/** First index to keep so that at most `maxPairs` macro-turns survive. */
+function startIndexForPairs(boundaries: number[], maxPairs: number): number {
+  if (boundaries.length === 0 || maxPairs <= 0) return 0;
+  if (boundaries.length <= maxPairs) return 0;
+  return boundaries[boundaries.length - maxPairs] ?? 0;
+}
+
+/** How many whole macro-turns fall entirely before `startIndex`. */
+function countDroppedPairs(
+  boundaries: number[],
+  startIndex: number,
+  turnCount: number,
+): number {
+  let dropped = 0;
+  for (let k = 0; k < boundaries.length; k += 1) {
+    const end = boundaries[k + 1] ?? turnCount;
+    if (end <= startIndex) dropped += 1;
+  }
+  return dropped;
+}
+
+/**
+ * Token budget we always carve out for the summary line when truncation
+ * kicks in. The line itself is O(1) in length regardless of how many
+ * turns got dropped, so a small fixed reserve is safe.
+ */
+const SUMMARY_TOKEN_RESERVE = 40;
+
+/**
+ * The share of a limit a cut keeps: the caller's `lowWater` when it is a
+ * usable fraction, the default otherwise.
+ */
+function lowWaterOf(options: PackConversationOptions): number {
+  const raw = options.lowWater;
+  if (raw === undefined || !Number.isFinite(raw) || raw <= 0 || raw > 1) {
+    return DEFAULT_CONVERSATION_LOW_WATER;
+  }
+  return raw;
+}
+
+/**
+ * The remembered cut, when it still addresses this transcript: the index
+ * is inside `turns` and the turn there is the one the cut was made on.
+ */
+function heldPackStart(
+  packStart: ConversationPackStart | null | undefined,
+  turns: readonly ConversationTurn[],
+): ConversationPackStart | null {
+  if (!packStart) return null;
+  const { index, at } = packStart;
+  if (!Number.isInteger(index) || index <= 0 || index >= turns.length) {
+    return null;
+  }
+  return turns[index]?.at === at ? packStart : null;
+}
+
+/**
+ * First index whose suffix costs at most `budget` tokens, walking from
+ * the newest turn back. `turns.length` when not even the last turn fits.
+ *
+ * A repeated read costs its full text until the read it repeats joins
+ * the suffix, and its pointer from then on — so taking turn `i` costs
+ * `i` itself minus what every later repeat of `i` stops costing. Those
+ * repeats are always already in the suffix (they come after `i`).
+ */
+function startIndexForTokens(
+  tokenCosts: readonly number[],
+  budget: number,
+  repeats: ReadRepeatCosts,
+): number {
+  const savings = new Array<number>(tokenCosts.length).fill(0);
+  for (let i = 0; i < tokenCosts.length; i += 1) {
+    const previous = repeats.previous[i] ?? -1;
+    if (previous === -1) continue;
+    savings[previous] =
+      (savings[previous] ?? 0) +
+      (tokenCosts[i] ?? 0) -
+      (repeats.costs[i] ?? 0);
+  }
+  let acc = 0;
+  let startIndex = tokenCosts.length;
+  for (let i = tokenCosts.length - 1; i >= 0; i -= 1) {
+    const cost = (tokenCosts[i] ?? 0) - (savings[i] ?? 0);
+    if (acc + cost > budget) break;
+    acc += cost;
+    startIndex = i;
+  }
+  return startIndex;
+}
+
+/**
+ * Token cost of the turns from `from` to the end, as the renderer will
+ * show them: a repeated read whose earlier read is at or after `from`
+ * costs its pointer, any other turn its full rendering.
+ */
+function suffixTokens(
+  tokenCosts: readonly number[],
+  repeats: ReadRepeatCosts,
+  from: number,
+): number {
+  let sum = 0;
+  for (let i = from; i < tokenCosts.length; i += 1) {
+    const previous = repeats.previous[i] ?? -1;
+    sum +=
+      previous >= from ? (repeats.costs[i] ?? 0) : (tokenCosts[i] ?? 0);
+  }
+  return sum;
+}
+
+/**
+ * Pick the tail of the turn list that fits within `maxTokens` and return
+ * a deterministic one-line summary for the dropped prefix. Older turns
+ * go first, but the last `user` turn is always visible so the model
+ * never loses the current request. Summary format matches:
+ * `summary: N older turns dropped (K user, L tool calls, M replies; first at ISO, last at ISO)`.
+ *
+ * Cuts are made in chunks and held. When the tail from the remembered
+ * start (`options.packStart`) still fits both limits, that start is kept
+ * as it is — the prompt then only grows at its end between cuts, and the
+ * summary line does not move. When a limit overflows, the cut drops to
+ * `lowWater` of that limit rather than to the limit itself, so the next
+ * steps have room to append before the next cut. The pins (the last
+ * user turn, the current task's opening turn) apply to every cut.
+ */
+export function packConversation(
+  turns: readonly ConversationTurn[],
+  maxTokens: number,
+  options: PackConversationOptions = {},
+): PackedConversation {
+  if (turns.length === 0) {
+    return {
+      visibleTurns: [],
+      droppedSummary: null,
+      droppedCount: 0,
+      visiblePairs: 0,
+      droppedPairs: 0,
+      boundBy: null,
+      packStart: null,
+    };
+  }
+  const boundaries = macroTurnBoundaries(turns, options.macroTurnStarts);
+  if (maxTokens <= 0) {
+    return {
+      visibleTurns: [],
+      droppedSummary: renderDroppedSummary(turns),
+      droppedCount: turns.length,
+      visiblePairs: 0,
+      droppedPairs: boundaries.length,
+      boundBy: "tokens",
+      packStart: null,
+    };
+  }
+
+  // Estimate sizes with the same `inCurrentMacroTurn` flag the renderer
+  // will apply downstream — otherwise tools that bypass the cap when
+  // fresh (e.g. `os.http.request`) get under-estimated and the packed
+  // section overshoots `maxTokens`.
+  const currentStart = findCurrentMacroTurnStart(turns);
+  const tokenCosts = turns.map((turn, i) =>
+    tokenCostForTurn(turn, i >= currentStart),
+  );
+  // A repeated read renders as a pointer while the read it repeats is in
+  // view (`findReadRepeats`), so its cost depends on where the cut falls.
+  // Every sum below asks "from this start", never adds up fixed costs.
+  const repeats = readRepeatCosts(turns, currentStart);
+  // Once anything is dropped the summary line takes its reserve, so a
+  // held cut is measured against the same budget the cut was made to.
+  const budget = Math.max(1, maxTokens - SUMMARY_TOKEN_RESERVE);
+  const lowWater = lowWaterOf(options);
+
+  const held = heldPackStart(options.packStart, turns);
+  const floor = held?.index ?? 0;
+  const tokensFromFloor = suffixTokens(tokenCosts, repeats, floor);
+  const pairsFromFloor =
+    boundaries.length - countDroppedPairs(boundaries, floor, turns.length);
+  const tokensOverflow =
+    floor === 0 ? tokensFromFloor > maxTokens : tokensFromFloor > budget;
+  // The pairs cut applies even when the transcript would have fitted on
+  // tokens alone — the whole point of the knob is to hold history down
+  // on purpose, not only under pressure.
+  const pairsOverflow =
+    options.maxPairs !== undefined && pairsFromFloor > options.maxPairs;
+
+  let startIndex: number;
+  let boundBy: "pairs" | "tokens" | null;
+  if (!tokensOverflow && !pairsOverflow) {
+    startIndex = floor;
+    boundBy = held?.boundBy ?? null;
+  } else {
+    // A cut. Each overflowing limit drops to its low-water mark; a limit
+    // that still fits keeps the held start. Neither goes back before the
+    // held start — those turns are already gone from the prompt, and
+    // bringing them back would change everything after them.
+    const tokenStart = tokensOverflow
+      ? Math.max(
+          floor,
+          startIndexForTokens(
+            tokenCosts,
+            Math.max(1, Math.floor(budget * lowWater)),
+            repeats,
+          ),
+        )
+      : floor;
+    const pairsStart =
+      pairsOverflow && options.maxPairs !== undefined
+        ? Math.max(
+            floor,
+            startIndexForPairs(
+              boundaries,
+              Math.max(1, Math.floor(options.maxPairs * lowWater)),
+            ),
+          )
+        : floor;
+    // `max`, never `min`: the two limits are not alternatives. Tokens are
+    // the ceiling the window imposes and pairs is the operator's own,
+    // tighter preference, so the later cut wins.
+    startIndex = Math.max(tokenStart, pairsStart);
+    // Ties go to pairs: when both limits land on the same row it is the
+    // operator's own preference that explains the cut, and naming the
+    // window instead would send them to a setting that changes nothing.
+    boundBy = pairsOverflow && pairsStart >= tokenStart ? "pairs" : "tokens";
+  }
+
+  const lastUserIndex = findLastUserIndex(turns);
+  if (lastUserIndex !== -1 && lastUserIndex < startIndex) {
+    startIndex = lastUserIndex;
+  }
+  // A drained steer becomes the LAST user turn, which would otherwise
+  // carry the only pin — under token pressure the macro-turn's founding
+  // instruction would compress into the dropped-summary line while the
+  // correction stayed, and the model would continue from the correction
+  // alone. Pin the current macro-turn's opening user turn as well.
+  if (options.pinCurrentTask !== false && currentStart < startIndex && turns[currentStart]?.kind === "user") {
+    startIndex = currentStart;
+  }
+
+  const droppedSlice = turns.slice(0, startIndex);
+  const visibleTurns = turns.slice(startIndex);
+  const droppedPairs = countDroppedPairs(boundaries, startIndex, turns.length);
+  const visiblePairs = Math.max(0, boundaries.length - droppedPairs);
+
+  if (droppedSlice.length === 0) {
+    return {
+      visibleTurns,
+      droppedSummary: null,
+      droppedCount: 0,
+      visiblePairs,
+      droppedPairs,
+      boundBy: null,
+      packStart: null,
+    };
+  }
+
+  return {
+    visibleTurns,
+    droppedSummary: renderDroppedSummary(droppedSlice, droppedPairs),
+    droppedCount: droppedSlice.length,
+    visiblePairs,
+    droppedPairs,
+    boundBy: boundBy ?? "tokens",
+    packStart: {
+      index: startIndex,
+      at: turns[startIndex]?.at ?? 0,
+      boundBy: boundBy ?? "tokens",
+    },
+  };
+}
+
+/**
+ * Memoised token cost of a single rendered turn.
+ *
+ * `packConversation` runs once per agent step and previously re-rendered
+ * (and re-`JSON.stringify`-ed) every historical turn on each call, only to
+ * throw the strings away after summing their token cost — O(N) work per
+ * step, so O(N^2) transient allocation across a long turn. Issue #121
+ * reported ~10MB of churn for a 25-step turn.
+ *
+ * Turns are immutable once appended, so the cost is keyed on the turn
+ * object itself. `inCurrentMacroTurn` changes what the renderer emits for
+ * fresh-bypass tools (`os.http.request`, fresh `gog` shell), so it is part
+ * of the key rather than folded away. The `WeakMap` lets dropped turns be
+ * collected with the sessions that own them.
+ */
+const TURN_TOKEN_COST_CACHE = new WeakMap<
+  object,
+  { fresh?: number; aged?: number; repeat?: number }
+>();
+
+function tokenCostForTurn(
+  turn: ConversationTurn,
+  inCurrentMacroTurn: boolean,
+): number {
+  const key = turn as unknown as object;
+  const slot = TURN_TOKEN_COST_CACHE.get(key);
+  const cached = inCurrentMacroTurn ? slot?.fresh : slot?.aged;
+  if (cached !== undefined) return cached;
+  const cost =
+    estimateTokens(renderTurnForPrompt(turn, { inCurrentMacroTurn })) + 1;
+  const nextSlot = slot ?? {};
+  if (inCurrentMacroTurn) nextSlot.fresh = cost;
+  else nextSlot.aged = cost;
+  TURN_TOKEN_COST_CACHE.set(key, nextSlot);
+  return cost;
+}
+
+/**
+ * Which turns repeat an earlier read, and what each costs while that read
+ * is in view. `costs[i]` is meaningful only where `previous[i] !== -1`.
+ */
+interface ReadRepeatCosts {
+  previous: number[];
+  costs: number[];
+}
+
+/**
+ * Pointer costs for `packConversation` and `pairTokenCosts`.
+ *
+ * Priced with the distance to the first read of the chain in the whole
+ * transcript; once a cut drops that read the pointer names a nearer one,
+ * a difference of a digit or two in a figure that is an estimate anyway.
+ * Memoised beside the full cost, since a turn's pointer does not change
+ * either.
+ */
+function readRepeatCosts(
+  turns: readonly ConversationTurn[],
+  currentStart: number,
+): ReadRepeatCosts {
+  const previous = findReadRepeats(turns);
+  const costs = new Array<number>(turns.length).fill(0);
+  if (!previous.some((p) => p !== -1)) return { previous, costs };
+  const refs = readRepeatRefs(turns, previous);
+  for (let i = 0; i < turns.length; i += 1) {
+    const turn = turns[i];
+    const ref = refs[i];
+    if (!turn || ref === undefined) continue;
+    const key = turn as unknown as object;
+    const slot = TURN_TOKEN_COST_CACHE.get(key) ?? {};
+    if (slot.repeat === undefined) {
+      slot.repeat =
+        estimateTokens(
+          renderTurnForPrompt(turn, {
+            inCurrentMacroTurn: i >= currentStart,
+            readRepeat: ref,
+          }),
+        ) + 1;
+      TURN_TOKEN_COST_CACHE.set(key, slot);
+    }
+    costs[i] = slot.repeat;
+  }
+  return { previous, costs };
+}
+
+/**
+ * Legacy thin wrapper kept so existing callers/tests that only care about
+ * the trimmed tail still work. New code should prefer `packConversation`
+ * which also exposes the `summary:` line.
+ */
+export function trimTurnsToTokens(
+  turns: readonly ConversationTurn[],
+  maxTokens: number,
+): { turns: ConversationTurn[]; truncated: boolean } {
+  const packed = packConversation(turns, maxTokens);
+  return {
+    turns: packed.visibleTurns,
+    truncated: packed.droppedCount > 0,
+  };
+}
+
+/**
+ * The one line the model gets in place of everything that was dropped.
+ *
+ * Names the number of whole tasks lost as well as the rows, because the
+ * operator caps history in tasks now: "18 rows" says nothing about how
+ * far back the agent can still see, "4 earlier tasks" says exactly that.
+ */
+function renderDroppedSummary(
+  turns: readonly ConversationTurn[],
+  droppedPairs = 0,
+): string {
+  let user = 0;
+  let toolCalls = 0;
+  let replies = 0;
+  for (const t of turns) {
+    if (t.kind === "user") user += 1;
+    else if (t.kind === "assistant_tool_call") toolCalls += 1;
+    else if (isFinalReplyTurn(t)) replies += 1;
+  }
+  const first = turns[0]?.at ?? 0;
+  const last = turns[turns.length - 1]?.at ?? first;
+  const firstIso = new Date(first).toISOString();
+  const lastIso = new Date(last).toISOString();
+  const tasks =
+    droppedPairs > 0
+      ? ` from ${droppedPairs} earlier task${droppedPairs === 1 ? "" : "s"}`
+      : "";
+  return `summary: ${turns.length} older turns dropped${tasks} (${user} user, ${toolCalls} tool calls, ${replies} replies; first at ${firstIso}, last at ${lastIso})`;
+}
+
+function findLastUserIndex(turns: readonly ConversationTurn[]): number {
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i]?.kind === "user") return i;
+  }
+  return -1;
+}
+
+/**
+ * Pure append helper so reducers can build a new turn list without
+ * mutating the session state.
+ */
+export function appendTurn(
+  turns: readonly ConversationTurn[],
+  next: ConversationTurn,
+): ConversationTurn[] {
+  return [...turns, next];
+}

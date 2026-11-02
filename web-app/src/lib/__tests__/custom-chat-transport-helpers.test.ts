@@ -94,6 +94,10 @@ describe('splitAnthropicSerialToolUse', () => {
 })
 
 describe('buildToolsRecord', () => {
+  it('keeps delivery receipts app-only while exposing real scheduling tools', () => {
+    const result = buildToolsRecord([], [tool('personal_task_delivery', 'atomic-personal-tools'), tool('personal_tasks', 'atomic-personal-tools')], [])
+    expect(Object.keys(result)).toEqual(['personal_tasks'])
+  })
   it('filters disabled server/tool pairs and sorts tool names', () => {
     const result = buildToolsRecord(
       [tool('zeta', 'rag'), tool('disabled', 'rag')],

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { resolveScheduledFor, peekNextFirings } from './agent-source/task-schedule.mjs'
 
 export class PersonalStore {
   constructor(directory, now = () => Date.now()) {
@@ -66,33 +67,59 @@ export class PersonalStore {
 
   task(action, args = {}) {
     return this.transact(state => {
+      if (action === 'preview') {
+        if (!args.cron) throw new Error('cron expression is required')
+        const schedule = { kind: 'cron', expression: args.cron, ...(args.timezone ? { tz: args.timezone } : {}) }
+        resolveScheduledFor(schedule, this.now())
+        return { times: peekNextFirings(schedule, this.now()).map(time => new Date(time).toISOString()) }
+      }
       if (action === 'create') {
-        const dueAt = Date.parse(args.at)
+        if (args.cron && (args.at || args.intervalSeconds)) throw new Error('Choose either cron or at/interval, not both')
+        if (args.timezone && !args.cron) throw new Error('timezone is only used with cron')
+        const schedule = args.cron ? { kind: 'cron', expression: args.cron, ...(args.timezone ? { tz: args.timezone } : {}) } : null
+        const dueAt = schedule ? resolveScheduledFor(schedule, this.now()) : Date.parse(args.at)
         if (!Number.isFinite(dueAt) || dueAt <= this.now()) throw new Error('at must be a future ISO timestamp including timezone')
-        if (!/([zZ]|[+-]\d\d:\d\d)$/.test(args.at)) throw new Error('at requires an explicit timezone')
+        if (!schedule && !/([zZ]|[+-]\d\d:\d\d)$/.test(args.at)) throw new Error('at requires an explicit timezone')
         const intervalSeconds = args.intervalSeconds ?? null
         if (intervalSeconds !== null && (!Number.isInteger(intervalSeconds) || intervalSeconds < 60)) throw new Error('Repeat interval must be at least 60 seconds')
-        const task = { id: randomUUID(), prompt: bounded(args.prompt, 12000, 'prompt'), dueAt, intervalSeconds, status: 'scheduled', createdAt: this.now(), runs: [] }
+        const task = { id: randomUUID(), prompt: bounded(args.prompt, 12000, 'prompt'), dueAt, intervalSeconds, ...(schedule ? { schedule } : {}), status: 'scheduled', createdAt: this.now(), runs: [] }
+        if (args.originThreadId) task.originThreadId = bounded(args.originThreadId, 200, 'originThreadId')
+        if (args.assistantInstructions) task.assistantInstructions = bounded(args.assistantInstructions, 100000, 'assistantInstructions')
         if (state.tasks.length >= 1000) throw new Error('Scheduled-task capacity reached')
         state.tasks.push(task)
-        return task
+        return publicTask(task)
       }
       const task = state.tasks.find(item => item.id === args.id)
       if (action === 'cancel') {
         if (!task) throw new Error('Task not found')
         task.status = 'cancelled'
-        return task
+        return publicTask(task)
       }
       if (action === 'acknowledge') {
         if (!task) throw new Error('Task not found')
         task.acknowledgedAt = this.now()
-        return task
+        return publicTask(task)
       }
       if (action === 'get') {
         if (!task) throw new Error('Task not found')
-        return { ...task, runs: task.runs.slice(-1) }
+        return { ...publicTask(task), runs: task.runs.slice(-1) }
       }
-      return state.tasks.slice(-20).map(item => ({ ...item, runs: item.runs.slice(-1).map(run => ({ ...run, result: run.result?.slice(0, 500), preview: Boolean(run.result?.length > 500) })) }))
+      return state.tasks.slice(-20).map(item => ({ ...publicTask(item), runs: item.runs.slice(-1).map(run => ({ ...run, result: run.result?.slice(0, 500), preview: Boolean(run.result?.length > 500) })) }))
+    })
+  }
+
+  watchDefinition(action, entry = {}) {
+    return this.transact(state => {
+      if (action === 'list') return structuredClone(state.watches ?? [])
+      state.watches ??= []
+      if (action === 'forget') {
+        state.watches = state.watches.filter(row => row.id !== entry.id)
+        return
+      }
+      if (action !== 'save') throw new Error('Unknown watch-definition action')
+      if (state.watches.length >= 8 && !state.watches.some(row => row.id === entry.id)) throw new Error('At most eight persistent watches are supported')
+      const row = { id: bounded(entry.id, 100, 'watch id'), path: bounded(entry.path, 4000, 'watch path') }
+      state.watches = [...state.watches.filter(item => item.id !== row.id), row]
     })
   }
 
@@ -118,15 +145,36 @@ export class PersonalStore {
     return this.transact(state => {
       const task = state.tasks.find(item => item.id === id)
       if (!task) return
-      task.runs.push({ finishedAt: this.now(), result, error })
+      const run = { id: randomUUID(), finishedAt: this.now(), result, error,
+        delivery: { status: 'pending', attempts: 0 } }
+      task.runs.push(run)
       task.runs = task.runs.slice(-20)
       // A cancellation that races inference must remain cancelled.
-      if (task.status === 'cancelled') return
+      if (task.status === 'cancelled') { run.delivery.status = 'cancelled'; return }
       if (error) task.status = 'failed'
-      else if (task.intervalSeconds) {
-        task.dueAt = this.now() + task.intervalSeconds * 1000
+      else if (task.schedule || task.intervalSeconds) {
+        task.dueAt = task.schedule ? resolveScheduledFor(task.schedule, this.now()) : this.now() + task.intervalSeconds * 1000
         task.status = 'scheduled'
       } else task.status = 'completed'
+    })
+  }
+
+  // Delivery is a durable outbox, independent of inference. A failed desktop
+  // notification must neither rerun the model nor erase a generated result.
+  delivery(action, args = {}) {
+    return this.transact(state => {
+      if (action === 'pending') return state.tasks.flatMap(task => task.runs
+        .filter(run => run.delivery && ['pending', 'failed'].includes(run.delivery.status))
+        .map(run => ({ taskId: task.id, threadId: task.originThreadId, ...run }))).slice(0, 50)
+      const task = state.tasks.find(task => task.id === args.taskId)
+      const run = task?.runs.find(run => run.id === args.runId)
+      if (!run?.delivery) throw new Error('Scheduled result not found')
+      if (run.delivery.status === 'cancelled' || run.delivery.status === 'delivered') return run.delivery
+      run.delivery = { ...run.delivery, status: args.error ? 'failed' : 'delivered',
+        attempts: run.delivery.attempts + 1, attemptedAt: this.now(),
+        ...(args.error ? { error: bounded(args.error, 2000, 'delivery error') } : { error: null }),
+        ...(args.messageId ? { messageId: bounded(args.messageId, 200, 'messageId') } : {}) }
+      return run.delivery
     })
   }
 }
@@ -134,4 +182,11 @@ export class PersonalStore {
 export function bounded(value, max, name) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${name} must contain 1-${max} characters`)
   return value
+}
+
+function publicTask(task) {
+  // Voice instructions belong to the execution context, not tool output that
+  // would repeatedly inject a large instruction snapshot into chat history.
+  const { assistantInstructions: _instructions, ...visible } = task
+  return visible
 }

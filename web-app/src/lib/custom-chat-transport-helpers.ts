@@ -57,6 +57,8 @@ export function buildToolsRecord(
   const toolsRecord: Record<string, Tool> = {}
 
   for (const tool of [...ragTools, ...mcpTools]) {
+    // Delivery receipts are app bookkeeping, not model-callable actions.
+    if (['personal_task_delivery', 'personal_memory_lifecycle'].includes(tool.name)) continue
     const serverName = tool.server || 'unknown'
     if (disabled.has(`${serverName}::${tool.name}`)) continue
 

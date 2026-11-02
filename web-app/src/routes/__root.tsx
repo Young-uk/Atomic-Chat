@@ -12,6 +12,8 @@ import { InterfaceProvider } from '@/providers/InterfaceProvider'
 import { KeyboardShortcutsProvider } from '@/providers/KeyboardShortcuts'
 import { DataProvider } from '@/providers/DataProvider'
 import { DeferredFirstSendProvider } from '@/providers/DeferredFirstSendProvider'
+import { PersonalMemoryLifecycleProvider } from '@/providers/PersonalMemoryLifecycleProvider'
+import { PersonalTaskDeliveryProvider } from '@/providers/PersonalTaskDeliveryProvider'
 import { route } from '@/constants/routes'
 import { ExtensionProvider } from '@/providers/ExtensionProvider'
 import { ToasterProvider } from '@/providers/ToasterProvider'
@@ -242,6 +244,8 @@ function RootLayout() {
           <ExtensionProvider>
             <DataProvider />
             <DeferredFirstSendProvider />
+            <PersonalTaskDeliveryProvider />
+          <PersonalMemoryLifecycleProvider />
             <GlobalEventHandler />
             <ManagedEngineOperationBar />
             <StartupBackendCoordinator />

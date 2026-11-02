@@ -1,0 +1,836 @@
+import { ConfigValidationError } from "./config-validation-error.mjs";
+import { parseModelMode, parseModelModes, type ModelMode } from "./model-mode.mjs";
+import {
+  parseLlmRunModeConfig,
+  type UserLlmRunModeConfig,
+} from "./llm-run-mode-config.mjs";
+import { SUBSCRIPTION_CLI_KIND } from "./provider-auth-mode.mjs";
+
+export type UserLlmToolTransport = "auto" | "grammar" | "native_tools";
+
+/** Vendor CLIs a `subscription-cli` provider knows how to drive. */
+export const SUBSCRIPTION_CLIS = ["claude", "codex"] as const;
+export type SubscriptionCliName = (typeof SUBSCRIPTION_CLIS)[number];
+
+/**
+ * Settings for a provider backed by an already-signed-in vendor CLI.
+ * The CLI authenticates itself from its own session, so there is no
+ * `apiKey` / `apiKeyEnvVar` anywhere in this block.
+ */
+export type UserSubscriptionCliOptions = {
+  /** Which CLI to drive. Required when `kind` is `subscription-cli`. */
+  cli: SubscriptionCliName;
+  /** Absolute path to the binary. Omit to resolve it from `PATH`. */
+  binPath?: string;
+  /**
+   * Extra argv appended verbatim to every invocation. The escape hatch
+   * for flags we do not model (`--effort high`) and for correcting a
+   * vendor CLI whose interface moved, without waiting for a release.
+   */
+  extraArgs?: string[];
+  /** Opt out of the streaming path and always buffer. */
+  streaming?: boolean;
+  /** Passed through as the CLI's own spend ceiling where it has one. */
+  maxBudgetUsd?: number;
+};
+
+export type UserLlmProviderEntry = {
+  id: string;
+  kind: string;
+  /** Context/agent policy. Absent preserves legacy behavior (local). */
+  modelMode?: ModelMode;
+  /** Per-model policy overrides, independent of catalog metadata. */
+  modelModes?: Record<string, ModelMode>;
+  url?: string;
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+  /**
+   * Env var holding this entry's API key. Set for known-service presets
+   * so each service keeps its own key (`GROQ_API_KEY`, `NOUS_API_KEY`,
+   * ...). When present it is authoritative: entries without it fall
+   * back to the per-kind defaults in `resolveLlmProviderApiKey`.
+   */
+  apiKeyEnvVar?: string;
+  defaultChatModel?: string;
+  defaultEmbeddingModel?: string;
+  headers?: Record<string, string>;
+  /**
+   * Header that carries this entry's API key. Set for known-service
+   * presets whose endpoint does not accept `Authorization: Bearer`
+   * (Anthropic wants `x-api-key`). Absent keeps the OpenAI convention.
+   * Stored on the entry rather than looked up from the preset table at
+   * request time, so a saved provider keeps authenticating after a
+   * restart and a hand-written entry can express the same thing.
+   */
+  apiKeyHeader?: string;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  requestTimeoutMs?: number;
+  /**
+   * Hard ceiling on this provider's output, in tokens. Absent means no
+   * ceiling: the service applies the model's own maximum, which is what
+   * makes a long single-file answer possible. Set it to bound spend or
+   * to satisfy a service that requires the field.
+   */
+  maxOutputTokens?: number;
+  /**
+   * Prompt-caching policy for this provider. `off` sends no cache
+   * markers; `explicit-markers` always sends Anthropic breakpoints;
+   * `auto` (the default) sends them when the model or host is
+   * Anthropic's. See `openai/prompt-cache-control.ts`.
+   */
+  promptCache?: "auto" | "off" | "explicit-markers";
+  /**
+   * How a native-tools request lays the prompt out: `native` (the
+   * default) as a system message plus the history as assistant
+   * `tool_calls` and `tool` results, `flat` as the single user message
+   * of transcript text. Set `flat` for a server that rejects tool-role
+   * messages (older vLLM, llama.cpp shims); the provider also learns it
+   * from a 400 about roles for the rest of a session. Grammar and
+   * subscription-CLI kinds are flat by construction.
+   */
+  messageShape?: "native" | "flat";
+  /**
+   * OpenRouter provider routing — `order`, `only`, `ignore`,
+   * `allow_fallbacks`, `require_parameters`, `sort`, `data_collection`,
+   * … — sent verbatim as the chat body's `provider` object on every
+   * completion an `openrouter` entry makes: turns, sub-calls and vision.
+   * Other kinds ignore it. OpenRouter owns the vocabulary, so nothing
+   * here checks it beyond "an object". An explicit `extraBody.provider`
+   * still wins, since `extraBody` is merged last.
+   */
+  providerPreferences?: Record<string, unknown>;
+  /**
+   * Vendor-specific fields merged into the OpenAI-compatible chat body
+   * for `openai-compatible` / `qwen-openai-compatible` providers. Lets a
+   * deployment reach vendor extensions outside the OpenAI schema, e.g.
+   * Alibaba Model Studio thinking control:
+   *
+   * ```json
+   * { "chat_template_kwargs": { "enable_thinking": false } }
+   * ```
+   *
+   * Reserved keys (`model`, `messages`, `stream`, `tools`) are re-applied
+   * after the merge and cannot be overridden from config.
+   */
+  extraBody?: Record<string, unknown>;
+  /**
+   * Emit OpenAI strict function tools for this provider —
+   * `tools[].function.strict: true`, with every tool schema rewritten
+   * into the subset strict mode accepts. Added in config v63.
+   *
+   * Off by default and deliberately so: strict mode is an OpenAI
+   * extension, and a service that does not implement it rejects the
+   * entire request rather than ignoring the field. Turn it on for a
+   * model that only calls tools reliably under constrained decoding
+   * (the reported case was Inception Labs' Mercury). This cannot be
+   * done through `extraBody` — `strict` is a field on each tool and
+   * `tools` is a reserved key that is re-applied after that merge.
+   */
+  strictTools?: boolean;
+  /**
+   * Hand-written model metadata for this provider. `resolveModel`
+   * reads it as its highest-priority source (userModels > bundled
+   * catalog > defaults), so it is the documented way to teach the
+   * runtime about a model the bundled catalog does not know: context
+   * window, capabilities and pricing.
+   */
+  userModels?: ReadonlyArray<UserModelEntry>;
+  /** Present only on `subscription-cli` entries. */
+  subscriptionCli?: UserSubscriptionCliOptions;
+};
+
+/**
+ * One hand-configured model on a provider entry. Mirrors
+ * `UserModelConfigEntry` in the provider registry — the shape
+ * `resolveModel` merges over the bundled catalog.
+ *
+ * Note `supportsTools` here is a support *level*, not the boolean of
+ * the same name on the provider entry: a model can advertise strict or
+ * parallel tool calling independently of whether the transport does.
+ * `"strict"` is the one level with a wire effect — it asks the provider
+ * to constrain the decode to the tool schemas, per tool and only where
+ * the schema can be expressed strictly. See ../llm/docs/profiles.md.
+ */
+export type UserModelEntry = {
+  id: string;
+  kind: "chat" | "embedding";
+  contextWindow?: number;
+  dim?: number;
+  supportsVision?: boolean;
+  supportsTools?: "none" | "basic" | "parallel" | "strict";
+  supportsPromptCache?: boolean;
+  /**
+   * Which response field carries the model's reasoning. `auto` (the
+   * provider default when unset) reads `reasoning`, `reasoning_content`
+   * or `thinking`, whichever is present; a named format pins one.
+   */
+  reasoningFormat?:
+    | "auto"
+    | "none"
+    | "delta_reasoning"
+    | "delta_thinking"
+    | "delta_reasoning_content";
+  pricing?: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+  /**
+   * Wire parameters for this model, merged into every OpenAI-compatible
+   * chat body after the provider's `extraBody` (a model-level setting is
+   * the more specific one). The way to hand a model a `temperature`,
+   * `top_p`, `reasoning_effort` or any vendor field the runtime does not
+   * model; reserved keys (`model`, `messages`, `stream`, `tools`) still
+   * cannot be overridden.
+   */
+  params?: Record<string, unknown>;
+};
+
+export type UserLlmFallbackConfig = {
+  chain?: string[];
+  appendLocal?: boolean;
+  failureThreshold?: number;
+  cooldownMs?: number[];
+  probeThrottleMs?: number;
+  failureWindowMs?: number;
+};
+
+/**
+ * OpenRouter-wide settings, as opposed to a single `openrouter` entry's.
+ */
+export type UserLlmOpenRouterConfig = {
+  /**
+   * Steer models whose caching depends on the route toward the routes
+   * that cache — today `google/…` models to Google AI Studio, which
+   * cached 83 % of input where Vertex cached 1–4 % — unless the entry
+   * configured `providerPreferences` of its own. Default `true`; a
+   * pinned route can raise latency or lose availability while it is
+   * down, so it is a default an operator can turn off.
+   */
+  preferCacheRoutes?: boolean;
+};
+
+export type UserLlmFileConfig = {
+  activeTextProvider: string;
+  activeEmbeddingProvider: string;
+  toolTransport: UserLlmToolTransport;
+  providers: UserLlmProviderEntry[];
+  fallback?: UserLlmFallbackConfig;
+  /** Run mode (local | cloud | fusion) and the fusion legs. See `llm-run-mode-config.ts`. */
+  runMode?: UserLlmRunModeConfig;
+  /** Settings for every `openrouter` entry at once. */
+  openrouter?: UserLlmOpenRouterConfig;
+};
+
+const PROVIDER_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const PROVIDER_KINDS = new Set([
+  "llama-server",
+  "openai-compatible",
+  "qwen-openai-compatible",
+  "openrouter",
+  "aimlapi",
+  "gemini",
+  SUBSCRIPTION_CLI_KIND,
+]);
+
+function parseProviderId(raw: unknown, field: string): string {
+  if (typeof raw !== "string" || !PROVIDER_ID_RE.test(raw)) {
+    throw new ConfigValidationError(
+      field,
+      `expected kebab-case id matching ${PROVIDER_ID_RE.source}`,
+    );
+  }
+  return raw;
+}
+
+function parseOptionalString(raw: unknown, field: string): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new ConfigValidationError(field, "expected non-empty string");
+  }
+  return raw;
+}
+
+function parseOptionalHeaders(
+  raw: unknown,
+  field: string,
+): Record<string, string> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "string") {
+      throw new ConfigValidationError(`${field}.${key}`, "expected string");
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+export function parseLlmProviderEntry(
+  raw: unknown,
+  field: string,
+): UserLlmProviderEntry {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const id = parseProviderId(obj.id, `${field}.id`);
+  const kind = parseOptionalString(obj.kind, `${field}.kind`);
+  if (!kind || !PROVIDER_KINDS.has(kind)) {
+    throw new ConfigValidationError(
+      `${field}.kind`,
+      `expected one of ${[...PROVIDER_KINDS].join(", ")}`,
+    );
+  }
+  const subscriptionCli = parseSubscriptionCliOptions(
+    obj.subscriptionCli,
+    `${field}.subscriptionCli`,
+  );
+  // A `subscription-cli` entry without a `cli` has no binary to drive, so
+  // fail at load rather than at the first inference an hour into a run.
+  if (kind === SUBSCRIPTION_CLI_KIND && !subscriptionCli) {
+    throw new ConfigValidationError(
+      `${field}.subscriptionCli`,
+      `required when kind is ${SUBSCRIPTION_CLI_KIND}`,
+    );
+  }
+  return {
+    id,
+    kind,
+    ...(obj.modelMode == null ? {} : { modelMode: parseModelMode(obj.modelMode, `${field}.modelMode`) }),
+    ...(obj.modelModes == null ? {} : { modelModes: parseModelModes(obj.modelModes, `${field}.modelModes`) }),
+    url: parseOptionalString(obj.url, `${field}.url`),
+    apiKey: parseOptionalString(obj.apiKey, `${field}.apiKey`),
+    model: parseOptionalString(obj.model, `${field}.model`),
+    baseUrl: parseOptionalString(obj.baseUrl, `${field}.baseUrl`),
+    apiKeyEnvVar: parseOptionalString(
+      obj.apiKeyEnvVar,
+      `${field}.apiKeyEnvVar`,
+    ),
+    defaultChatModel: parseOptionalString(
+      obj.defaultChatModel,
+      `${field}.defaultChatModel`,
+    ),
+    defaultEmbeddingModel: parseOptionalString(
+      obj.defaultEmbeddingModel,
+      `${field}.defaultEmbeddingModel`,
+    ),
+    headers: parseOptionalHeaders(obj.headers, `${field}.headers`),
+    apiKeyHeader: parseOptionalString(
+      obj.apiKeyHeader,
+      `${field}.apiKeyHeader`,
+    ),
+    supportsTools:
+      obj.supportsTools === undefined
+        ? undefined
+        : typeof obj.supportsTools === "boolean"
+          ? obj.supportsTools
+          : (() => {
+              throw new ConfigValidationError(
+                `${field}.supportsTools`,
+                "expected boolean",
+              );
+            })(),
+    supportsVision:
+      obj.supportsVision === undefined
+        ? undefined
+        : typeof obj.supportsVision === "boolean"
+          ? obj.supportsVision
+          : (() => {
+              throw new ConfigValidationError(
+                `${field}.supportsVision`,
+                "expected boolean",
+              );
+            })(),
+    requestTimeoutMs:
+      obj.requestTimeoutMs === undefined
+        ? undefined
+        : typeof obj.requestTimeoutMs === "number" &&
+            Number.isFinite(obj.requestTimeoutMs) &&
+            obj.requestTimeoutMs > 0
+          ? Math.floor(obj.requestTimeoutMs)
+          : (() => {
+              throw new ConfigValidationError(
+                `${field}.requestTimeoutMs`,
+                "expected positive number",
+              );
+            })(),
+    maxOutputTokens:
+      obj.maxOutputTokens === undefined
+        ? undefined
+        : typeof obj.maxOutputTokens === "number" &&
+            Number.isInteger(obj.maxOutputTokens) &&
+            obj.maxOutputTokens > 0
+          ? obj.maxOutputTokens
+          : (() => {
+              throw new ConfigValidationError(
+                `${field}.maxOutputTokens`,
+                "expected positive integer",
+              );
+            })(),
+    promptCache: parseOptionalEnum<
+      NonNullable<UserLlmProviderEntry["promptCache"]>
+    >(obj.promptCache, `${field}.promptCache`, PROMPT_CACHE_MODES),
+    messageShape: parseOptionalEnum<
+      NonNullable<UserLlmProviderEntry["messageShape"]>
+    >(obj.messageShape, `${field}.messageShape`, MESSAGE_SHAPES),
+    providerPreferences: parseOptionalPlainObject(
+      obj.providerPreferences,
+      `${field}.providerPreferences`,
+    ),
+    extraBody: parseOptionalPlainObject(obj.extraBody, `${field}.extraBody`),
+    strictTools:
+      obj.strictTools === undefined
+        ? undefined
+        : typeof obj.strictTools === "boolean"
+          ? obj.strictTools
+          : (() => {
+              throw new ConfigValidationError(
+                `${field}.strictTools`,
+                "expected boolean",
+              );
+            })(),
+    userModels: parseOptionalUserModels(obj.userModels, `${field}.userModels`),
+    subscriptionCli: parseSubscriptionCliOptions(
+      obj.subscriptionCli,
+      `${field}.subscriptionCli`,
+    ),
+  };
+}
+
+function parseSubscriptionCliOptions(
+  raw: unknown,
+  field: string,
+): UserSubscriptionCliOptions | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const cli = obj.cli;
+  if (
+    typeof cli !== "string" ||
+    !(SUBSCRIPTION_CLIS as readonly string[]).includes(cli)
+  ) {
+    throw new ConfigValidationError(
+      `${field}.cli`,
+      `expected one of ${SUBSCRIPTION_CLIS.join(", ")}`,
+    );
+  }
+  const out: UserSubscriptionCliOptions = { cli: cli as SubscriptionCliName };
+  const binPath = parseOptionalString(obj.binPath, `${field}.binPath`);
+  if (binPath !== undefined) out.binPath = binPath;
+  if (obj.extraArgs !== undefined && obj.extraArgs !== null) {
+    if (!Array.isArray(obj.extraArgs)) {
+      throw new ConfigValidationError(
+        `${field}.extraArgs`,
+        "expected array of strings",
+      );
+    }
+    out.extraArgs = obj.extraArgs.map((value, i) => {
+      if (typeof value !== "string") {
+        throw new ConfigValidationError(
+          `${field}.extraArgs[${i}]`,
+          "expected string",
+        );
+      }
+      return value;
+    });
+  }
+  if (obj.streaming !== undefined && obj.streaming !== null) {
+    if (typeof obj.streaming !== "boolean") {
+      throw new ConfigValidationError(`${field}.streaming`, "expected boolean");
+    }
+    out.streaming = obj.streaming;
+  }
+  if (obj.maxBudgetUsd !== undefined && obj.maxBudgetUsd !== null) {
+    if (
+      typeof obj.maxBudgetUsd !== "number" ||
+      !Number.isFinite(obj.maxBudgetUsd) ||
+      obj.maxBudgetUsd <= 0
+    ) {
+      throw new ConfigValidationError(
+        `${field}.maxBudgetUsd`,
+        "expected positive number",
+      );
+    }
+    out.maxBudgetUsd = obj.maxBudgetUsd;
+  }
+  return out;
+}
+
+function parseOptionalPlainObject(
+  raw: unknown,
+  field: string,
+): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  return { ...(raw as Record<string, unknown>) };
+}
+
+const PROMPT_CACHE_MODES = new Set(["auto", "off", "explicit-markers"]);
+const MESSAGE_SHAPES = new Set(["native", "flat"]);
+const TOOLS_SUPPORT_LEVELS = new Set(["none", "basic", "parallel", "strict"]);
+const REASONING_FORMATS = new Set([
+  "auto",
+  "none",
+  "delta_reasoning",
+  "delta_thinking",
+  "delta_reasoning_content",
+]);
+
+function parseOptionalBoolean(
+  raw: unknown,
+  field: string,
+): boolean | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "boolean") {
+    throw new ConfigValidationError(field, "expected boolean");
+  }
+  return raw;
+}
+
+function parseOptionalEnum<T extends string>(
+  raw: unknown,
+  field: string,
+  allowed: ReadonlySet<string>,
+): T | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string" || !allowed.has(raw)) {
+    throw new ConfigValidationError(
+      field,
+      `expected ${[...allowed].join("|")}`,
+    );
+  }
+  return raw as T;
+}
+
+/**
+ * Prices are per-token rates, so 0 is legal (free tiers) but negative
+ * or non-finite is not — a NaN rate would poison every cost estimate
+ * downstream rather than fail loudly.
+ */
+function parseRate(raw: unknown, field: string): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+    throw new ConfigValidationError(field, "expected a non-negative number");
+  }
+  return raw;
+}
+
+function parseUserModelPricing(
+  raw: unknown,
+  field: string,
+): UserModelEntry["pricing"] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const pricing: NonNullable<UserModelEntry["pricing"]> = {
+    input: parseRate(obj.input, `${field}.input`),
+    output: parseRate(obj.output, `${field}.output`),
+  };
+  if (obj.cacheRead !== undefined && obj.cacheRead !== null) {
+    pricing.cacheRead = parseRate(obj.cacheRead, `${field}.cacheRead`);
+  }
+  if (obj.cacheWrite !== undefined && obj.cacheWrite !== null) {
+    pricing.cacheWrite = parseRate(obj.cacheWrite, `${field}.cacheWrite`);
+  }
+  return pricing;
+}
+
+function parseUserModelEntry(raw: unknown, field: string): UserModelEntry {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.id !== "string" || obj.id.length === 0) {
+    throw new ConfigValidationError(`${field}.id`, "expected non-empty string");
+  }
+  if (obj.kind !== "chat" && obj.kind !== "embedding") {
+    throw new ConfigValidationError(`${field}.kind`, "expected chat|embedding");
+  }
+  return {
+    id: obj.id,
+    kind: obj.kind,
+    contextWindow:
+      obj.contextWindow === undefined || obj.contextWindow === null
+        ? undefined
+        : parsePositiveInt(obj.contextWindow, `${field}.contextWindow`),
+    dim:
+      obj.dim === undefined || obj.dim === null
+        ? undefined
+        : parsePositiveInt(obj.dim, `${field}.dim`),
+    supportsVision: parseOptionalBoolean(
+      obj.supportsVision,
+      `${field}.supportsVision`,
+    ),
+    supportsTools: parseOptionalEnum<
+      NonNullable<UserModelEntry["supportsTools"]>
+    >(obj.supportsTools, `${field}.supportsTools`, TOOLS_SUPPORT_LEVELS),
+    supportsPromptCache: parseOptionalBoolean(
+      obj.supportsPromptCache,
+      `${field}.supportsPromptCache`,
+    ),
+    reasoningFormat: parseOptionalEnum<
+      NonNullable<UserModelEntry["reasoningFormat"]>
+    >(obj.reasoningFormat, `${field}.reasoningFormat`, REASONING_FORMATS),
+    pricing: parseUserModelPricing(obj.pricing, `${field}.pricing`),
+    params: parseOptionalPlainObject(obj.params, `${field}.params`),
+  };
+}
+
+function parseOptionalUserModels(
+  raw: unknown,
+  field: string,
+): UserModelEntry[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected array");
+  }
+  // `resolveModel` looks a model up by id with `.find`, so a duplicate
+  // id would silently shadow the later row. Reject it at parse time
+  // instead of serving whichever copy happens to come first.
+  const seen = new Set<string>();
+  const out: UserModelEntry[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = parseUserModelEntry(raw[i], `${field}[${i}]`);
+    if (seen.has(entry.id)) {
+      throw new ConfigValidationError(
+        `${field}[${i}].id`,
+        `duplicate model id ${JSON.stringify(entry.id)}`,
+      );
+    }
+    seen.add(entry.id);
+    out.push(entry);
+  }
+  return out;
+}
+
+export function parseLlmProviders(
+  raw: unknown,
+  field: string,
+): UserLlmProviderEntry[] {
+  if (!Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected array");
+  }
+  const seen = new Set<string>();
+  const out: UserLlmProviderEntry[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = parseLlmProviderEntry(raw[i], `${field}[${i}]`);
+    if (seen.has(entry.id)) {
+      throw new ConfigValidationError(
+        `${field}[${i}].id`,
+        `duplicate provider id ${JSON.stringify(entry.id)}`,
+      );
+    }
+    seen.add(entry.id);
+    out.push(entry);
+  }
+  return out;
+}
+
+function parsePositiveInt(raw: unknown, field: string): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+    throw new ConfigValidationError(field, "expected a positive integer");
+  }
+  return raw;
+}
+
+function parseCooldownLadder(raw: unknown, field: string): number[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new ConfigValidationError(
+      field,
+      "expected a non-empty array of positive integers (ms)",
+    );
+  }
+  const ladder = raw.map((v, i) => parsePositiveInt(v, `${field}[${i}]`));
+  // The breaker walks this ladder by step index, so it must be
+  // non-decreasing to actually escalate. A decreasing entry (e.g.
+  // [300000, 1000]) would make the second cooldown SHORTER than the
+  // first — the opposite of the documented "escalating ladder". Reject
+  // it at parse time rather than silently serving a shrinking cooldown.
+  for (let i = 1; i < ladder.length; i++) {
+    if (ladder[i]! < ladder[i - 1]!) {
+      throw new ConfigValidationError(
+        `${field}[${i}]`,
+        `cooldown ladder must be non-decreasing (${ladder[i]} < ${ladder[i - 1]} at the previous step)`,
+      );
+    }
+  }
+  return ladder;
+}
+
+export function parseLlmFallbackConfig(
+  raw: unknown,
+  providerIds: ReadonlySet<string>,
+  field: string,
+): UserLlmFallbackConfig {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const out: UserLlmFallbackConfig = {};
+
+  if (obj.chain !== undefined) {
+    if (!Array.isArray(obj.chain)) {
+      throw new ConfigValidationError(
+        `${field}.chain`,
+        "expected array of provider ids",
+      );
+    }
+    const chain = obj.chain.map((v, i) =>
+      parseProviderId(v, `${field}.chain[${i}]`),
+    );
+    for (let i = 0; i < chain.length; i++) {
+      if (!providerIds.has(chain[i]!)) {
+        throw new ConfigValidationError(
+          `${field}.chain[${i}]`,
+          `unknown provider id ${JSON.stringify(chain[i])}`,
+        );
+      }
+    }
+    out.chain = chain;
+  }
+
+  if (obj.appendLocal !== undefined) {
+    if (typeof obj.appendLocal !== "boolean") {
+      throw new ConfigValidationError(
+        `${field}.appendLocal`,
+        "expected boolean",
+      );
+    }
+    out.appendLocal = obj.appendLocal;
+  }
+  if (obj.failureThreshold !== undefined) {
+    out.failureThreshold = parsePositiveInt(
+      obj.failureThreshold,
+      `${field}.failureThreshold`,
+    );
+  }
+  if (obj.cooldownMs !== undefined) {
+    out.cooldownMs = parseCooldownLadder(obj.cooldownMs, `${field}.cooldownMs`);
+  }
+  if (obj.probeThrottleMs !== undefined) {
+    out.probeThrottleMs = parsePositiveInt(
+      obj.probeThrottleMs,
+      `${field}.probeThrottleMs`,
+    );
+  }
+  if (obj.failureWindowMs !== undefined) {
+    out.failureWindowMs = parsePositiveInt(
+      obj.failureWindowMs,
+      `${field}.failureWindowMs`,
+    );
+  }
+  return out;
+}
+
+export function parseUserLlmFileConfig(
+  raw: unknown,
+  defaults: UserLlmFileConfig,
+): UserLlmFileConfig {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError("llm", "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const providers = parseLlmProviders(
+    obj.providers ?? defaults.providers,
+    "llm.providers",
+  );
+  const activeTextProvider = parseProviderId(
+    obj.activeTextProvider ?? defaults.activeTextProvider,
+    "llm.activeTextProvider",
+  );
+  let activeEmbeddingProvider = parseProviderId(
+    obj.activeEmbeddingProvider ?? defaults.activeEmbeddingProvider,
+    "llm.activeEmbeddingProvider",
+  );
+  if (!providers.some((p) => p.id === activeTextProvider)) {
+    throw new ConfigValidationError(
+      "llm.activeTextProvider",
+      `unknown provider id ${JSON.stringify(activeTextProvider)}`,
+    );
+  }
+  // A hand-written block that never named an embedding provider has no
+  // `local-llama` entry for the default to point at. Memory embeddings
+  // run off `localModels.embeddings` either way, so resolve the implicit
+  // default to an id that exists instead of rejecting the file. It has
+  // to be a real id: the parsed block is written back on migration and
+  // by every TUI provider edit, and a dangling id would fail next load.
+  if (
+    (obj.activeEmbeddingProvider === undefined ||
+      obj.activeEmbeddingProvider === null) &&
+    !providers.some((p) => p.id === activeEmbeddingProvider)
+  ) {
+    activeEmbeddingProvider =
+      providers.find(
+        (p) => p.defaultEmbeddingModel || p.kind === "llama-server",
+      )?.id ?? activeTextProvider;
+  }
+  if (!providers.some((p) => p.id === activeEmbeddingProvider)) {
+    throw new ConfigValidationError(
+      "llm.activeEmbeddingProvider",
+      `unknown provider id ${JSON.stringify(activeEmbeddingProvider)}`,
+    );
+  }
+  const toolTransportRaw = obj.toolTransport ?? defaults.toolTransport;
+  if (
+    toolTransportRaw !== "auto" &&
+    toolTransportRaw !== "grammar" &&
+    toolTransportRaw !== "native_tools"
+  ) {
+    throw new ConfigValidationError(
+      "llm.toolTransport",
+      "expected auto|grammar|native_tools",
+    );
+  }
+  const fallback =
+    obj.fallback === undefined || obj.fallback === null
+      ? undefined
+      : parseLlmFallbackConfig(
+          obj.fallback,
+          new Set(providers.map((p) => p.id)),
+          "llm.fallback",
+        );
+  const runMode =
+    obj.runMode === undefined || obj.runMode === null
+      ? undefined
+      : parseLlmRunModeConfig(obj.runMode, providers, "llm.runMode");
+
+  const openrouter = parseLlmOpenRouterConfig(obj.openrouter, "llm.openrouter");
+
+  return {
+    activeTextProvider,
+    activeEmbeddingProvider,
+    toolTransport: toolTransportRaw,
+    providers,
+    ...(fallback ? { fallback } : {}),
+    ...(runMode ? { runMode } : {}),
+    ...(openrouter ? { openrouter } : {}),
+  };
+}
+
+export function parseLlmOpenRouterConfig(
+  raw: unknown,
+  field: string,
+): UserLlmOpenRouterConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigValidationError(field, "expected object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const preferCacheRoutes = parseOptionalBoolean(
+    obj.preferCacheRoutes,
+    `${field}.preferCacheRoutes`,
+  );
+  return preferCacheRoutes === undefined ? {} : { preferCacheRoutes };
+}

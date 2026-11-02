@@ -1,0 +1,13 @@
+---
+date: 2026-11-02
+title: "Port Agent domain sources directly into Personal Chat"
+---
+
+# 2026-11-02 — Port Agent domain sources directly into Personal Chat
+
+- **Context:** The user requested feature parity with Atomic Agent and explicitly rejected delegating to its standalone runtime. Existing Personal tools provide five bounded capabilities but do not constitute parity.
+- **Decision:** Copy selected MIT-licensed domain sources with provenance into the existing Personal tools directory. Chat retains inference, approval, tool dispatch, conversation priority and cache behavior. Never launch the Agent conversation loop. Track every catalog family, including unsupported and configuration-gated capabilities.
+- **Consequences:** Syntax verification, document extractors, FTS5 notes and cron/timezone helpers are the first connected source ports. The legacy explicit-memory JSON and existing task semantics remain intact; new notes use a separate Chat-owned SQLite file. Personal Dstar keyword recall is captured once in user metadata with a 750 ms best-effort deadline, replayed at that turn rather than in the stable prefix. Profile history, note links, lessons and procedures are source-backed explicit tools. Persistent watch definitions revalidate their workspace on restart. Semantic recall, automatic formation, durable tool workflows, collaboration and external channels require subsequent integration and separate verification. No private Agent database migration or external activation is implied. Syntax and document inputs are restricted to the configured workspace; original checker results distinguish unchecked from passing. Native SQLite must match the packaged Node ABI, checked before installation. Dependencies were approved by name and purpose before addition.
+- **Background lifecycle and boundaries:** Grounded source reflection runs best effort after an answer, using the existing Dstar background slot. Foreground chat and summary work abort/requeue it; no foreground completion awaits reflection. Only visible user/answer text is observed. Browser Chat native confirmations require a fresh human decision even under Full access and remembered tool grants. Host-only endpoints and this proposal adapter are withheld from the separate native agent runner until it supports the same contract; its existing built-ins remain unchanged. Archive allocation is bounded before inflation; watch readiness precedes success and uses bounded-scope polling on macOS. No external mail/channel credentials or screen-control activation is implied.
+- **Owner:** @Young-uk.
+- **Links:** `scripts/personal-agent-tools/README.md`, `scripts/personal-agent-tools/agent-source/PROVENANCE.md`.

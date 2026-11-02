@@ -9,6 +9,32 @@ import { publicUrl, publicAddress } from './browser.mjs'
 
 const fresh = async now => new PersonalStore(await mkdtemp(join(tmpdir(), 'atomic-personal-tools-test-')), now)
 
+test('scheduled voice and origin survive restart while delivery failures never rerun inference', async () => {
+  let now = Date.parse('2026-11-02T00:00:00Z')
+  const store = await fresh(() => now)
+  const created = await store.task('create', { prompt: 'Synthetic reminder', at: '2026-11-02T00:01:00Z', originThreadId: 'synthetic-thread', assistantInstructions: 'Use formal English and call the user Captain.' })
+  assert.equal(created.assistantInstructions, undefined)
+  now += 60000
+  let calls = 0
+  const tools = new PersonalTools({ directory: store.directory, store, infer: async (_prompt, _signal, task) => {
+    calls++
+    assert.equal(task.assistantInstructions, 'Use formal English and call the user Captain.')
+    return 'Captain, your reminder is ready.'
+  } })
+  await tools.tick()
+  const reopened = new PersonalStore(store.directory, () => now)
+  const [pending] = await reopened.delivery('pending')
+  assert.equal(pending.threadId, 'synthetic-thread')
+  await reopened.delivery('record', { taskId: created.id, runId: pending.id, messageId: 'synthetic-message', error: 'Synthetic notification permission failure' })
+  assert.equal((await reopened.delivery('pending'))[0].delivery.error, 'Synthetic notification permission failure')
+  await tools.tick()
+  assert.equal(calls, 1)
+  await reopened.delivery('record', { taskId: created.id, runId: pending.id, messageId: 'synthetic-message' })
+  assert.deepEqual(await reopened.delivery('pending'), [])
+  assert.equal((await reopened.task('get', { id: created.id })).runs[0].result, 'Captain, your reminder is ready.')
+  await tools.shutdown()
+})
+
 test('concurrent writes survive restart and preserve provenance', async () => {
   const store = await fresh()
   await Promise.all(Array.from({ length: 20 }, (_, i) => store.memory('save', { text: `Memory ${i}`, source: `chat/message/${i}` })))
@@ -104,4 +130,24 @@ test('read-only polling does not rewrite the persistent state file', async () =>
   const after = await stat(path)
   assert.equal(after.ino, before.ino)
   assert.equal(after.mtimeMs, before.mtimeMs)
+})
+
+test('cron previews and recurring completion preserve timezone across restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-cron-port-'))
+  let now = Date.parse('2026-11-02T00:00:00Z')
+  const store = new PersonalStore(directory, () => now)
+  const args = { cron: '0 10 * * *', timezone: 'Asia/Seoul', prompt: 'Synthetic reminder' }
+  const preview = await store.task('preview', args)
+  assert.equal(preview.times[0], '2026-11-02T01:00:00.000Z')
+  const task = await store.task('create', args)
+  assert.equal(task.dueAt, Date.parse(preview.times[0]))
+  now = task.dueAt
+  assert.equal((await store.claimDue()).id, task.id)
+  await store.finish(task.id, 'Done')
+  const restored = await new PersonalStore(directory, () => now).task('get', { id: task.id })
+  assert.equal(restored.dueAt, Date.parse('2026-11-03T01:00:00Z'))
+  assert.equal(restored.status, 'scheduled')
+  assert.equal(restored.schedule.tz, 'Asia/Seoul')
+  await assert.rejects(store.task('create', { ...args, at: '2026-11-04T00:00:00Z' }), /not both/)
+  await assert.rejects(store.task('preview', { cron: '* * * * *', timezone: 'invalid/zone' }), /invalid/)
 })

@@ -1599,3 +1599,35 @@ describe('Dstar emergency full-context recovery', () => {
     } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
 })
+
+describe('Personal source-backed recall persistence', () => {
+  it('captures recall once on the persisted thread and replays it after the connector is disabled', async () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true')
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify({ entries: [{ id: 17, content: 'Synthetic recalled canary', sessionId: 'qa/source' }] }) }] })
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never,
+      messages: { modifyMessage: vi.fn(async message => message) } as never,
+      mcp: { callTool } as never })
+    useMCPServers.setState({ mcpServers: { 'atomic-personal-tools': { command: 'node', args: [], env: {}, active: true } } })
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: [], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    useMessages.getState().setMessages('memory-thread', [{ id: userMessage.id, thread_id: 'memory-thread', role: 'user', metadata: {}, content: [] } as never])
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const transport = new CustomChatTransport(undefined, 'memory-thread')
+    const send = async () => readChunks(await transport.sendMessages({ chatId: 'unrelated-sdk-id', messages: [userMessage], abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+    try {
+      await send()
+      useMCPServers.setState({ mcpServers: {} })
+      await send()
+      expect(callTool).toHaveBeenCalledTimes(2)
+      expect(callTool.mock.calls.map(call => call[0].toolName).sort()).toEqual(['personal_memory', 'personal_notes'])
+      expect(callTool.mock.calls.find(call => call[0].toolName === 'personal_notes')?.[0].arguments.action).toBe('recall')
+      expect(useMessages.getState().getMessages('memory-thread')[0].metadata?.atomic_personal_memory_v1).toContain('qa/source')
+      const calls = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls
+      expect(JSON.stringify(calls[0][0].prompt)).toContain('Synthetic recalled canary')
+      expect(calls[1][0].prompt).toEqual(calls[0][0].prompt)
+      expect(userMessage.parts).toEqual([{ type: 'text', text: 'hello' }])
+    } finally { vi.unstubAllEnvs() }
+  })
+})

@@ -9,6 +9,7 @@ import { trackThreadMessageWrite, waitForThreadMessageWrites } from './thread-me
 import { usesAppendOnlyDstarEffort, withDstarEffortUpdates } from './dstar-effort'
 import { renderInstructions } from './instructionTemplate'
 import { withMessageClocksForModel } from './messageClock'
+import { capturePersonalMemory, isPersonalMemorySnapshot, PERSONAL_MEMORY_METADATA, withPersonalMemorySnapshots } from './personal-memory-context'
 import { useMCPServers } from '@/hooks/useMCPServers'
 import { isWebSearchServer } from '@/lib/web-search'
 import { type UIMessage } from '@ai-sdk/react'
@@ -1218,8 +1219,41 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // Mixed-engine hygiene: agent-run tool parts never reach a chat request.
     // A failed turn that produced nothing is kept in the thread only to show
     // why it failed; it is no reply for the model to see.
+    const personalMemoryThread = this.threadId ?? options.chatId
+    const personalMemoryEnabled = import.meta.env.VITE_PERSONAL_BUILD === 'true' &&
+      usesAppendOnlyDstarEffort(provider.base_url, modelId) && personalMemoryThread !== TEMPORARY_CHAT_ID
+    if (personalMemoryEnabled && options.messages.at(-1)?.role === 'user' && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
+      const user = options.messages.at(-1)!
+      await waitForThreadMessageWrites(personalMemoryThread)
+      const store = useMessages.getState()
+      const stored = store.getMessages(personalMemoryThread).find(message => message.id === user.id)
+      const snapshot = stored?.metadata?.[PERSONAL_MEMORY_METADATA] ??
+        (user.metadata as Record<string, unknown> | undefined)?.[PERSONAL_MEMORY_METADATA]
+      if (stored && !isPersonalMemorySnapshot(snapshot)) {
+        const query = user.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n')
+        const memory = await capturePersonalMemory(query, async query => {
+          const read = async (toolName: string) => {
+            const result = await this.serviceHub!.mcp().callTool({ serverName: 'atomic-personal-tools', toolName, arguments: { action: toolName === 'personal_notes' ? 'recall' : 'search', query } })
+            if (result.error || ('isError' in result && result.isError)) return null
+            const text = result.content?.filter(part => 'text' in part).map(part => (part as { text: string }).text).join('\n') ?? ''
+            return JSON.parse(text)
+          }
+          // Existing explicit memories remain readable without a destructive
+          // migration or changes to their source references and forget behavior.
+          const [notes, legacy] = await Promise.allSettled([read('personal_notes'), read('personal_memory')])
+          const recent = notes.status === 'fulfilled' && Array.isArray(notes.value?.entries) ? notes.value.entries : []
+          const existing = legacy.status === 'fulfilled' && Array.isArray(legacy.value) ? legacy.value.map((row: { id: string; text: string; source: string }) => ({ id: `legacy:${row.id}`, content: row.text, sessionId: row.source })) : []
+          return { entries: [...recent, ...existing] }
+        })
+        const updated = { ...stored, metadata: { ...stored.metadata, [PERSONAL_MEMORY_METADATA]: memory } }
+        await trackThreadMessageWrite(personalMemoryThread, this.serviceHub!.messages().modifyMessage(updated))
+        store.setMessages(personalMemoryThread, useMessages.getState().getMessages(personalMemoryThread).map(message => message.id === updated.id ? updated : message))
+      }
+    }
+    const memoryMessages = personalMemoryEnabled ? withPersonalMemorySnapshots(options.messages,
+      useMessages.getState().getMessages(personalMemoryThread)) : options.messages
     const sanitizedMessages = stripAgentRunToolParts(
-      withMessageClocksForModel(withoutEmptyFailedTurns(options.messages))
+      withMessageClocksForModel(withoutEmptyFailedTurns(memoryMessages))
     )
     const messagesToConvert =
       effectiveProviderName === 'anthropic'
@@ -1600,6 +1634,17 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)
         if (!requestFailed && !isAborted && !toolsPending && finishReason === 'stop' && responseMessage) {
           summaryAfterTurn?.(responseMessage)
+          if (personalMemoryEnabled && this.serviceHub && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
+            const user = options.messages.findLast(message => message.role === 'user')
+            const userMessage = user?.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n') ?? ''
+            const assistantReply = responseMessage.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n')
+            // Send only observed user-visible dialogue, never private reasoning
+            // or model-authored tool output as evidence of a user preference.
+            if (userMessage.trim() && assistantReply.trim()) void this.serviceHub.mcp().callTool({
+              serverName: 'atomic-personal-tools', toolName: 'personal_memory_lifecycle',
+              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply },
+            }).catch(error => console.warn('[personal-memory]', error))
+          }
         }
         // The provider answered in full, so its key works: drop a stale
         // "Key rejected" or "not verified".

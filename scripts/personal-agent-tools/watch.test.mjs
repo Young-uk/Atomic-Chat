@@ -31,3 +31,19 @@ test('a symlink cannot widen the configured watch root', async () => {
   await assert.rejects(watch.call({ action: 'start', path: 'escape' }), /outside/)
   assert.deepEqual(await watch.call({ action: 'list' }), [])
 })
+
+test('persistent watch restores the same id and stop removes its definition', async () => {
+  const { PersonalStore } = await import('./store.mjs')
+  const root = await mkdtemp(join(tmpdir(), 'atomic-watch-persistent-'))
+  const store = new PersonalStore(join(root, 'state'))
+  const first = new PersonalWatch(root, store)
+  const entry = await first.call({ action: 'start', path: '.', persistent: true })
+  first.shutdown()
+  const next = new PersonalWatch(root, store)
+  try {
+    await next.restore()
+    assert.equal((await next.call({ action: 'list' }))[0].id, entry.id)
+    await next.call({ action: 'stop', id: entry.id })
+    assert.deepEqual(await store.watchDefinition('list'), [])
+  } finally { next.shutdown() }
+})

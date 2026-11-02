@@ -23,7 +23,11 @@ test('real stdio MCP handshake, tool invocation and persistence', async () => {
   const a = await session()
   try {
     assert.equal((await a.request('initialize', {})).result.serverInfo.name, 'atomic-personal-tools')
-    assert.equal((await a.request('tools/list', {})).result.tools.length, 5)
+    const names = (await a.request('tools/list', {})).result.tools.map(tool => tool.name)
+    assert.ok(names.includes('personal_task_delivery'))
+    const delivery = await a.request('tools/call', { name: 'personal_task_delivery', arguments: { action: 'pending' } })
+    assert.deepEqual(JSON.parse(delivery.result.content[0].text), [])
+    for (const name of ['personal_memory', 'personal_tasks', 'personal_browser', 'personal_windows', 'personal_watch', 'personal_verify']) assert.ok(names.includes(name))
     const saved = await a.request('tools/call', { name: 'personal_memory', arguments: { action: 'save', text: 'Protocol canary', source: 'synthetic/test' } })
     assert.equal(saved.result.isError, undefined)
     const invalid = await a.request('tools/call', { name: 'personal_memory', arguments: { action: 'save', text: 'missing source' } })

@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { usePersonalMemoryActivity } from '@/providers/PersonalMemoryLifecycleProvider'
 
 type Memory = { id: string; text: string; source: string }
-type Task = { id: string; prompt: string; status: string; dueAt: number; runs: { result?: string; error?: string }[] }
+type Task = { id: string; prompt: string; status: string; dueAt: number; runs: { result?: string; error?: string; delivery?: { status: string; error?: string } }[] }
 
 /** A user-operated view of the same persistent tools available in chat. */
 export function PersonalToolsPanel() {
   const service = useServiceHub()
+  const memoryActivity = usePersonalMemoryActivity()
   const [memories, setMemories] = useState<Memory[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [query, setQuery] = useState('')
@@ -59,6 +61,8 @@ export function PersonalToolsPanel() {
     <p className="text-sm text-muted-foreground">Browser and window controls are available in chat. Memories retain their sources. Scheduled text tasks run while the app is open; missed runs are not replayed.</p>
     <details>
       <summary>Long-term memory</summary>
+      <p className="mt-2 text-sm text-muted-foreground">Background memory: {memoryActivity.phase}. Chat and conversation summaries have priority.</p>
+      {memoryActivity.error && <p className="break-words text-sm text-destructive">{memoryActivity.error}</p>}
       <div className="mt-3 flex min-w-0 gap-2">
         <Input aria-label="Search personal memory" value={query} onChange={event => setQuery(event.target.value)} />
         <Button disabled={busy} onClick={() => void perform(refresh)}>Search</Button>
@@ -84,7 +88,12 @@ export function PersonalToolsPanel() {
       {tasks.map(task => <div key={task.id} className="mt-3 min-w-0 border-t pt-3">
         <p className="break-words">{task.prompt}</p>
         <p className="text-sm text-muted-foreground">{task.status} · {new Date(task.dueAt).toLocaleString()}</p>
-        {task.runs.map((run, index) => <p key={index} className="whitespace-pre-wrap break-words text-sm">{run.error || run.result}</p>)}
+        {task.runs.map((run, index) => <div key={index}>
+          <p className="whitespace-pre-wrap break-words text-sm">{run.error || run.result}</p>
+          {run.delivery && <p className={`break-words text-sm ${run.delivery.error ? 'text-destructive' : 'text-muted-foreground'}`}>
+            {run.delivery.status === 'delivered' ? 'Result delivered' : run.delivery.error ? `Delivery failed: ${run.delivery.error}` : 'Waiting for delivery'}
+          </p>}
+        </div>)}
         {['scheduled', 'running', 'missed'].includes(task.status) && <Button variant="outline" disabled={busy} onClick={() => void perform(async () => { await call('personal_tasks', { action: 'cancel', id: task.id }) })}>Cancel</Button>}
       </div>)}
     </details>

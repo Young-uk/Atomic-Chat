@@ -1,4 +1,5 @@
 import { compactSearchOutput } from './compact-search-output'
+import { personalTaskInput } from './personal-task-context'
 import type { UIMessage } from '@ai-sdk/react'
 import { lastAssistantMessageIsCompleteWithToolCalls } from 'ai'
 
@@ -151,7 +152,7 @@ export async function executeChatToolCalls({
       } else if (mcpToolNames.has(toolCall.toolName)) {
         result = await callMcpTool({
           toolName: toolCall.toolName,
-          arguments: toolCall.input,
+          arguments: personalTaskInput(toolCall.toolName, threadId, toolCall.input),
           threadId,
         })
       } else {

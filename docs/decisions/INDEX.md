@@ -643,3 +643,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [2026-11-01 — Key Qwen tool frontiers by rendered client history](2026-11-01-qwen-tool-replay-cache-key.md)
 
 - [2026-11-02 — Freeze explicit time references on newly sent messages](2026-11-02-freeze-explicit-message-time-reference.md)
+
+- [2026-11-02 — Port Agent domain sources directly into Personal Chat](2026-11-02-port-agent-domain-sources-into-personal-chat.md)
+
+- [2026-11-02 — Deliver scheduled results with captured assistant voice](2026-11-02-deliver-scheduled-results-with-voice-context.md)

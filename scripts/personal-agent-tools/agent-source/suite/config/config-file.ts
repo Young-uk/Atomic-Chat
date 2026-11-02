@@ -1,0 +1,346 @@
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+import { carryUnknownConfigKeys } from "./carry-unknown-config-keys.mjs";
+import { keepSetAsideLocalModelValues } from "./local-models/keep-set-aside-values.mjs";
+import {
+  ConfigValidationError,
+  ENV_DEFAULTS,
+  parseUserConfigFile,
+  USER_CONFIG_DEFAULTS,
+  USER_CONFIG_VERSION,
+  type UserConfigFile,
+} from "./config-schema.mjs";
+import { writeOwnerOnlyFileAtomicSync } from "./owner-only-file.mjs";
+
+/** Resolve the absolute path to the user config file inside a state dir. */
+export function getUserConfigPath(stateDir: string): string {
+  return join(stateDir, ENV_DEFAULTS.USER_CONFIG_FILE_NAME);
+}
+
+/** Resolve the absolute path to the `.env` file inside a state dir. */
+export function getDotenvPath(stateDir: string): string {
+  return join(stateDir, ".env");
+}
+
+/**
+ * The agent's own trust surface: `config.json` (holds
+ * `agent.approvalLevel`) and `.env` (API keys / bot tokens loaded at
+ * boot). A silent rewrite of either is a self-escalation vector, so the
+ * approval ladder categorises a write to these as `trust_config` (asks
+ * until level 5). This is the single place that *knows where the trust
+ * surface lives*; the bootstrap resolves it once from `config.paths` and
+ * injects the list into the fs tools, which never derive it themselves.
+ */
+export function getTrustConfigPaths(paths: {
+  userConfigFile: string;
+  stateDir: string;
+}): readonly string[] {
+  return [paths.userConfigFile, getDotenvPath(paths.stateDir)];
+}
+
+/**
+ * Every file in the agent's state that holds a secret or the trust
+ * config: the trust surface above, plus the bearer key the managed
+ * llama-server is launched with (`resolveApiKeyFilePath`), the session
+ * records Atomic Chat Core writes with their per-session key
+ * (`coreSessionPath`) and the cached Atomic Mail session
+ * (`resolveSessionPath`). Reading one of these through an agent tool,
+ * or naming one in a shell command, asks as `state_secret` (pinned at
+ * level 5, never grantable; `src/tools/read-scope/state-secrets.ts`).
+ *
+ * The file names are spelled here rather than imported because config
+ * sits below `local-llm/` and `atomic-mail/`; `config-file.test.ts`
+ * pins them against the owners' own path helpers so the list cannot
+ * drift from where those files really are.
+ */
+export function getStateSecretPaths(paths: {
+  userConfigFile: string;
+  stateDir: string;
+  localModelsDataDir: string;
+}): readonly string[] {
+  return [
+    ...getTrustConfigPaths(paths),
+    join(paths.localModelsDataDir, "llama-server.key"),
+    join(paths.localModelsDataDir, "core", "chat.json"),
+    join(paths.localModelsDataDir, "core", "embedding.json"),
+    join(paths.stateDir, "atomic-mail", "session.json"),
+  ];
+}
+
+/**
+ * Synchronously read and validate the user config file.
+ * Returns `null` if the file does not exist. Throws `ConfigValidationError`
+ * if the file is present but malformed.
+ *
+ * Pure read — does not migrate the file on disk. Use
+ * `ensureUserConfigFileSync` from the bootstrap path to get the
+ * active-migration behaviour.
+ */
+export function readUserConfigFileSync(path: string): UserConfigFile | null {
+  const raw = readRawUserConfigFileSync(path);
+  if (!raw) return null;
+  return parseUserConfigFile(raw.parsed);
+}
+
+/**
+ * Atomically write the user config file: tmp file + rename, readable
+ * by its owner only (0600, `writeOwnerOnlyFileAtomicSync`). Creates the
+ * parent directory as needed.
+ *
+ * The written `version` is never lower than the one already on disk. A
+ * dozen call sites build their payload by spreading a config object and
+ * writing it back, and several skip `parseUserConfigFile` entirely, so
+ * the guard lives here rather than in the parse: this is the only
+ * function in the tree that writes `config.json`. Without it, an older
+ * build that opens a newer file relabels it on the first settings
+ * toggle, and the version field is load-bearing — `version < 41` forces
+ * `localModels.managed.autoUpdate` back on, `version < 22` overrides an
+ * explicit `memory.*` opt-out, `version < 79` rewrites a stored
+ * `http.approvalMode: "never"`. Downgrading the label silently reverts choices
+ * the user made.
+ *
+ * For the same reason, keys this build does not know inside fixed blocks
+ * of the file on disk (`memory.futureKey` from a newer build) are carried
+ * into the payload; known keys and dictionaries such as `mcp.servers`
+ * still come from `data` alone. See `carryUnknownConfigKeys` (ATO-417).
+ */
+export function writeUserConfigFileSync(
+  path: string,
+  data: UserConfigFile,
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const diskTree = readJsonObjectFromFileSync(path);
+  const onDisk = readVersionField(diskTree);
+  const raised = onDisk !== null && onDisk > data.version;
+  const version = raised ? (onDisk as number) : data.version;
+  if (raised) {
+    process.stderr.write(
+      `[atomic-agent] kept config version ${onDisk} (this build writes v${data.version}) at ${path}\n`,
+    );
+  }
+  const carried = diskTree ? carryUnknownConfigKeys(keepSetAsideLocalModelValues(data, diskTree), diskTree) : data;
+  const payload =
+    JSON.stringify(
+      version === carried.version ? carried : { ...carried, version },
+      null,
+      2,
+    ) + "\n";
+  writeOwnerOnlyFileAtomicSync(path, payload);
+}
+
+/**
+ * Ensure the user config file exists and is at the current schema
+ * version.
+ *
+ *  - File missing: write defaults, warn once on stderr, return defaults.
+ *  - File present at older `version`: parse (which fills in defaults
+ *    for any added blocks transparently), atomically rewrite the file
+ *    in v{USER_CONFIG_VERSION} shape, and log one migration line to
+ *    stderr for auditability. Existing user values are preserved
+ *    verbatim — only the `version` field bumps and any newly added
+ *    blocks (e.g. `vision` in v6) are filled with defaults.
+ *  - File present at the current `version`: parse and return without
+ *    touching the file on disk.
+ *  - File present at a NEWER `version` (an install that was rolled back,
+ *    or two builds sharing one state dir): parse with this build's
+ *    schema and return without touching the file. Unknown top-level
+ *    blocks ride along untouched; the newer `version` is kept.
+ *
+ * The return value is always the validated, normalised contents.
+ */
+/**
+ * Where "created default config …" and "migrated config …" go.
+ *
+ * They are diagnostics, not output, and the TUI is the one caller that
+ * cannot afford them on stderr: it prints them *before* the alternate
+ * screen is entered, so a first run opens with two raw lines above the
+ * interface — a file path and a warning, as the first thing a new user
+ * reads. A sink lets that caller collect them and replay them inside the
+ * UI instead. Every other caller (the CLI, the sidecar) keeps stderr,
+ * which is the default.
+ */
+// The sink lives with the primitives so a block parser can say a value was set aside (ATO-1239).
+export { setConfigNoticeSink, type ConfigNoticeSink } from "./config-primitives.mjs";
+import { emitConfigNotice } from "./config-primitives.mjs";
+
+export function ensureUserConfigFileSync(path: string): UserConfigFile {
+  const raw = readRawUserConfigFileSync(path);
+  if (!raw) {
+    writeUserConfigFileSync(path, USER_CONFIG_DEFAULTS);
+    emitConfigNotice(`[atomic-agent] created default config at ${path}`);
+    return USER_CONFIG_DEFAULTS;
+  }
+  const parsed = withConfigPathInError(path, () =>
+    parseUserConfigFile(raw.parsed),
+  );
+  // Migrate upward only. `!==` would treat "written by a newer build" as
+  // "needs migrating" and rewrite the file down to this build's schema at
+  // startup, before the user has touched anything — the exact move that
+  // turns a rollback into data loss.
+  if (
+    raw.originalVersion === null ||
+    raw.originalVersion < USER_CONFIG_VERSION
+  ) {
+    writeUserConfigFileSync(path, parsed);
+    emitConfigNotice(
+      `[atomic-agent] migrated config v${raw.originalVersion} → v${USER_CONFIG_VERSION} at ${path}`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Compare-and-swap support for clients sharing one state dir (ATO-416).
+ * The desktop app and the terminal agent both write `config.json`; a
+ * client that edits a copy it read earlier would silently revert the
+ * other's change. It reads the file together with the sha256 of its raw
+ * bytes (`config get --with-sha256`) and hands that hash back on write
+ * (`config set - --expect-sha256 <hex>`), which refuses when the bytes
+ * on disk are no longer the ones it read.
+ *
+ * The hash is over the exact bytes on disk — no parse, no normalisation —
+ * so any change, even whitespace from a hand edit, counts as a change.
+ * A missing file hashes as the empty string.
+ */
+export function userConfigFileSha256Sync(path: string): string {
+  return sha256Hex(readUserConfigBytesSync(path) ?? Buffer.alloc(0));
+}
+
+export interface UserConfigSnapshot {
+  /** Lowercase hex sha256 of the bytes `config` was parsed from. */
+  sha256: string;
+  config: UserConfigFile;
+}
+
+/**
+ * The config and the hash of the bytes it came from, from ONE read: two
+ * reads (hash, then parse) could straddle another client's write and
+ * pair a new hash with old contents — and a later compare-and-swap would
+ * then accept a write built on the stale copy. A missing file yields the
+ * defaults and the empty-string hash. Pure read: no migration — callers
+ * that want the file migrated first run `ensureUserConfigFileSync`.
+ */
+export function readUserConfigSnapshotSync(path: string): UserConfigSnapshot {
+  const bytes = readUserConfigBytesSync(path);
+  if (!bytes) {
+    return { sha256: sha256Hex(Buffer.alloc(0)), config: USER_CONFIG_DEFAULTS };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch (err) {
+    throw new ConfigValidationError(
+      "<file>",
+      `${path} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return {
+    sha256: sha256Hex(bytes),
+    config: withConfigPathInError(path, () => parseUserConfigFile(parsed)),
+  };
+}
+
+function readUserConfigBytesSync(path: string): Buffer | null {
+  try {
+    return readFileSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ConfigValidationError(
+      "<file>",
+      `failed to read ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function sha256Hex(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * Name the file and a way out when the config is unusable. `getConfig()`
+ * runs ahead of every command, so a validation failure here is the first
+ * thing a user sees, and the bare `invalid config: version: …` it used to
+ * print names neither the file nor a remedy — leaving nothing to do but
+ * search the source.
+ */
+function withConfigPathInError<T>(path: string, read: () => T): T {
+  try {
+    return read();
+  } catch (err) {
+    if (!(err instanceof ConfigValidationError)) throw err;
+    throw new ConfigValidationError(
+      err.field,
+      `${err.reason} (in ${path}) — edit or delete that file to start from defaults, or point ATOMIC_AGENT_STATE_DIR elsewhere`,
+    );
+  }
+}
+
+interface RawUserConfigFile {
+  /** Untouched parsed JSON tree, ready for `parseUserConfigFile`. */
+  parsed: unknown;
+  /** Pre-migration `version` field straight from disk, or `null` when missing/malformed. */
+  originalVersion: number | null;
+}
+
+function readRawUserConfigFileSync(path: string): RawUserConfigFile | null {
+  if (!existsSync(path)) return null;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new ConfigValidationError(
+      "<file>",
+      `failed to read ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new ConfigValidationError(
+      "<file>",
+      `${path} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return { parsed, originalVersion: readVersionField(parsed) };
+}
+
+/**
+ * The `version` currently on disk, or `null` when the file is absent,
+ * unreadable, not JSON, or carries no numeric version. Deliberately
+ * total: this runs on the write path, where a malformed existing file
+ * must not stop the caller from replacing it.
+ */
+export function readUserConfigVersionOnDiskSync(path: string): number | null {
+  return readVersionFieldFromFileSync(path);
+}
+
+function readVersionFieldFromFileSync(path: string): number | null {
+  return readVersionField(readJsonObjectFromFileSync(path));
+}
+
+/**
+ * The file on disk as a JSON object, or `null` when it is absent,
+ * unreadable, not JSON, or not an object. Total for the same reason as
+ * the version read: a malformed file must not block replacing it.
+ */
+function readJsonObjectFromFileSync(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function readVersionField(parsed: unknown): number | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  const value = (parsed as Record<string, unknown>).version;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
