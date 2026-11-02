@@ -231,3 +231,41 @@ it('persists a fixed placement when opening a legacy archive and keeps the lates
   await restarted.initialize()
   expect(restarted.apply([...messages, question, { ...question, id: 'later' }]).slice(0, first.length)).toEqual(first)
 })
+
+
+it('restores a matching summary whose old insertion message disappeared without sending archived raw history', async () => {
+  const messages = history()
+  const record: ArchiveRecord = { version: 1, id: 'restored', threadId: 'thread',
+    source: messages.slice(0, 12), previousSummary: '', summary: 'Verified older facts',
+    summaryAfterMessageId: 'transient-assistant-not-persisted' }
+  const saved: ArchiveRecord[] = []
+  const c = new ContextCompaction('thread', { load: async () => record,
+    save: async r => { saved.push(structuredClone(r)) } })
+  await c.initialize()
+  const view = c.apply(messages)
+  expect(view[0].id).toBe('atomic-context-restored')
+  expect(view.slice(1)).toEqual(messages.slice(12))
+  expect(view.some(m => m.id === '0')).toBe(false)
+  await settle()
+  expect(saved.at(-1)?.summaryAfterMessageId).toBe('11')
+  const edited = structuredClone(messages); edited[0].parts = [{ type: 'text', text: 'edited original' }]
+  expect(c.apply(edited)).toEqual(edited)
+})
+
+
+it.skipIf(!process.env.ATOMIC_COMPACTION_REPLAY_DIR)('replays a persisted local archive without changing its source files', async () => {
+  const { readFile, readdir } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const root = process.env.ATOMIC_COMPACTION_REPLAY_DIR!
+  const raw = await readFile(join(root, 'messages.jsonl'), 'utf8')
+  const messages = raw.trim().split('\n').map(line => convertThreadMessageToUIMessage(JSON.parse(line)))
+  const records: ArchiveRecord[] = await Promise.all((await readdir(join(root, 'context-archives')))
+    .filter(name => name.endsWith('.json')).map(async name => JSON.parse(await readFile(join(root, 'context-archives', name), 'utf8'))))
+  const record = records.filter(r => r.summary?.trim()).sort((a, b) => b.source.length - a.source.length)[0]
+  const c = new ContextCompaction(record.threadId, { load: async () => structuredClone(record), save: async () => {} })
+  await c.initialize()
+  const projected = c.apply(messages)
+  expect(projected.some(m => m.id === `atomic-context-${record.id}`)).toBe(true)
+  expect(projected.length).toBe(messages.length - record.source.length + 1)
+  expect(await readFile(join(root, 'messages.jsonl'), 'utf8')).toBe(raw)
+})

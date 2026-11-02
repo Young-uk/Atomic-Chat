@@ -175,7 +175,15 @@ export class ContextCompaction {
     }
     const boundary = retained.findIndex(m => m.id === archived.summaryAfterMessageId)
     // If a retained boundary was edited away, do not silently relocate memory.
-    if (boundary < 0 && archived.summaryAfterMessageId !== archived.source.at(-1)?.id) return messages
+    // Recover explicitly at the archived-prefix boundary instead of expanding
+    // back to raw history. Source matching above still rejects edited history;
+    // the summary remains older than every retained turn at this safe anchor.
+    if (boundary < 0 && archived.summaryAfterMessageId !== archived.source.at(-1)?.id) {
+      archived.summaryAfterMessageId = archived.source.at(-1)?.id
+      void this.store.save({ ...archived }).catch(error => {
+        this.error = `Recovered summary placement could not be saved: ${error instanceof Error ? error.message : String(error)}`
+      })
+    }
     const summary: UIMessage = {
       id: `atomic-context-${archived.id}`, role: 'system',
       parts: [{ type: 'text', text:

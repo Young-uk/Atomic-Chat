@@ -658,3 +658,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Allow full 64K Personal cache checkpoints](2026-11-03-allow-full-64k-personal-cache-checkpoints.md)
 
 - [Bind Personal verification to the originating chat workdir](2026-11-03-bind-personal-verification-to-chat-workdir.md)
+
+- [Recover a missing summary insertion anchor](2026-11-03-recover-missing-summary-insertion-anchor.md)
