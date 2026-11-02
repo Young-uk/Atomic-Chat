@@ -14,7 +14,7 @@ it.each([1024, 1280].flatMap(width => ['13px', '20px'].flatMap(fontSize => (['li
   useToolApproval.setState({ isModalOpen: true, modalProps: {
     toolName: 'personal_native', threadId: 'layout',
     toolParameters: { action: 'confirm', nativeTool: 'os.fs.write', arguments: { path: '/long-project-folder/'.repeat(30) + 'file.txt' } },
-    onApprove: () => {}, onDeny: () => {},
+    onApprove: () => {}, onDeny: () => {}, onAlwaysAllow: () => {}, permissionSource: 'synthetic-provider',
   } })
   render(withTranslations(<ToolApproval />))
   await settle()

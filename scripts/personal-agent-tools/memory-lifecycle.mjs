@@ -1,3 +1,6 @@
+import { createLinkGeneratorRunner } from './agent-source/suite/memory/links/link-generator-runner.mjs'
+import { ConsolidatorJob, DistillRunner } from './agent-source/suite/memory/consolidator/index.mjs'
+import { USER_CONFIG_DEFAULTS } from './agent-source/suite/config/config-schema.mjs'
 import { createReflectionRunner } from './agent-source/suite/memory/reflection/reflection-runner.mjs'
 import { ProfileStore } from './agent-source/memory/profile-store.mjs'
 import { join } from 'node:path'
@@ -7,8 +10,13 @@ import { join } from 'node:path'
 export class PersonalMemoryLifecycle {
   constructor({ directory, notes, complete, now = () => Date.now() }) {
     this.now = now
+    this.complete = complete
+    this.maintenanceEnabled = false
+    this.nextMaintenance = 0
     this.notes = notes
     this.profile = new ProfileStore({ dbFile: join(directory, 'agent-notes.sqlite'), maxEntries: 500 })
+    this.linker = createLinkGeneratorRunner({ llmComplete: complete,
+      linkStore: notes.maintenanceStores().linkStore, reflectionSlotId: -1, timeoutMs: 45000, maxLinksPerCall: 4 })
     this.pending = []
     this.records = new Map()
     this.busy = true
@@ -18,7 +26,7 @@ export class PersonalMemoryLifecycle {
       memoryStore: notes.database(), reflectionSlotId: -1,
       timeoutMs: 60000, maxFactsPerCall: 3, maxNotesPerCall: 2,
       emitTrace: event => {
-        if (!this.active) return
+        if (!this.active || this.maintenanceController) return
         this.active.outcome = event.outcome
         this.active.factsWritten = event.factsWritten ?? 0
         this.active.notesWritten = event.notesWritten ?? 0
@@ -49,23 +57,47 @@ export class PersonalMemoryLifecycle {
   }
   activity(busy) {
     this.busy = busy
-    if (busy) this.runner.abortPending()
+    if (busy) { this.runner.abortPending(); this.maintenanceController?.abort(); this.linker.abortPending() }
     else void this.drain()
     return this.status()
   }
   status() {
     const row = this.active ?? [...this.records.values()].at(-1)
-    return { enabled: this.enabled, phase: this.active ? (this.busy ? 'paused' : 'running') : this.pending.length ? 'queued' : row?.state ?? 'idle', queued: this.pending.length,
+    return { maintenance: { enabled: this.maintenanceEnabled, running: !!this.maintenanceController, last: this.maintenanceResult ?? null }, enabled: this.enabled, phase: this.active ? (this.busy ? 'paused' : 'running') : this.pending.length ? 'queued' : row?.state ?? 'idle', queued: this.pending.length,
       last: row ? { key: row.key, state: row.state, outcome: row.outcome, factsWritten: row.factsWritten, notesWritten: row.notesWritten, reason: row.reason } : null }
+  }
+  configureMaintenance(enabled) {
+    this.maintenanceEnabled = enabled === true
+    if (!enabled) { this.maintenanceController?.abort(); this.linker.abortPending() }
+  }
+  async maintain() {
+    if (!this.maintenanceEnabled || this.closed || this.busy || this.active || this.pending.length || this.maintenanceController || this.now() < this.nextMaintenance) return
+    const controller = this.maintenanceController = new AbortController()
+    const config = USER_CONFIG_DEFAULTS.memory.consolidation
+    try {
+      // Reuse source defaults and stores; no second model or autonomous timer.
+      const runner = new DistillRunner({ llmComplete: this.complete, slotId: -1, timeoutMs: config.distillTimeoutMs, withProcedure: true })
+      const job = new ConsolidatorJob({ ...config, enabled: true, consolidationLeaseMs: USER_CONFIG_DEFAULTS.memory.evolution?.leaseMs ?? 60000 },
+        { ...this.notes.maintenanceStores(), distillRunner: runner, now: this.now, workingDir: this.notes.workspace })
+      this.maintenanceResult = await job.runOnce(controller.signal)
+      this.nextMaintenance = this.now() + (controller.signal.aborted ? 60000 : config.intervalMs)
+    } catch (error) {
+      this.maintenanceResult = { outcome: 'failed', reason: error.message }
+      this.nextMaintenance = this.now() + 60000
+    } finally { this.maintenanceController = null; if (!this.busy) void this.drain() }
   }
   async drain() {
     if (this.closed || this.busy || !this.enabled || this.active) return
     const row = this.pending.shift()
-    if (!row) return
+    if (!row) { void this.maintain(); return }
     this.active = row
     row.state = 'running'
     try {
       await this.runner.reflect(row.input)
+      if (this.maintenanceEnabled && !this.busy && !this.closed && ['ok','none'].includes(row.outcome)) {
+        const candidates = this.notes.database().recall(row.input.userMessage, { k: 8, scope: 'all' }).map(note => ({ id: note.id, body: note.content }))
+        row.linksWritten = await this.linker.generate({ ...row.input, candidates })
+      }
       if (row.outcome === 'aborted' && this.busy && !this.closed) {
         row.state = 'queued'
         this.pending.unshift(row)
@@ -79,8 +111,10 @@ export class PersonalMemoryLifecycle {
   async close() {
     this.closed = true
     this.runner.abortPending()
+    this.maintenanceController?.abort()
+    this.linker.abortPending()
     // Reflection owns the database until its aborted promise settles.
-    while (this.active) await new Promise(resolve => setTimeout(resolve, 10))
+    while (this.active || this.maintenanceController) await new Promise(resolve => setTimeout(resolve, 10))
     this.profile.close()
   }
 }

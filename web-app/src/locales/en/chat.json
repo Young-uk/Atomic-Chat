@@ -199,7 +199,7 @@
     "manualDescription": "Always ask before tool calls edit files or use the internet",
     "skipSelected": "Full access",
     "skip": "Full access",
-    "skipDescription": "Runs every tool call without asking, including access to files and the internet.",
+    "skipDescription": "Runs tool calls without asking. Separate Personal native action confirmations still apply.",
     "menuTitle": "How should tool calls be approved?",
     "skipConfirmTitle": "Enable Full access?",
     "skipConfirmBody": "No approval prompts: tool calls can modify or delete files, run commands, and use the internet. Enable it only for a task you trust.",

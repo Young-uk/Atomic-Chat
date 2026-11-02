@@ -106,7 +106,7 @@ export default function ToolApproval() {
     return null
   }
 
-  const { toolName, threadId, toolParameters, onApprove, onDeny } = modalProps
+  const { toolName, threadId, toolParameters, onApprove, onDeny, onAlwaysAllow, requireFreshApproval, permissionSource } = modalProps
   const exec = describeExecCall(toolName, toolParameters, t)
   const native = describeNativeCall(toolName, toolParameters, t)
   const secure = exec ? secureEnvironmentForThread(threadId) : undefined
@@ -169,12 +169,16 @@ export default function ToolApproval() {
             {native.target && <p className="whitespace-pre-wrap break-all">
               <span className="font-medium">{t('tools:toolApproval.native.target')}: </span>{native.target}
             </p>}
-            <p className="text-muted-foreground">{t('tools:toolApproval.permissionScope')}</p>
+            <p className="text-muted-foreground">{t(requireFreshApproval ? 'tools:toolApproval.freshOnly' : 'tools:toolApproval.permissionScope')}</p>
             <p className="text-xs text-muted-foreground mt-1">
-              {t('tools:toolApproval.native.threadScope')}
+              {t(requireFreshApproval ? 'tools:toolApproval.freshOnly' : 'tools:toolApproval.native.threadScope')}
             </p>
           </div>
         )}
+
+        {onAlwaysAllow && !requireFreshApproval && <p className="text-sm text-muted-foreground break-words">
+          {t('tools:toolApproval.persistentScope', { source: permissionSource, tool: toolName })}
+        </p>}
 
         {exec && (
           <pre
@@ -206,7 +210,7 @@ export default function ToolApproval() {
           </p>
         </div>
 
-        <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-between">
+        <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-between">
           <Button
             variant="ghost"
             size="sm"
@@ -215,11 +219,11 @@ export default function ToolApproval() {
           >
             {t('tools:toolApproval.deny')}
           </Button>
-          <div className="flex flex-col sm:flex-row gap-2 items-center">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 items-center">
             <Button variant="ghost" size="sm" onClick={handleAllowOnce}>
               {t('tools:toolApproval.allowOnce')}
             </Button>
-            <Button
+            {!requireFreshApproval && <Button
               variant="default"
               size="sm"
               onClick={handleAllow}
@@ -227,7 +231,10 @@ export default function ToolApproval() {
               className="capitalize"
             >
               {t('tools:toolApproval.alwaysAllow')}
-            </Button>
+            </Button>}
+            {onAlwaysAllow && !requireFreshApproval && <Button size="sm" variant="outline" onClick={onAlwaysAllow}>
+              {t('tools:toolApproval.allowAlways')}
+            </Button>}
           </div>
         </DialogFooter>
       </DialogContent>

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { localStorageKey } from '@/constants/localStorage'
+import type { ToolPermissionTarget } from '@/lib/tool-permission-targets'
 
 export type ShowApprovalModalOptions = {
   /**
@@ -11,6 +12,7 @@ export type ShowApprovalModalOptions = {
   bypassGlobalAutoApprove?: boolean
   /** A stored native proposal is one action, never a remembered tool grant. */
   requireFreshApproval?: boolean
+  persistentTarget?: ToolPermissionTarget
 }
 
 export type ToolApprovalModalProps = {
@@ -19,11 +21,17 @@ export type ToolApprovalModalProps = {
   toolParameters?: object
   onApprove: (allowOnce: boolean) => void
   onDeny: () => void
+  onAlwaysAllow?: () => void
+  requireFreshApproval?: boolean
+  permissionSource?: string
 }
 
 type ToolApprovalState = {
   // Track approved tools per thread
   approvedTools: Record<string, string[]> // threadId -> toolNames[]
+  persistentTools: Record<string, ToolPermissionTarget & { enabled: boolean }>
+  setPersistentTool: (target: ToolPermissionTarget, enabled: boolean) => void
+  removePersistentTool: (key: string) => void
   // Global MCP permission toggle
   allowAllMCPPermissions: boolean
   // Modal state
@@ -48,6 +56,16 @@ export const useToolApproval = create<ToolApprovalState>()(
   persist(
     (set, get) => ({
       approvedTools: {},
+      persistentTools: {},
+      setPersistentTool: (target, enabled) => set(state => ({ persistentTools: {
+        ...state.persistentTools, [target.key]: { ...target, enabled },
+      }, ...(enabled ? {} : { approvedTools: Object.fromEntries(Object.entries(state.approvedTools)
+        .map(([id, names]) => [id, names.filter(name => name !== target.toolName)])) }) })),
+      removePersistentTool: key => set(state => {
+        const { [key]: removed, ...remaining } = state.persistentTools
+        return { persistentTools: remaining, ...(removed ? { approvedTools: Object.fromEntries(Object.entries(state.approvedTools)
+          .map(([id, names]) => [id, names.filter(name => name !== removed.toolName)])) } : {}) }
+      }),
       allowAllMCPPermissions: true,
       isModalOpen: false,
       modalProps: null,
@@ -87,6 +105,14 @@ export const useToolApproval = create<ToolApprovalState>()(
             return
           }
 
+          // A stored native proposal still needs its own decision. A tool grant
+          // never substitutes for reviewing that immutable pending action.
+          const target = options?.persistentTarget
+          if (!options?.requireFreshApproval && target && state.persistentTools[target.key]?.enabled) {
+            resolve(true)
+            return
+          }
+
           // Check if tool is already approved for this thread
           if (!options?.requireFreshApproval && state.isToolApproved(threadId, toolName)) {
             resolve(true)
@@ -99,6 +125,13 @@ export const useToolApproval = create<ToolApprovalState>()(
               toolName,
               threadId,
               toolParameters,
+              requireFreshApproval: options?.requireFreshApproval,
+              permissionSource: target?.source,
+              ...(!options?.requireFreshApproval && target ? { onAlwaysAllow: () => {
+                get().setPersistentTool(target, true)
+                get().closeModal()
+                resolve(true)
+              } } : {}),
               onApprove: (allowOnce: boolean) => {
                 if (!allowOnce && !options?.requireFreshApproval) {
                   // If not "allow once", add to approved tools for this thread
@@ -137,20 +170,23 @@ export const useToolApproval = create<ToolApprovalState>()(
     {
       name: localStorageKey.toolApproval,
       storage: createJSONStorage(() => localStorage),
-      version: 1,
+      version: 2,
       // One-time migration: force auto-approve for every existing user so the
       // tool approval popup is hidden by default. Users can opt back in via
       // General → Chat Behavior or MCP Servers settings.
+      // Version 2 preserves the user's switch; it does not repeat the old reset.
       migrate: (persistedState) => {
         const state = (persistedState ?? {}) as Partial<ToolApprovalState>
         return {
           ...state,
-          allowAllMCPPermissions: true,
+          allowAllMCPPermissions: state.allowAllMCPPermissions ?? true,
+          persistentTools: state.persistentTools ?? {},
         } as ToolApprovalState
       },
       // Only persist approved tools and global permission setting, not modal state
       partialize: (state) => ({
         approvedTools: state.approvedTools,
+        persistentTools: state.persistentTools,
         allowAllMCPPermissions: state.allowAllMCPPermissions,
       }),
     }

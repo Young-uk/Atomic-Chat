@@ -1,3 +1,4 @@
+import { semanticMemory } from './semantic-memory.mjs'
 import { join } from 'node:path'
 import { MemoryStore } from './agent-source/memory/memory-store.mjs'
 import { ProfileStore } from './agent-source/memory/profile-store.mjs'
@@ -20,20 +21,56 @@ export class PersonalNotes {
       if (typeof args.source !== 'string' || !args.source.trim() || args.source.length > 2000) throw new Error('A verifiable source reference is required')
       return store.store({ content: args.text, tags: args.tags, source: 'user', sessionId: args.source, workingDir: this.workspace })
     }
-    if (args.action === 'search') return { mode: 'fts5', entries: store.recall(args.query, { k: 5, scope: 'all' }) }
+    if (args.action === 'search') return this.semantic?.enabled ? this.semanticSearch(args.query) : { mode: 'fts5', entries: store.recall(args.query, { k: 5, scope: 'all' }) }
     if (args.action === 'recall') {
       this.profile ??= new ProfileStore({ dbFile: join(this.directory, 'agent-notes.sqlite'), maxEntries: 2000 })
       // Use the original grounded-name and contextual-keyword gates. The
       // immutable per-turn host snapshot remains the final byte budget.
       const facts = selectProfileFacts(this.profile.listForPrompt(), { userMessage: args.query })
       const profile = facts.slice(0, 3).map(fact => ({ id: `profile:${fact.id}`, content: `${fact.key}: ${fact.value}`, sessionId: `personal-profile:${fact.id}:${fact.validFrom}` }))
-      return { mode: 'profile+fts5', entries: [...profile, ...store.recall(args.query, { k: 5, scope: 'all' })] }
+      return this.semantic?.enabled ? this.semanticSearch(args.query).then(result => ({ ...result, entries: [...profile, ...result.entries] })) : { mode: 'profile+fts5', entries: [...profile, ...store.recall(args.query, { k: 5, scope: 'all' })] }
     }
     if (args.action === 'list') return store.listIndex({ limit: 100, scope: 'all' })
     if (!Number.isSafeInteger(args.id) || args.id < 1) throw new Error('A positive note id is required')
     if (args.action === 'get') return store.get(args.id)
     if (args.action === 'forget') return { removed: store.remove(args.id) }
     throw new Error('Unknown notes action')
+  }
+  maintenanceStores() {
+    const options = { dbFile: join(this.directory, 'agent-notes.sqlite'), maxEntries: 2000 }
+    this.links ??= new LinkStore({ db: this.database().getDatabaseHandleForEmbeddings() })
+    this.lessons ??= new LessonStore(options)
+    this.procedures ??= new ProcedureStore(options)
+    return { memoryStore: this.database(), linkStore: this.links, lessonStore: this.lessons, procedureStore: this.procedures }
+  }
+  async recallWithContext(args) {
+    let query = args.query
+    if (this.queryRewriteEnabled && this.queryRewriter && typeof args.history === 'string' && args.history.length <= 4000) {
+      try {
+        const history = JSON.parse(args.history)
+        if (Array.isArray(history) && history.length <= 8 && history.every(row => ['user','assistant'].includes(row.role) && typeof row.text === 'string' && row.text.length <= 400)) {
+          query = await this.queryRewriter.maybeRewrite({ sessionId: args.sessionId ?? 'personal-recall', userMessage: args.query, history, signal: AbortSignal.timeout(500) })
+        }
+      } catch { /* A malformed or slow rewrite retains the raw query. */ }
+    }
+    return this.call({ ...args, query, action: 'recall' })
+  }
+  configureSemantic(config) {
+    this.semantic = semanticMemory(this.database(), config)
+    return this.semantic
+  }
+  async semanticSearch(query) {
+    return { mode: this.semantic?.enabled ? 'hybrid-with-keyword-fallback' : 'fts5', entries: await this.database().recallHybridAsync(query, { k: 5, scope: 'all' }) }
+  }
+  async indexSemantic() {
+    if (!this.semantic?.enabled) throw new Error('Semantic memory is disabled')
+    let indexed = 0
+    // Explicit bounded backfill; existing notes and source references stay intact.
+    for (const row of this.database().listIndex({ limit: 100, scope: 'all' })) {
+      const entry = this.database().get(row.id)
+      if (entry && await this.database().writeEmbeddingFor(entry.id, entry.content)) indexed++
+    }
+    return { indexed, limit: 100 }
   }
   knowledge(args) {
     const store = this.database()

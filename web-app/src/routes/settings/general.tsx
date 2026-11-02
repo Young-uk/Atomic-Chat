@@ -8,6 +8,7 @@ import { Card, CardItem } from '@/containers/Card'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
 import { useToolApproval } from '@/hooks/useToolApproval'
+import ToolPermissionsDialog from '@/containers/dialogs/ToolPermissionsDialog'
 import { useThreadNotifications } from '@/hooks/useThreadNotifications'
 import { useAppUpdater, type UpdateCheckOutcome } from '@/hooks/useAppUpdater'
 import { useEffect, useState, useCallback } from 'react'
@@ -89,6 +90,7 @@ function describeUpdateCheck(
 
 function General() {
   const { t } = useTranslation()
+  const [permissionsOpen, setPermissionsOpen] = useState(false)
   const {
     spellCheckChatInput,
     setSpellCheckChatInput,
@@ -457,8 +459,11 @@ function General() {
               />
             </Card>
 
+            {permissionsOpen && <ToolPermissionsDialog open onOpenChange={setPermissionsOpen} />}
             {/* Chat behavior */}
             <Card title={t('settings:chatBehavior.title')}>
+              <CardItem title={t('tools:permissions.title')} description={t('tools:permissions.settingsDescription')}
+                actions={<Button variant="outline" onClick={() => setPermissionsOpen(true)}>{t('tools:permissions.manage')}</Button>} />
               <CardItem
                 title={t('settings:chatBehavior.autoApproveTools')}
                 description={t('settings:chatBehavior.autoApproveToolsDesc')}

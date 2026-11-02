@@ -650,3 +650,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Review unfinished tool work without replacing the foreground cache](2026-11-02-review-unfinished-tool-work.md)
 
 - [Size summary fragments by rendered tokens](2026-11-02-size-summary-fragments-by-rendered-tokens.md)
+
+- [Manage persistent Chat tool permissions](2026-11-02-manage-persistent-personal-tool-permissions.md)
+
+- [Wire optional semantic memory and idle consolidation](2026-11-02-wire-optional-semantic-memory-and-idle-consolidation.md)

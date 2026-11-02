@@ -33,6 +33,35 @@
       "confirmDescription": "Executes the pending action shown below using its stored arguments. Review the target and parameters before allowing it.",
       "target": "Target",
       "threadScope": "Allow Once covers this request. Allow in thread remembers access to Personal native tools in this chat; stored action confirmations still require separate approval."
-    }
+    },
+    "allowAlways": "Always allow",
+    "persistentScope": "Always allow remembers access to {{tool}} from {{source}} across chats and app restarts. You can revoke it in Settings → General → Tool permissions. Separate native action confirmations still apply.",
+    "freshOnly": "This approval applies only to this stored action. Remembered tool permissions do not approve other stored actions."
+  },
+  "permissions": {
+    "title": "Tool permissions",
+    "description": "Choose which tools may run without asking in Restricted chats. Full access still auto-approves calls. Separate native action confirmations remain required. Revoking a tool also clears its remembered thread approvals. Turning off the connector or tool still prevents execution.",
+    "settingsDescription": "Manage tools you always allow across conversations and restarts.",
+    "manage": "Manage",
+    "search": "Search tools",
+    "loading": "Loading available tools…",
+    "failed": "Could not load available tools. Saved permissions remain visible.",
+    "empty": "No matching tools. Connect a tool service to see its tools here.",
+    "unavailable": "Not currently available, or its connection or schema changed. This saved permission no longer applies to the current tool.",
+    "remove": "Remove",
+    "allow": "Always allow {{tool}} from {{source}}"
+  },
+  "features": {
+    "title": "Semantic memory settings",
+    "description": "Disabled by default. Uses only the local embedding endpoint you configure; no model is downloaded or started. Search falls back to keywords if it is unavailable. Existing notes are indexed only when you request indexing.",
+    "enabled": "Use semantic memory search",
+    "url": "Local embedding API base URL",
+    "model": "Embedding model identifier",
+    "dimensions": "Embedding dimensions",
+    "save": "Save settings",
+    "failed": "Could not update Personal feature settings.",
+    "maintenance": "Consolidate memories while idle",
+    "maintenanceDescription": "Disabled by default. Distills related older notes into lessons and procedures on the existing background model. Original notes remain archived. Pauses for conversation.",
+    "queryRewrite": "Resolve references in memory searches"
   }
 }

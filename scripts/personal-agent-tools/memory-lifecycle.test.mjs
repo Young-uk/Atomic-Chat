@@ -63,3 +63,25 @@ test('new chat aborts background work, requeues it and refuses an invented user 
     assert.equal(memory.status().last.outcome, 'none')
   } finally { await memory.close(); notes.close() }
 })
+
+test('optional consolidation is idle-only and preserves archived source notes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-memory-consolidation-'))
+  const notes = new PersonalNotes(directory, directory)
+  let calls = 0
+  const memory = new PersonalMemoryLifecycle({ directory, notes, now: () => Date.now() + 2 * 86400000,
+    complete: async () => { calls++; return { content: JSON.stringify({ kind:'lesson', activation:'Before release', principle:'Validate all release evidence before publication.', tags:['release'], procedure:null }) } } })
+  try {
+    const store = notes.database(), links = notes.maintenanceStores().linkStore
+    const entries = ['Compile the release artifacts.', 'Check the smoke test report.', 'Inspect the signed application identity.'].map(content => store.store({ content, tags:['release'], source:'user', sessionId:'synthetic' }))
+    links.add({ fromId:entries[0].id, toId:entries[1].id, kind:'RELATES_TO' })
+    links.add({ fromId:entries[1].id, toId:entries[2].id, kind:'RELATES_TO' })
+    await memory.maintain(); assert.equal(calls, 0)
+    memory.configureMaintenance(true)
+    await memory.maintain(); assert.equal(calls, 0)
+    memory.busy = false
+    await memory.maintain()
+    assert.equal(calls,1)
+    assert.equal(memory.maintenanceResult.lessonsCreated,1)
+    for (const entry of entries) assert.equal(store.get(entry.id).content,entry.content)
+  } finally { await memory.close(); notes.close() }
+})

@@ -1237,7 +1237,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const query = user.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n')
         const memory = await capturePersonalMemory(query, async query => {
           const read = async (toolName: string) => {
-            const result = await this.serviceHub!.mcp().callTool({ serverName: 'atomic-personal-tools', toolName, arguments: { action: toolName === 'personal_notes' ? 'recall' : 'search', query } })
+            const result = await this.serviceHub!.mcp().callTool({ serverName: 'atomic-personal-tools', toolName, arguments: { action: toolName === 'personal_notes' ? 'recall' : 'search', query, ...(toolName === 'personal_notes' ? { sessionId: personalMemoryThread, history: JSON.stringify(options.messages.slice(0, -1).filter(message => ['user','assistant'].includes(message.role)).slice(-8).map(message => ({ role: message.role, text: message.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n').slice(0, 400) }))) } : {}) } })
             if (result.error || ('isError' in result && result.isError)) return null
             const text = result.content?.filter(part => 'text' in part).map(part => (part as { text: string }).text).join('\n') ?? ''
             return JSON.parse(text)
@@ -1310,6 +1310,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const appendOnlyDstar = usesAppendOnlyDstarEffort(provider.base_url, modelId)
     let compaction: ContextCompaction | undefined
     let summaryAfterTurn: ((response: UIMessage) => void) | undefined
+    let toolPreambleVersion: 'v3' | 'v4' = 'v3'
     let completionReviewSupported = false
     let summaryTokenCounting = false
     let compactionContext = 0
@@ -1319,6 +1320,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const runtimeResponse = await fetchDstarContext(`${provider.base_url?.replace(/\/$/, '')}/models`, { signal: options.abortSignal ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000) })
         const runtime = await runtimeResponse.json()
         if (runtimeResponse.ok && runtime.atomic_summary_slot === true) {
+          toolPreambleVersion = runtime.atomic_tool_preamble === 4 ? 'v4' : 'v3'
           completionReviewSupported = runtime.atomic_completion_review === true
           summaryTokenCounting = runtime.atomic_summary_token_count === true && runtime.atomic_summary_context === 16384
           compactionContext = runtime.data?.find((m: { id: string }) => m.id === modelId)?.context_length ?? 0
@@ -1364,7 +1366,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const snapshot = stored?.metadata?.[DSTAR_TOOLS_METADATA] ??
           (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOLS_METADATA]
         const tools = isToolSnapshot(snapshot) ? snapshot : stableToolJson(toOpenAiTools(activeTools))
-        const preamble = !isToolSnapshot(snapshot) ? 'v3' :
+        const preamble = !isToolSnapshot(snapshot) ? toolPreambleVersion :
           stored?.metadata?.[DSTAR_TOOL_PREAMBLE_METADATA] ??
           (user.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOL_PREAMBLE_METADATA]
         if (stored && !isToolSnapshot(snapshot)) {
@@ -1717,6 +1719,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             if (options.abortSignal?.aborted) throw error
             console.warn('[tool-completion-review] unavailable', error)
           } finally { endReviewProgress() }
+          console.info('[tool-completion-review]', { decision, turn: latestUser!.id, toolCount: Object.keys(activeTools ?? {}).length })
           options.abortSignal?.throwIfAborted()
           if (decision === 'needs_tool') {
             writer.write({ type: 'message-metadata', messageMetadata: { [TOOL_REVIEW_METADATA]: { prefixParts: primaryParts } } })

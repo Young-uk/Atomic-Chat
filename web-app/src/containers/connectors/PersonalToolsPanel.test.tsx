@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PersonalToolsPanel } from './PersonalToolsPanel'
 
+vi.mock('./PersonalFeatureSettingsPanel', () => ({ default: () => null }))
+
 const callTool = vi.hoisted(() => vi.fn())
 const service = { mcp: () => ({ callTool }) }
 vi.mock('@/hooks/useServiceHub', () => ({ useServiceHub: () => service, getServiceHub: () => service }))

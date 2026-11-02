@@ -94,3 +94,13 @@ it('adds search criteria after v2 without rewriting its cached prefix or replay 
   const restored = replayDstarToolSnapshots([{ ...next, metadata: undefined }], JSON.parse(JSON.stringify([next])))
   expect(withDstarToolUpdates(restored)[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v3' }])
 })
+
+it('appends approval advice policy only at v4 turns and restores it without rewriting old history', () => {
+  const older: UIMessage = { id: 'old', role: 'user', parts: [{ type: 'text', text: 'old' }], metadata: { [DSTAR_TOOLS_METADATA]: '[]', [DSTAR_TOOL_PREAMBLE_METADATA]: 'v3' } }
+  const current: UIMessage = { ...older, id: 'new', metadata: { ...older.metadata, [DSTAR_TOOL_PREAMBLE_METADATA]: 'v4' } }
+  const oldWire = withDstarToolUpdates([older])
+  const wire = withDstarToolUpdates([older, current])
+  expect(wire.slice(0, oldWire.length)).toEqual(oldWire)
+  expect(wire.some(m => m.parts.some(p => p.type === 'text' && p.text === 'atomic-tool-preamble:v4'))).toBe(true)
+  expect(withDstarToolUpdates(replayDstarToolSnapshots([{ ...current, metadata: {} }], [current]))[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v4' }])
+})

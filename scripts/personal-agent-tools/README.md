@@ -12,14 +12,14 @@ required. Source availability is not full feature parity or installed-app QA.
 - `personal_document`: ported document extractors for PDF, DOCX, DOC, XLSX,
   PPTX, ODT, RTF and plain text; bounded workspace inputs and explicit truncation.
 - `personal_notes`: ported SQLite FTS5 notes with source references, separate
-  from the legacy memory JSON. Keyword recall is captured once per new Personal
-  Dstar user turn; embeddings are not configured. Source-grounded reflection runs after completed replies only while chat and conversation summaries are idle. New foreground work aborts and requeues reflection.
+  from the legacy memory JSON. Recall is captured once per new Personal
+  Dstar user turn. Optional local hybrid embedding search and bounded reference-query rewriting are connected but off until configured in the Personal tools panel. Source-grounded reflection runs after completed replies only while chat and conversation summaries are idle. New foreground work aborts and requeues reflection.
 - `personal_native`: discover and describe the original OS tool schemas, then
   invoke the directly ported file, shell, Git, web and desktop tools. Native
   guarded actions return an expiring proposal for a separate human confirmation.
   The confirmation modal loads the worker's stored request and arguments.
   Changed plans require fresh approval; remote Git synchronization is disabled.
-  Read-scope grants are invocation-scoped until authenticated Chat session
+  Chat now supports provider-bound Always allow grants and a General settings revocation panel. Native stored action confirmations remain fresh per proposal. Read-scope grants are invocation-scoped until authenticated Chat session
   lifecycle wiring is available. Detached shell jobs do not survive an invocation.
   GitHub uses explicitly configured credentials; mail receives only Chat-owned configuration. The browser Chat path requires a fresh human approval for every stored native proposal, ignoring remembered grants even in Full access. The separate native agent runner does not receive this adapter until it supports the same contract; its existing built-in file/Git tools are unchanged. This source adapter is not a claim of complete Agent feature parity.
 
@@ -93,7 +93,7 @@ inventory.
 | Area | Personal Chat status | Still absent from this worker |
 | --- | --- | --- |
 | Browser | Dedicated Chrome navigation, reads and element actions | No attach-to-existing-browser workflow or Agent browser profile migration |
-| Memory | Legacy explicit memories; source-backed FTS5 notes, profile history, note links, lessons and procedures; immutable per-turn keyword recall for Personal Dstar | Hybrid embedding connection, query rewriting, automatic link generation, voting and consolidation |
+| Memory | Legacy explicit memories; source-backed FTS5 notes, profile history, note links, lessons and procedures; immutable per-turn keyword recall for Personal Dstar | Optional local hybrid embeddings, query rewriting, idle link generation and consolidation are connected but default off; voting remains absent |
 | Tasks | One-shot ISO times, intervals, cron/timezone previews and local text results | Webhook triggers, durable tool turns, external delivery and execution while Chat is closed |
 | Workspace events | Bounded file events and opt-in same-id persistent watch definitions | Event-triggered tool workflows; events themselves are not persisted |
 | Desktop | Window controls; task-result notifications | Source clipboard tools are connected; optional screen control remains disabled until explicitly configured |
@@ -129,3 +129,12 @@ excluded from model discovery. Reflection sees only the latest user text and
 visible answer, not private reasoning. Source grounding checks reject invented
 names. Formation does not replace context summaries, and does not change old
 per-turn memory snapshots or the stable system prefix.
+
+## Optional memory features
+
+Personal tools → Semantic memory settings controls the local embedding endpoint,
+model and dimensions, reference-query rewriting, and idle consolidation. Defaults
+are off. No remote account or model is activated by installation.
+`personal_semantic_memory` offers status/search and an explicit 100-note indexing
+pass. Ranking falls back to keywords on embedding failure. Consolidation retains
+archived source notes; recent Chat context and conversation archives are unchanged.

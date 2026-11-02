@@ -1,3 +1,4 @@
+import PersonalFeatureSettingsPanel from './PersonalFeatureSettingsPanel'
 import { useEffect, useState } from 'react'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { Button } from '@/components/ui/button'
@@ -59,6 +60,7 @@ export function PersonalToolsPanel() {
   return <section className="flex min-w-0 flex-col gap-3 rounded-xl border p-4" aria-label="Personal tools">
     <h2 className="font-medium">Personal tools</h2>
     <p className="text-sm text-muted-foreground">Browser and window controls are available in chat. Memories retain their sources. Scheduled text tasks run while the app is open; missed runs are not replayed.</p>
+    <PersonalFeatureSettingsPanel />
     <details>
       <summary>Long-term memory</summary>
       <p className="mt-2 text-sm text-muted-foreground">Background memory: {memoryActivity.phase}. Chat and conversation summaries have priority.</p>

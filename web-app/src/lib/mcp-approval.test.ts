@@ -14,7 +14,7 @@ import {
 it('keeps host-only endpoints and the custom proposal adapter out of the other runner', () => {
   expect(agentDisabledMcpTools(['other::disabled'])).toEqual([
     'other::disabled', 'atomic-personal-tools::personal_native',
-    'atomic-personal-tools::personal_memory_lifecycle', 'atomic-personal-tools::personal_task_delivery',
+    'atomic-personal-tools::personal_memory_lifecycle', 'atomic-personal-tools::personal_task_delivery', 'atomic-personal-tools::personal_feature_settings',
   ])
 })
 
@@ -91,7 +91,7 @@ describe('approveChatToolCall', () => {
       'run_command',
       't1',
       { command: 'ls' },
-      { bypassGlobalAutoApprove: true }
+      { bypassGlobalAutoApprove: true, persistentTarget: expect.objectContaining({ toolName: 'run_command', source: 'Atomic Chat', key: expect.any(String) }) }
     )
   })
 

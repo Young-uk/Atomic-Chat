@@ -3,6 +3,7 @@ import { useAgentMode } from '@/hooks/useAgentMode'
 import { useToolApproval } from '@/hooks/useToolApproval'
 import { offeredChatExecToolNames } from '@/lib/chat-exec-tools'
 import { getServiceHub } from '@/hooks/useServiceHub'
+import { toolPermissionTarget } from './tool-permission-targets'
 
 /**
  * Whether MCP/RAG tool calls on this thread run without asking. One rule for
@@ -68,12 +69,17 @@ export async function approveChatToolCall(
   const autoApprove = nativeConfirmation ? false : (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
     ? resolveExecAutoApprove(threadId)
     : resolveMcpAutoApprove(threadId)
-  return autoApprove
-    ? Promise.resolve(true)
-    : useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
+  const persistentTarget = !autoApprove && !nativeConfirmation ? await toolPermissionTarget(toolName) : undefined
+  if (autoApprove) return true
+  const approved = await useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
         bypassGlobalAutoApprove: true,
+        ...(persistentTarget ? { persistentTarget } : {}),
         ...(nativeConfirmation ? { requireFreshApproval: true } : {}),
       })
+  // Configuration may change while the user reads the modal. A decision for
+  // the old provider must never authorize a replacement under the same name.
+  if (approved && persistentTarget && (await toolPermissionTarget(toolName))?.key !== persistentTarget.key) return false
+  return approved
 }
 
 /** Agent IPC has a turn-wide MCP flag; keep it manual when desktop tools are connected. */
@@ -87,6 +93,6 @@ export function resolveAgentMcpAutoApprove(threadId: string): boolean {
  * until it implements the same per-action approval contract. Its built-in
  * file/Git tools keep their existing native approval path. */
 export function agentDisabledMcpTools(disabled: string[]): string[] {
-  return [...new Set([...disabled, ...['personal_native', 'personal_memory_lifecycle', 'personal_task_delivery']
+  return [...new Set([...disabled, ...['personal_native', 'personal_memory_lifecycle', 'personal_task_delivery', 'personal_feature_settings']
     .map(name => `atomic-personal-tools::${name}`)])]
 }

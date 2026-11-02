@@ -18,7 +18,7 @@ await promisify(execFile)(node, ['--input-type=module', '-e', `import {createReq
 const target = join(homedir(), 'Library/Application Support/Atomic Chat Personal Tools')
 await mkdir(join(target, 'node_modules'), { recursive: true, mode: 0o700 })
 if (resolve(node) !== resolve(join(target, 'node'))) await cp(node, join(target, 'node'))
-for (const name of ['server.mjs','store.mjs','browser.mjs','windows.mjs','watch.mjs','verify.mjs','notes.mjs','documents.mjs','git.mjs','native-suite.mjs','native-approval.mjs','memory-lifecycle.mjs']) await cp(join(source, name), join(target, name))
+for (const name of ['server.mjs','store.mjs','browser.mjs','windows.mjs','watch.mjs','verify.mjs','notes.mjs','documents.mjs','git.mjs','native-suite.mjs','native-approval.mjs','memory-lifecycle.mjs','semantic-memory.mjs','feature-settings.mjs']) await cp(join(source, name), join(target, name))
 await cp(join(source, 'agent-source'), join(target, 'agent-source'), { recursive: true })
 await copyRuntimePackages(['playwright-core', 'cron-parser', 'better-sqlite3', 'pdfjs-dist', 'mammoth', 'word-extractor', 'exceljs', 'jszip', 'fast-xml-parser', 'tar-stream', '@mozilla/readability', 'linkedom', 'html-to-text', 'turndown', 'undici', 'yaml', 'fuzzysort', 'grammy', 'chokidar', 'clipboardy', 'diff', 'marked', 'node-notifier'], join(target, 'node_modules'))
 const configPath = join(homedir(), 'Library/Application Support/Atomic Chat/data/mcp_config.json')

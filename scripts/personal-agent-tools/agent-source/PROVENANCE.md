@@ -44,3 +44,12 @@ screen tools and reflection/retrieval/consolidation domain modules. Only grounde
 reflection is lifecycle-connected; copying a domain is not activation or parity.
 Chat supplies mail configuration explicitly. Personal archive adaptations bound
 allocation before inflation and retain original path/approval checks.
+
+2026-11-02 continuation: `memory/embeddings/embedding-store.ts` and
+`embedding-writer.ts` copied from the same pinned local Atomic Agent reference
+checkout. Only relative `.js` import suffixes become `.mjs`; runtime files are
+transpiled with the existing esbuild dependency. Original comments are retained.
+Link-generator runner/prompt/parser/grammar/response-format are copied from the
+same source reference. Store imports point at the already ported shared
+`agent-source/memory/links/link-store` so validation error identity and SQLite
+ownership stay consistent. Chat retains idle scheduling and abort ownership.

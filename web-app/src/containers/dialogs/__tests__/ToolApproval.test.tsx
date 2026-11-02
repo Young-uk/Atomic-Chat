@@ -123,3 +123,17 @@ describe('Personal native approval descriptions', () => {
     expect(screen.queryByText('tools:toolApproval.native.catalogDescription')).not.toBeInTheDocument()
   })
 })
+
+it('shows a separate persistent permission action and hides remembered choices for fresh proposals', () => {
+  const always = vi.fn()
+  useToolApproval.setState({ isModalOpen: true, modalProps: { toolName: 'test', threadId: 'test', onApprove: vi.fn(), onDeny: vi.fn(), onAlwaysAllow: always, permissionSource: 'provider' } })
+  const view = render(<ToolApproval />)
+  screen.getByRole('button', { name: 'tools:toolApproval.allowAlways' }).click()
+  expect(always).toHaveBeenCalledOnce()
+  view.unmount()
+  useToolApproval.setState({ isModalOpen: true, modalProps: { toolName: 'personal_native', threadId: 'test', onApprove: vi.fn(), onDeny: vi.fn(), requireFreshApproval: true, toolParameters: { action: 'confirm' } } })
+  render(<ToolApproval />)
+  expect(screen.queryByRole('button', { name: 'tools:toolApproval.allowAlways' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'tools:toolApproval.alwaysAllow' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'tools:toolApproval.allowOnce' })).toBeDefined()
+})
