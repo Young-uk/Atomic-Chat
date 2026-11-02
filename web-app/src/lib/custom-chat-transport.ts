@@ -1,3 +1,5 @@
+import { beginCompletionReviewProgress } from './inference-progress'
+import { reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
 import { publishSummaryProgress } from './context-summary-progress'
 import { TEMPORARY_CHAT_ID } from '@/constants/chat'
@@ -15,6 +17,7 @@ import { isWebSearchServer } from '@/lib/web-search'
 import { type UIMessage } from '@ai-sdk/react'
 import {
   convertToModelMessages,
+  createUIMessageStream,
   jsonSchema,
   streamText,
   NoSuchToolError,
@@ -901,6 +904,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     this.contextRecovery = undefined
     return recovery
   }
+  private readonly reviewedToolTurns = new Set<string>()
   private summaryForeground?: { key: string; release: () => void; cleanups: (() => void)[] }
 
   async sendMessages(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0]): Promise<ReadableStream<UIMessageChunk>> {
@@ -1284,6 +1288,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         supportsVision,
       })
     }
+    if (usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+      preparedMessages = withStableToolResultOrder(preparedMessages)
+    }
     const hasTools = Object.keys(this.tools).length > 0 || (import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && usesAppendOnlyDstarEffort(provider.base_url, modelId))
     const selectedModel = useModelProvider.getState().selectedModel
     const modelSupportsTools =
@@ -1303,6 +1310,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const appendOnlyDstar = usesAppendOnlyDstarEffort(provider.base_url, modelId)
     let compaction: ContextCompaction | undefined
     let summaryAfterTurn: ((response: UIMessage) => void) | undefined
+    let completionReviewSupported = false
     let compactionContext = 0
     const compactionThread = this.threadId ?? options.chatId
     if (appendOnlyDstar && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && compactionThread !== TEMPORARY_CHAT_ID) {
@@ -1310,6 +1318,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const runtimeResponse = await fetchDstarContext(`${provider.base_url?.replace(/\/$/, '')}/models`, { signal: options.abortSignal ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000) })
         const runtime = await runtimeResponse.json()
         if (runtimeResponse.ok && runtime.atomic_summary_slot === true) {
+          completionReviewSupported = runtime.atomic_completion_review === true
           compactionContext = runtime.data?.find((m: { id: string }) => m.id === modelId)?.context_length ?? 0
           compaction = threadCompactions.get(compactionThread)
           if (!compaction) {
@@ -1394,7 +1403,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             summarizeWithDstar(provider.base_url!, modelId!))
         }
       }
-      preparedMessages = withDstarEffortUpdates(withDstarToolUpdates(preparedMessages))
+      preparedMessages = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(preparedMessages)))
     }
     const baseMessages = convertToModelMessages(
       chatExecOutputsForModel(preparedMessages)
@@ -1498,8 +1507,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       }
     }
 
+    const requestModel = this.model
     const result = streamText({
-      model: this.model,
+      model: requestModel,
       messages: finalModelMessages,
       abortSignal: options.abortSignal,
       tools: activeTools,
@@ -1525,7 +1535,43 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // Whether this request failed, so its finish does not count as an answer.
     let requestFailed = false
 
-    const uiStream = result.toUIMessageStream({
+    const finishResponse = ({ responseMessage, isAborted, finishReason }: { responseMessage: UIMessage; isAborted: boolean; finishReason?: string }) => {
+        const toolsPending = summaryTurnHasToolsPending(responseMessage)
+        completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)
+        if (!requestFailed && !isAborted && !toolsPending && finishReason === 'stop' && responseMessage) {
+          summaryAfterTurn?.(responseMessage)
+          if (personalMemoryEnabled && this.serviceHub && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
+            const user = options.messages.findLast(message => message.role === 'user')
+            const userMessage = user?.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n') ?? ''
+            const assistantReply = responseMessage.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n')
+            // Send only observed user-visible dialogue, never private reasoning
+            // or model-authored tool output as evidence of a user preference.
+            if (userMessage.trim() && assistantReply.trim()) void this.serviceHub.mcp().callTool({
+              serverName: 'atomic-personal-tools', toolName: 'personal_memory_lifecycle',
+              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply },
+            }).catch(error => console.warn('[personal-memory]', error))
+          }
+        }
+        // The provider answered in full, so its key works: drop a stale
+        // "Key rejected" or "not verified".
+        if (!requestFailed && !isAborted && finishReason !== 'error') {
+          noteProviderRequestSucceeded(provider)
+        }
+        // Call the token usage callback with usage data when stream completes
+        if (responseMessage) {
+          const metadata = responseMessage.metadata as
+            | Record<string, unknown>
+            | undefined
+          const usage = metadata?.usage as LanguageModelUsage | undefined
+          if (usage) {
+            this.onTokenUsage?.(usage, responseMessage.id)
+          }
+        }
+      }
+    const latestUser = options.messages.findLast(message => message.role === 'user')
+    const reviewEnabled = completionReviewSupported && shouldEnableTools && !continueContent && !!latestUser && !this.reviewedToolTurns.has(latestUser.id) && !toolReviewBlocked(options.messages)
+    let primaryParts = 0
+    const streamOptions: NonNullable<Parameters<typeof result.toUIMessageStream>[0]> = {
       messageMetadata: ({ part }) => {
         // Start the wall-clock timer on the first generated delta (text or
         // reasoning), NOT on `start` — the latter fires before prefill, so
@@ -1629,39 +1675,61 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
         return errorMessage
       },
-      onFinish: ({ responseMessage, isAborted, finishReason }) => {
-        const toolsPending = summaryTurnHasToolsPending(responseMessage)
-        completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)
-        if (!requestFailed && !isAborted && !toolsPending && finishReason === 'stop' && responseMessage) {
-          summaryAfterTurn?.(responseMessage)
-          if (personalMemoryEnabled && this.serviceHub && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
-            const user = options.messages.findLast(message => message.role === 'user')
-            const userMessage = user?.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n') ?? ''
-            const assistantReply = responseMessage.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n')
-            // Send only observed user-visible dialogue, never private reasoning
-            // or model-authored tool output as evidence of a user preference.
-            if (userMessage.trim() && assistantReply.trim()) void this.serviceHub.mcp().callTool({
-              serverName: 'atomic-personal-tools', toolName: 'personal_memory_lifecycle',
-              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply },
-            }).catch(error => console.warn('[personal-memory]', error))
+
+      sendStart: !reviewEnabled,
+      sendFinish: !reviewEnabled,
+      onFinish: reviewEnabled ? ({ responseMessage }) => { primaryParts = responseMessage.parts.filter(part => part.type !== 'step-start').length } : finishResponse,
+    }
+    const uiStream = !reviewEnabled ? result.toUIMessageStream(streamOptions) : createUIMessageStream({
+      onFinish: finishResponse,
+      execute: async ({ writer }) => {
+        const forward = async (stream: ReadableStream<UIMessageChunk>, suffix = '') => {
+          const reader = stream.getReader()
+          try {
+            for (;;) {
+              const item = await reader.read()
+              if (item.done) break
+              const chunk = item.value
+              if (suffix && ['text-start', 'text-delta', 'text-end', 'reasoning-start', 'reasoning-delta', 'reasoning-end'].includes(chunk.type) && 'id' in chunk) {
+                writer.write({ ...chunk, id: `${chunk.id}${suffix}` } as UIMessageChunk)
+              } else writer.write(chunk)
+            }
+          } finally { reader.releaseLock() }
+        }
+        await forward(result.toUIMessageStream(streamOptions))
+        const reason = await result.finishReason
+        const calls = await result.toolCalls
+        const answer = await result.text
+        let finalReason = reason
+        if (!requestFailed && reason === 'stop' && calls.length === 0 && answer.trim() && !options.abortSignal?.aborted) {
+          this.reviewedToolTurns.add(latestUser!.id)
+          if (this.reviewedToolTurns.size > 100) this.reviewedToolTurns.delete(this.reviewedToolTurns.values().next().value!)
+          let decision: string = 'unavailable'
+          const endReviewProgress = beginCompletionReviewProgress(this.threadId ?? options.chatId)
+          try {
+            decision = await reviewToolCompletion({ baseUrl: provider.base_url!, model: modelId,
+              user: latestUser!.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n'),
+              answer, toolNames: Object.keys(activeTools ?? {}), signal: options.abortSignal,
+              fetch: fetchDstarContext })
+          } catch (error) {
+            if (options.abortSignal?.aborted) throw error
+            console.warn('[tool-completion-review] unavailable', error)
+          } finally { endReviewProgress() }
+          options.abortSignal?.throwIfAborted()
+          if (decision === 'needs_tool') {
+            writer.write({ type: 'message-metadata', messageMetadata: { [TOOL_REVIEW_METADATA]: { prefixParts: primaryParts } } })
+            const continuation = streamText({ model: requestModel, system: effectiveSystemMessage,
+              messages: [...finalModelMessages, ...(await result.response).messages,
+                { role: 'system', content: TOOL_REVIEW_NOTICE }],
+              tools: activeTools, toolChoice: 'auto', abortSignal: options.abortSignal,
+              maxOutputTokens, maxRetries: 0, experimental_transform: stripSpecialTokensTransform })
+            await forward(continuation.toUIMessageStream({ ...streamOptions, onFinish: undefined }), '-followthrough')
+            finalReason = await continuation.finishReason
           }
         }
-        // The provider answered in full, so its key works: drop a stale
-        // "Key rejected" or "not verified".
-        if (!requestFailed && !isAborted && finishReason !== 'error') {
-          noteProviderRequestSucceeded(provider)
-        }
-        // Call the token usage callback with usage data when stream completes
-        if (responseMessage) {
-          const metadata = responseMessage.metadata as
-            | Record<string, unknown>
-            | undefined
-          const usage = metadata?.usage as LanguageModelUsage | undefined
-          if (usage) {
-            this.onTokenUsage?.(usage, responseMessage.id)
-          }
-        }
+        writer.write({ type: 'finish', finishReason: finalReason })
       },
+      onError: error => { requestFailed = true; return error instanceof Error ? error.message : String(error) },
     })
 
     // When continuing a truncated response, inject the partial content as the

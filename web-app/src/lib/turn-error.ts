@@ -150,8 +150,17 @@ export function finishedAssistantMessage({
       : allParts
   if (contentParts.length === 0 && !isError) return null
 
+  const stepBoundaries: number[] = []
+  if (!isAbort && !isError) {
+    for (const [index, part] of message.parts.entries()) {
+      if (part.type !== 'step-start' || index === 0) continue
+      const prefix = extractContentPartsFromUIMessage({ ...message, parts: message.parts.slice(0, index) })
+      if (prefix.length > 0 && prefix.length < contentParts.length && prefix.some(item => item.type === ContentType.ToolCall || (item.text?.value ?? '') !== '')) stepBoundaries.push(prefix.length)
+    }
+  }
   const metadata = {
     ...((message.metadata ?? {}) as Record<string, unknown>),
+    ...(!isAbort && !isError ? { atomic_model_steps_v1: [...new Set(stepBoundaries)] } : {}),
     ...(isError ? { [TURN_ERROR_METADATA_KEY]: describeTurnError(error) } : {}),
   }
   return {

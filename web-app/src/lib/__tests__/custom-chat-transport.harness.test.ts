@@ -1631,3 +1631,38 @@ describe('Personal source-backed recall persistence', () => {
     } finally { vi.unstubAllEnvs() }
   })
 })
+
+describe('Personal Dstar completion review', () => {
+  it.each(['complete', 'needs_tool'] as const)('preserves the interim text and follows a %s decision once', async decision => {
+    const { ContextCompaction } = await import('../dstar-context-compaction')
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true')
+    vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
+    const fetch = vi.fn().mockImplementation(async (url: string) => ({ ok: true, json: async () => url.endsWith('/models')
+      ? { atomic_summary_slot: true, atomic_completion_review: true, data: [{ id: 'qwen3.8-flash-next-chat', context_length: 65536 }] }
+      : { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ decision }) } }] } }))
+    vi.stubGlobal('fetch', fetch)
+    vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
+    const schedule = vi.spyOn(ContextCompaction.prototype, 'schedule').mockImplementation(() => {})
+    useAppState.setState({ tools: [{ name: 'search', server: 'fixture', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }], mcpToolNames: new Set(['search']) })
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never, messages: { modifyMessage: vi.fn(async m => m) } as never })
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: ['tools'], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    const primary = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'text' }, { type: 'text-delta', id: 'text', delta: 'I will check the forecast.' }, { type: 'text-end', id: 'text' }, { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 8, totalTokens: 108 } }])
+    const next = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'tool-call', toolCallId: 'search-1', toolName: 'search', input: '{"query":"forecast"}' }, { type: 'finish', finishReason: 'tool-calls', usage: { inputTokens: 110, outputTokens: 5, totalTokens: 115 } }])
+    const doStream = (primary as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream
+    doStream.mockImplementationOnce(doStream.getMockImplementation()!).mockImplementation((next as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.getMockImplementation()!)
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(primary)
+    const transport = new CustomChatTransport(undefined, `review-${decision}`)
+    const abort = new AbortController()
+    try {
+      const chunks = await readChunks(await transport.sendMessages({ chatId: `review-${decision}`, messages: [userMessage], abortSignal: abort.signal, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+      expect(chunks.filter(c => c.type === 'text-delta').map(c => c.delta).join('')).toBe('I will check the forecast.')
+      expect(chunks.filter(c => c.type === 'finish')).toHaveLength(1)
+      expect(doStream).toHaveBeenCalledTimes(decision === 'needs_tool' ? 2 : 1)
+      expect(chunks.some(c => c.type === 'tool-input-available')).toBe(decision === 'needs_tool')
+      expect(schedule).toHaveBeenCalledTimes(decision === 'complete' ? 1 : 0)
+      const reviewCall = fetch.mock.calls.find(call => call[0].endsWith('/chat/completions'))
+      expect(JSON.parse(reviewCall![1].body).atomic_summary).toBe(true)
+    } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+})

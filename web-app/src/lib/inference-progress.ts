@@ -3,7 +3,7 @@ import { create } from 'zustand'
 export type InferenceProgress = {
   requestId: string
   startedAt: number
-  phase: 'waiting' | 'reading' | 'preparing' | 'thinking' | 'generating'
+  phase: 'waiting' | 'reading' | 'preparing' | 'thinking' | 'generating' | 'checking'
   processed?: number
   total?: number
   cache?: number
@@ -66,4 +66,18 @@ export function observeInferenceProgress(threadId: string) {
       })
     },
   }
+}
+
+/** A bounded completion review uses the background slot but belongs to the
+ * active visible turn. Clear only its own row, never a newer request's status. */
+export function beginCompletionReviewProgress(threadId: string): () => void {
+  const requestId = crypto.randomUUID()
+  useInferenceProgress.setState(({ byThread }) => ({ byThread: { ...byThread,
+    [threadId]: { requestId, startedAt: Date.now(), phase: 'checking' },
+  } }))
+  return () => useInferenceProgress.setState(({ byThread }) => {
+    if (byThread[threadId]?.requestId !== requestId) return { byThread }
+    const rest = { ...byThread }; delete rest[threadId]
+    return { byThread: rest }
+  })
 }

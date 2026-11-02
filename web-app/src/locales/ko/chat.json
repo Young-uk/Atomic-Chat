@@ -40,6 +40,7 @@
     "chipLabel": "출처: {{name}}, 구절 {{passage}}"
   },
   "inferenceProgress": {
+    "checking": "작업 완료 여부 확인 중",
     "waiting": "모델 응답 대기 중",
     "reading": "입력 읽는 중",
     "thinking": "생각하는 중",

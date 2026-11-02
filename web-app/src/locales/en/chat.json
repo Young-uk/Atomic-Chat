@@ -321,6 +321,7 @@
     "videoModelNote": "The model can't watch videos: it only sees the file name."
   },
   "inferenceProgress": {
+    "checking": "Checking completion",
     "waiting": "Waiting for the model",
     "reading": "Reading input",
     "thinking": "Thinking",

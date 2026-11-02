@@ -290,7 +290,13 @@ export function convertThreadMessageToUIMessage(
         }
       }
 
-      if (textSegment) {
+      if (!reasoningSegment) {
+        // No reasoning segment, just add the text as-is
+        // Persisted public text is already parsed. Preserve its exact bytes:
+        // trimming here changes the model transcript only after app restart
+        // and invalidates otherwise compatible recurrent/disk checkpoints.
+        parts.push({ type: 'text', text: content.text.value })
+      } else if (textSegment) {
         // Trim leading whitespace/newlines from the text segment
         const trimmedText = textSegment.trim()
         if (trimmedText) {
@@ -299,12 +305,6 @@ export function convertThreadMessageToUIMessage(
             text: trimmedText,
           })
         }
-      } else if (!reasoningSegment) {
-        // No reasoning segment, just add the text as-is
-        parts.push({
-          type: 'text',
-          text: content.text.value,
-        })
       }
     } else if (content.type === 'image_url' && content.image_url?.url) {
       parts.push({
@@ -448,6 +448,26 @@ export function convertThreadMessageToUIMessage(
         })
       }
     }
+  }
+
+  // The SDK separates assistant/tool/result steps with step-start parts.
+  // These are not ThreadContent, so retain their semantic positions in metadata.
+  // Legacy rows have no marker: a text/reasoning part after a completed tool
+  // is a new generation step, while adjacent parallel tool calls stay together.
+  if (threadMessage.role === 'assistant') {
+    const recorded = (threadMessage.metadata as Record<string, unknown> | undefined)?.atomic_model_steps_v1
+    const explicit = Array.isArray(recorded) && recorded.every(index => Number.isInteger(index) && index > 0 && index < parts.length)
+      ? new Set(recorded as number[]) : undefined
+    let sawTool = false
+    const restored: any[] = []
+    for (const [index, part] of parts.entries()) {
+      const isTool = part.type === 'dynamic-tool' || part.type.startsWith('tool-')
+      const boundary = explicit ? explicit.has(index) : sawTool && !isTool && ['text', 'reasoning'].includes(part.type)
+      if (boundary) { restored.push({ type: 'step-start' }); sawTool = false }
+      restored.push(part)
+      if (isTool) sawTool = true
+    }
+    parts.splice(0, parts.length, ...restored)
   }
 
   // Ensure at least one text part exists
