@@ -656,3 +656,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Wire optional semantic memory and idle consolidation](2026-11-02-wire-optional-semantic-memory-and-idle-consolidation.md)
 
 - [Allow full 64K Personal cache checkpoints](2026-11-03-allow-full-64k-personal-cache-checkpoints.md)
+
+- [Bind Personal verification to the originating chat workdir](2026-11-03-bind-personal-verification-to-chat-workdir.md)

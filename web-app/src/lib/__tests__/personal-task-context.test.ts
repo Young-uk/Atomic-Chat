@@ -10,6 +10,9 @@ describe('scheduled task context', () => {
     expect(personalTaskInput('personal_tasks', 'real', { action: 'create', prompt: 'Reminder', originThreadId: 'fake', assistantInstructions: 'fake voice' })).toEqual({ action: 'create', prompt: 'Reminder', originThreadId: 'real', assistantInstructions: 'Current voice: formal English.' })
     expect(personalTaskInput('personal_tasks', 'real', { action: 'list' })).toEqual({ action: 'list' })
   })
+  it('binds verification paths to the actual chat rather than a model override', () => {
+    expect(personalTaskInput('personal_verify', 'real', { action: 'syntax', files: ['winter_test.py'], originThreadId: 'fake' })).toEqual({ action: 'syntax', files: ['winter_test.py'], originThreadId: 'real' })
+  })
   it('gives repeated delivery the same message id and keeps native millisecond timestamps', () => {
     const row = { taskId: 'task', id: 'run', threadId: 'real', finishedAt: 1793574012517, result: 'Reminder text' }
     expect(scheduledResultMessage(row)).toEqual(scheduledResultMessage(row))

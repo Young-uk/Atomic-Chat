@@ -2,14 +2,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 test('real stdio MCP handshake, tool invocation and persistence', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'atomic-personal-mcp-test-'))
+  await mkdir(join(directory, 'chat', 'path-test'), { recursive: true })
+  await writeFile(join(directory, 'chat', 'path-test', 'winter_test.py'), 'print("OK")')
+  await writeFile(join(directory, 'winter_test.py'), 'def broken(')
   async function session() {
-    const child = spawn(process.execPath, ['scripts/personal-agent-tools/server.mjs'], { env: { ...process.env, ATOMIC_PERSONAL_TOOLS_DIR: directory }, stdio: ['pipe','pipe','pipe'] })
+    const child = spawn(process.execPath, ['scripts/personal-agent-tools/server.mjs'], { env: { ...process.env, ATOMIC_PERSONAL_TOOLS_DIR: directory, ATOMIC_PERSONAL_WORKSPACE: directory }, stdio: ['pipe','pipe','pipe'] })
     const waiting = new Map()
     const lines = createInterface({ input: child.stdout })
     lines.on('line', line => { const value = JSON.parse(line); waiting.get(value.id)?.(value) })
@@ -28,6 +31,9 @@ test('real stdio MCP handshake, tool invocation and persistence', async () => {
     const delivery = await a.request('tools/call', { name: 'personal_task_delivery', arguments: { action: 'pending' } })
     assert.deepEqual(JSON.parse(delivery.result.content[0].text), [])
     for (const name of ['personal_memory', 'personal_tasks', 'personal_browser', 'personal_windows', 'personal_watch', 'personal_verify']) assert.ok(names.includes(name))
+    const checked = await a.request('tools/call', { name: 'personal_verify', arguments: { action: 'syntax', files: ['winter_test.py'], originThreadId: 'path-test' } })
+    assert.equal(checked.result.isError, undefined)
+    assert.equal(JSON.parse(checked.result.content[0].text).passed, 1)
     const saved = await a.request('tools/call', { name: 'personal_memory', arguments: { action: 'save', text: 'Protocol canary', source: 'synthetic/test' } })
     assert.equal(saved.result.isError, undefined)
     const invalid = await a.request('tools/call', { name: 'personal_memory', arguments: { action: 'save', text: 'missing source' } })

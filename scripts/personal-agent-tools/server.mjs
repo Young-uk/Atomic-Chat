@@ -127,7 +127,7 @@ export class PersonalTools {
     if (!tool || !args || typeof args !== 'object') throw new Error('Unknown tool or invalid arguments')
     for (const key of Object.keys(args)) {
       const property = tool.inputSchema.properties[key]
-      if (name === 'personal_tasks' && args.action === 'create' && ['originThreadId', 'assistantInstructions'].includes(key)) {
+      if ((name === 'personal_tasks' && args.action === 'create' && ['originThreadId', 'assistantInstructions'].includes(key)) || (name === 'personal_verify' && key === 'originThreadId')) {
         if (typeof args[key] !== 'string') throw new Error(`${key} must be text`)
         continue
       }
@@ -151,7 +151,7 @@ export class PersonalTools {
       if (this.closed) throw new Error('Personal tool worker is shutting down')
       if (name === 'personal_browser') return this.browser.call(args.action, args)
       if (name === 'personal_watch') return this.watch.call(args)
-      if (name === 'personal_verify') return verifyCall(args, this.watch.root)
+      if (name === 'personal_verify') return verifyCall(args, this.watch.root, args.originThreadId)
       if (name === 'personal_notes') return args.action === 'recall' ? this.notes.recallWithContext(args) : this.notes.call(args)
       if (name === 'personal_knowledge') return this.notes.knowledge(args)
       if (name === 'personal_document') return documentCall(args, this.watch.root)
