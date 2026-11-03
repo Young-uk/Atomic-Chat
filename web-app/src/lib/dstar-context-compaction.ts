@@ -118,7 +118,9 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
     // Tool images are derived model-only messages. Keep them only when their
     // owning source turn survives compaction; they are not separate history.
     const toolImage = byId.get(`${m.id}_toolimg`)
-    return existing ? [existing, ...(toolImage ? [toolImage] : [])]
+    const owned = prepared.filter(candidate =>
+      (candidate.metadata as Record<string, unknown> | undefined)?.atomic_tool_image_owner === m.id)
+    return owned.length ? owned : existing ? [existing, ...(toolImage ? [toolImage] : [])]
       : m.role === 'system' && m.id.startsWith('atomic-context-') ? [m] : []
   })
 }

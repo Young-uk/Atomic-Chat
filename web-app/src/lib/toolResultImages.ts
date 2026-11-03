@@ -1,6 +1,7 @@
 import { type UIMessage } from '@ai-sdk/react'
 
 import { downscaleImageDataUrl } from './imageDownscale'
+import { TOOL_REVIEW_METADATA } from './tool-completion-review'
 
 /**
  * Tool results (especially MCP image tools such as Blender's
@@ -129,7 +130,44 @@ export function prepareToolResultImagesForModel(
 
   for (const message of messages) {
     const parts = Array.isArray(message.parts) ? message.parts : []
-    const hoisted: HoistedImage[] = []
+    let hoisted: HoistedImage[] = []
+    const segments: UIMessage[] = []
+    let segmentParts: typeof parts = []
+    let segmentIndex = 0
+    const owner = message.id
+    const review = (message.metadata as Record<string, unknown> | undefined)?.[TOOL_REVIEW_METADATA] as { prefixParts?: number } | undefined
+    let reviewRemaining = review?.prefixParts
+    const flush = () => {
+      if (segmentParts.length === 0) return
+      const metadata = { ...(message.metadata ?? {}), atomic_tool_image_owner: owner } as Record<string, unknown>
+      // Completion-review boundaries count semantic source parts. Carry that
+      // boundary into its owning segment, never repeat it on later segments.
+      if (typeof reviewRemaining === 'number') {
+        const count = segmentParts.filter(part => part.type !== 'step-start').length
+        if (reviewRemaining > 0 && reviewRemaining <= count) {
+          metadata[TOOL_REVIEW_METADATA] = { ...review, prefixParts: reviewRemaining }
+        } else {
+          delete metadata[TOOL_REVIEW_METADATA]
+        }
+        reviewRemaining -= count
+      }
+      segments.push({ ...message,
+        id: segmentIndex === 0 ? message.id : `${message.id}_toolimg_segment_${segmentIndex}`,
+        metadata,
+        parts: segmentParts,
+      } as UIMessage)
+      segmentParts = []
+      segmentIndex++
+      if (hoisted.length === 0) return
+      segments.push({
+        id: segmentIndex === 1 ? `${message.id}_toolimg` : `${message.id}_toolimg_${segmentIndex}`,
+        role: 'user',
+        metadata: { atomic_tool_image_owner: owner },
+        parts: [{ type: 'text', text: 'Image result(s) from the preceding tool call(s):' },
+          ...hoisted.map(img => ({ type: 'file', mediaType: img.mediaType, url: img.dataUrl }))],
+      } as UIMessage)
+      hoisted = []
+    }
     let changed = false
 
     const newParts = parts.map((part) => {
@@ -175,32 +213,36 @@ export function prepareToolResultImagesForModel(
 
       if (!blockChanged) return part
       changed = true
-      return { ...p, [outKey]: newOutput }
+      return { ...p, [outKey]: newOutput } as typeof part
     })
 
-    if (changed) {
-      result.push({ ...message, parts: newParts } as UIMessage)
-    } else {
-      result.push(message)
+    if (!changed || !opts.supportsVision) {
+      result.push(changed ? { ...message, parts: newParts } as UIMessage : message)
+      continue
     }
 
-    if (hoisted.length > 0) {
-      result.push({
-        id: `${message.id ?? 'msg'}_toolimg`,
-        role: 'user',
-        parts: [
-          {
-            type: 'text',
-            text: 'Image result(s) from the preceding tool call(s):',
-          },
-          ...hoisted.map((img) => ({
-            type: 'file',
-            mediaType: img.mediaType,
-            url: img.dataUrl,
-          })),
-        ],
-      } as unknown as UIMessage)
+    // Rebuild each tool wave with its images before any later assistant text.
+    // Hoisting after the entire persisted answer moves images on the next user
+    // turn and invalidates the recurrent KV prefix (including vision positions).
+    const allImages = hoisted
+    hoisted = []
+    let imageIndex = 0
+    for (let i = 0; i < newParts.length; i++) {
+      const part = newParts[i]
+      if (!partType(part).startsWith('tool-') && hoisted.length > 0) flush()
+      segmentParts.push(part)
+      const original = parts[i] as UnknownRecord
+      const output = original.output ?? original.result
+      if (partType(part).startsWith('tool-') && Array.isArray(output)) {
+        for (const block of output) {
+          if (isImageBlock(block) && readImageBlock(block).base64) {
+            hoisted.push(allImages[imageIndex++])
+          }
+        }
+      }
     }
+    flush()
+    result.push(...segments)
   }
 
   return result

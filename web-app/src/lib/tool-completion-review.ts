@@ -43,6 +43,15 @@ export function toolReviewBlocked(messages: UIMessage[]): boolean {
 export const TOOL_REVIEW_METADATA = 'atomic_tool_completion_v1'
 export const TOOL_REVIEW_NOTICE = 'Atomic completion review (internal workflow, not a new user request). The visible answer above is an interim update: the promised tool-dependent work is still unfinished. Continue that work now using an actually available tool, then answer from its result. Existing permissions and approval requirements still apply. Do not repeat the update, claim unobserved results, retry denied actions, or expose private reasoning. If genuinely blocked, explain the blocker.'
 
+/** UI streams contain only this generation's parts, while a tool continuation
+ * is appended to the existing assistant turn. Persist an absolute turn offset
+ * so replay cannot move the review notice before earlier tool/image results. */
+export function completionReviewPartCount(messages: UIMessage[], response: UIMessage): number {
+  const previous = messages.at(-1)
+  const count = (message?: UIMessage) => message?.parts.filter(part => part.type !== 'step-start').length ?? 0
+  return (previous?.role === 'assistant' ? count(previous) : 0) + count(response)
+}
+
 /** Preserve the exact review boundary on all future requests and after restart.
  * The display keeps one answer; the model sees its recorded interim segment,
  * the internal notice, and its continuation as separate transcript entries. */

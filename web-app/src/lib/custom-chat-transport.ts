@@ -1,5 +1,5 @@
 import { beginCompletionReviewProgress } from './inference-progress'
-import { reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
+import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
 import { publishSummaryProgress } from './context-summary-progress'
 import { TEMPORARY_CHAT_ID } from '@/constants/chat'
@@ -1701,7 +1701,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
       sendStart: !reviewEnabled,
       sendFinish: !reviewEnabled,
-      onFinish: reviewEnabled ? ({ responseMessage }) => { primaryParts = responseMessage.parts.filter(part => part.type !== 'step-start').length } : finishResponse,
+      onFinish: reviewEnabled ? ({ responseMessage }) => { primaryParts = completionReviewPartCount(options.messages, responseMessage) } : finishResponse,
     }
     const uiStream = !reviewEnabled ? result.toUIMessageStream(streamOptions) : createUIMessageStream({
       onFinish: finishResponse,
