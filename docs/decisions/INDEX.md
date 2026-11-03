@@ -671,3 +671,15 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Separate note references from chat sessions](2026-11-03-separate-note-provenance.md)
 
 - [Make knowledge tool identifiers explicit](2026-11-03-knowledge-tool-contract.md)
+
+- [Profile search terms and explicit fact links](2026-11-03-profile-search-and-fact-links.md)
+
+- [Dstar context gauge and knowledge lifecycle reads](2026-11-03-dstar-context-gauge-and-knowledge-lifecycle.md)
+
+- [Schedule expiry validation](2026-11-03-schedule-expiry-validation.md)
+
+- [Compacted tool catalog anchor](2026-11-03-compacted-tool-catalog-anchor.md)
+
+- [Reasoning scroll ownership](2026-11-03-reasoning-scroll-owner.md) — Avoid inner scroll writes for expanded or hidden reasoning.
+
+- [Compaction refresh budget](2026-11-03-compaction-refresh-budget.md) — Use rendered input and measured usage to avoid tiny repeated refreshes.

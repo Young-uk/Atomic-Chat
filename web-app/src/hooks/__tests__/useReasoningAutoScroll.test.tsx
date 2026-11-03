@@ -72,6 +72,20 @@ describe('useReasoningAutoScroll', () => {
     return metrics
   }
 
+  it.each(['open', 'closed'])('does not scroll an %s production trace', (state) => {
+    const { rerender } = render(<Harness isStreaming revision={1} />)
+    const container = screen.getByTestId('reasoning')
+    container.setAttribute('data-reasoning-viewport', '')
+    container.dataset.state = state
+    const metrics = installScrollMetrics(container)
+    metrics.scrollHeight = 600
+    act(flushFrames)
+    rerender(<Harness isStreaming revision={2} />)
+    act(flushFrames)
+    expect(metrics.scrollTop).toBe(0)
+    expect(metrics.scrollEventPending).toBe(false)
+  })
+
   it('keeps following when streamed content grows beyond the threshold', () => {
     const { rerender } = render(<Harness isStreaming revision={1} />)
     const container = screen.getByTestId('reasoning')

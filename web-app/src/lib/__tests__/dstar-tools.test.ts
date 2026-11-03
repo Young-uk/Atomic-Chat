@@ -104,3 +104,21 @@ it('appends approval advice policy only at v4 turns and restores it without rewr
   expect(wire.some(m => m.parts.some(p => p.type === 'text' && p.text === 'atomic-tool-preamble:v4'))).toBe(true)
   expect(withDstarToolUpdates(replayDstarToolSnapshots([{ ...current, metadata: {} }], [current]))[1].parts).toEqual([{ type: 'text', text: 'atomic-tool-preamble:v4' }])
 })
+
+
+it('keeps the initial catalog and policy prefix after compaction and restart', () => {
+  const old = { ...turn('old', [schema]), metadata: { ...turn('old', [schema]).metadata, [DSTAR_TOOL_PREAMBLE_METADATA]: 'v3' } }
+  const changed = turn('changed', [{ ...schema, function: { ...schema.function, description: 'New catalog' } }])
+  const latest = turn('latest', [])
+  const original = [old, changed, latest]
+  const full = withDstarToolUpdates(original)
+  const compacted = withDstarToolUpdates([changed, latest], original)
+  expect(compacted.slice(0, 2)).toEqual(full.slice(0, 2))
+  expect(compacted.some(message => message.id === old.id)).toBe(false)
+  expect(compacted.filter(message => message.id.startsWith('atomic-tools-')).map(message => message.id))
+    .toEqual(['atomic-tools-old', 'atomic-tools-changed', 'atomic-tools-latest'])
+  expect(withDstarToolUpdates([latest], original).slice(0, 2)).toEqual(full.slice(0, 2))
+  const restored = JSON.parse(JSON.stringify({ original, retained: [changed, latest] }))
+  expect(withDstarToolUpdates(restored.retained, restored.original)).toEqual(compacted)
+  expect(withDstarToolUpdates(original, original)).toEqual(full)
+})

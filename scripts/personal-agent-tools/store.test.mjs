@@ -151,3 +151,29 @@ test('cron previews and recurring completion preserve timezone across restart', 
   await assert.rejects(store.task('create', { ...args, at: '2026-11-04T00:00:00Z' }), /not both/)
   await assert.rejects(store.task('preview', { cron: '* * * * *', timezone: 'invalid/zone' }), /invalid/)
 })
+
+
+test('relative repeats start at receipt and expired explicit starts never create tasks', async () => {
+  let now = Date.parse('2026-11-03T05:11:55Z')
+  const store = await fresh(() => now)
+  const repeated = await store.task('create', { prompt: 'Synthetic repeat', intervalSeconds: 90 })
+  assert.equal(repeated.dueAt, now + 90000)
+  assert.equal(repeated.intervalSeconds, 90)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(store.task('create', { prompt: 'Expired', at: '2026-11-03T14:11:00+09:00', intervalSeconds: 90 }), error => {
+      assert.equal(error.scheduleValidation.code, 'start_time_passed')
+      assert.equal(error.scheduleValidation.retryable, false)
+      assert.equal(error.scheduleValidation.taskCreated, false)
+      assert.equal(error.scheduleValidation.overdueSeconds, 55)
+      assert.equal(error.scheduleValidation.currentTime, '2026-11-03T05:11:55.000Z')
+      return true
+    })
+  }
+  assert.equal((await store.task('list')).length, 1)
+  await assert.rejects(store.task('create', { prompt: 'Missing' }), error => error.scheduleValidation.code === 'missing_start_time')
+  await assert.rejects(store.task('create', { prompt: 'No zone', at: '2026-11-03T14:15:00' }), error => error.scheduleValidation.code === 'invalid_start_time')
+  await assert.rejects(store.task('create', { prompt: 'Too short', intervalSeconds: 30 }), /at least 60/)
+  now += 10000
+  const future = await store.task('create', { prompt: 'Explicit', at: '2026-11-03T14:15:00+09:00' })
+  assert.equal(future.dueAt, Date.parse('2026-11-03T05:15:00Z'))
+})

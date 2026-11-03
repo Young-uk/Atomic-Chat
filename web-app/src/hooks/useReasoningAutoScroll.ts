@@ -73,6 +73,12 @@ export function useReasoningAutoScroll(
       frameRef.current = null
       const currentContainer = containerRef.current
       if (!currentContainer) return
+      // Expanded production traces participate in the conversation's layout;
+      // they are not an independent scroll viewport. Writing their scrollTop
+      // competes with the outer tail follower (and scroll anchoring in WebKit).
+      // Closed traces must not scroll their hidden content either. Keep this
+      // hook available for genuinely bounded viewports only.
+      if (currentContainer.hasAttribute('data-reasoning-viewport')) return
       if (!shouldFollowRef.current) {
         updateOverflowEdges(currentContainer)
         return

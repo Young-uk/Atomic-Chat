@@ -27,10 +27,22 @@ export function isToolSnapshot(value: unknown): value is string {
 
 /** Replay recorded definitions in place. Raw API tools remain the current
  * allowlist; these historical definitions never grant execution permission. */
-export function withDstarToolUpdates(messages: UIMessage[]): UIMessage[] {
+export function withDstarToolUpdates(messages: UIMessage[], originalHistory: UIMessage[] = messages): UIMessage[] {
   let previous: string | undefined
   let preambleSent: true | 'v2' | 'v3' | 'v4' | undefined
   const result: UIMessage[] = []
+  // Compaction removes old visible turns, not their immutable configuration
+  // anchor. Replaying the first recorded catalog avoids promoting a newer
+  // retained turn's schema into the fixed prefix after every summary. The
+  // current API allowlist still controls which tools may actually execute.
+  const anchor = originalHistory.find(message => message.role === 'user' &&
+    isToolSnapshot((message.metadata as Record<string, unknown> | undefined)?.[DSTAR_TOOLS_METADATA]))
+  if (anchor && !messages.some(message => message.id === anchor.id)) {
+    const wire = withDstarToolUpdates([anchor])
+    result.push(...wire.filter(message => message.id !== anchor.id))
+    previous = (anchor.metadata as Record<string, unknown>)[DSTAR_TOOLS_METADATA] as string
+    preambleSent = (anchor.metadata as Record<string, unknown>)[DSTAR_TOOL_PREAMBLE_METADATA] as typeof preambleSent
+  }
   for (const message of messages) {
     const metadata = message.metadata as Record<string, unknown> | undefined
     const snapshot = metadata?.[DSTAR_TOOLS_METADATA]

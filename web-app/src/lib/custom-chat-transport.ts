@@ -1405,10 +1405,21 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
           coordinator.schedule(history, compactionContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }))
+            summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), undefined,
+            retained => {
+              const retainedView = projectCompactedMessages(retained, modelView)
+              const wire = withToolCompletionReviews(withDstarEffortUpdates(
+                withDstarToolUpdates(retainedView, history)))
+              // Reserve room for historical memory and unresolved work. These
+              // are added after the background summary finishes.
+              return estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(wire)), tools: activeTools }) + 2048
+            })
         }
       }
-      preparedMessages = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(preparedMessages)))
+      const catalogHistory = replayDstarToolSnapshots(options.messages,
+        useMessages.getState().getMessages(snapshotThreadId))
+      preparedMessages = withToolCompletionReviews(withDstarEffortUpdates(
+        withDstarToolUpdates(preparedMessages, catalogHistory)))
     }
     const baseMessages = convertToModelMessages(
       chatExecOutputsForModel(preparedMessages)

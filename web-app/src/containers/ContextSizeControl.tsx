@@ -14,6 +14,7 @@ import {
   formatContextSize,
   useModelContextLength,
 } from '@/hooks/useModelContextLength'
+import { useDstarContextLimit } from '@/hooks/useDstarContextLimit'
 import { useTokensCount } from '@/hooks/useTokensCount'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { cn } from '@/lib/utils'
@@ -42,12 +43,16 @@ type LatestTokenUsage = {
   totalTokens: number
 }
 
-function getLatestTokenUsage(messages: ThreadMessage[]): LatestTokenUsage {
+function getLatestTokenUsage(
+  messages: ThreadMessage[],
+  modelId?: string
+): LatestTokenUsage {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message.role !== 'assistant') continue
 
     const metadata = message.metadata as Record<string, unknown> | undefined
+    if (modelId && (metadata?.modelId !== modelId || !metadata?.usage)) continue
     const usage = metadata?.usage as
       | {
           inputTokens?: unknown
@@ -89,17 +94,20 @@ export function ContextSizeControl({
   uploadedFiles = [],
 }: ContextSizeControlProps) {
   const tokenData = useTokensCount(messages, uploadedFiles)
-  const latestUsage = getLatestTokenUsage(messages)
+  const dstar = useDstarContextLimit()
+  const maxTokens = dstar.isDstar ? dstar.maxTokens : tokenData.maxTokens
+  const latestUsage = getLatestTokenUsage(
+    messages,
+    dstar.isDstar ? dstar.modelId : undefined
+  )
   const measuredTokens = tokenData.tokenCount + additionalTokens
   const totalTokens =
-    measuredTokens > 0
+    !dstar.isDstar && measuredTokens > 0
       ? measuredTokens
       : latestUsage.totalTokens + additionalTokens
   const completionTokens = Math.min(totalTokens, latestUsage.outputTokens)
   const promptTokens = Math.max(0, totalTokens - completionTokens)
-  const percentage = tokenData.maxTokens
-    ? (totalTokens / tokenData.maxTokens) * 100
-    : 0
+  const percentage = maxTokens ? (totalTokens / maxTokens) * 100 : 0
   const isOverLimit = percentage > 100
   const progressTone =
     percentage >= 90
@@ -122,9 +130,12 @@ export function ContextSizeControl({
   } = useModelContextLength()
   const { t } = useTranslation()
 
-  if (!available || !contextSetting) return null
+  if ((!available || !contextSetting) && !dstar.isDstar) return null
 
-  const percentageLabel = `${percentage.toFixed(1)}%`
+  const percentageLabel =
+    maxTokens && (!dstar.isDstar || totalTokens > 0)
+      ? `${percentage.toFixed(1)}%`
+      : '—'
 
   return (
     <Popover>
@@ -135,6 +146,7 @@ export function ContextSizeControl({
           size="sm"
           className="h-7 gap-2 px-2 font-mono text-xs"
           aria-label={`Context usage: ${percentageLabel}`}
+          title={`${percentageLabel} · ${dstar.isDstar && totalTokens === 0 ? '—' : formatTokenCount(totalTokens)} / ${maxTokens ? formatTokenCount(maxTokens) : '—'} tokens${dstar.isDstar ? ' · Last reported request' : ''}`}
         >
           <span className={cn(isOverLimit && 'text-destructive')}>
             {percentageLabel}
@@ -186,8 +198,10 @@ export function ContextSizeControl({
               {percentageLabel}
             </span>
             <span className="font-mono text-sm text-muted-foreground">
-              {formatTokenCount(totalTokens)} /{' '}
-              {formatTokenCount(tokenData.maxTokens || 0)}
+              {dstar.isDstar && totalTokens === 0
+                ? '—'
+                : formatTokenCount(totalTokens)}{' '}
+              / {maxTokens ? formatTokenCount(maxTokens) : '—'}
             </span>
           </div>
           <Progress
@@ -217,61 +231,72 @@ export function ContextSizeControl({
             </span>
           </div>
         </div>
-        <div className="space-y-4 border-t border-border pt-4">
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium">{contextSetting.title}</div>
-              <div className="font-mono text-sm tabular-nums">
-                {formatContextSize(draftContext)}
+        {dstar.isDstar && (
+          <p className="text-sm text-muted-foreground">
+            Last reported request, including its output. Updates after a
+            response completes; pending input and the next summary may change
+            usage.
+          </p>
+        )}
+        {available && contextSetting && (
+          <div className="space-y-4 border-t border-border pt-4">
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-medium">
+                  {contextSetting.title}
+                </div>
+                <div className="font-mono text-sm tabular-nums">
+                  {formatContextSize(draftContext)}
+                </div>
               </div>
+              {contextSetting.description && !fitEnabled && (
+                <div className="mt-0.5 text-sm leading-snug text-muted-foreground">
+                  {contextSetting.description}
+                </div>
+              )}
             </div>
-            {contextSetting.description && !fitEnabled && (
-              <div className="mt-0.5 text-sm leading-snug text-muted-foreground">
-                {contextSetting.description}
-              </div>
+            {fitAvailable && (
+              <label className="flex items-start justify-between gap-4 text-sm">
+                <span className="min-w-0">
+                  <span className="block font-medium">
+                    {t('assistants:contextSizeFit')}
+                  </span>
+                  <span
+                    className="mt-0.5 block leading-snug text-muted-foreground"
+                    data-testid="context-size-fit-description"
+                  >
+                    {fitEnabled
+                      ? t('assistants:contextSizeFitOn')
+                      : t('assistants:contextSizeFitHint')}
+                  </span>
+                </span>
+                <Switch
+                  className="mt-0.5 shrink-0"
+                  aria-label={t('assistants:contextSizeFit')}
+                  checked={fitEnabled}
+                  onCheckedChange={setFit}
+                />
+              </label>
             )}
-          </div>
-          {fitAvailable && (
-            <label className="flex items-start justify-between gap-4 text-sm">
-              <span className="min-w-0">
-                <span className="block font-medium">
-                  {t('assistants:contextSizeFit')}
-                </span>
-                <span
-                  className="mt-0.5 block leading-snug text-muted-foreground"
-                  data-testid="context-size-fit-description"
-                >
-                  {fitEnabled
-                    ? t('assistants:contextSizeFitOn')
-                    : t('assistants:contextSizeFitHint')}
-                </span>
-              </span>
-              <Switch
-                className="mt-0.5 shrink-0"
-                aria-label={t('assistants:contextSizeFit')}
-                checked={fitEnabled}
-                onCheckedChange={setFit}
-              />
-            </label>
-          )}
-          {/* Under fit the slider is not ignored silently, as it was: it is
+            {/* Under fit the slider is not ignored silently, as it was: it is
               disabled, and the number above it is the one the engine chose. */}
-          <Slider
-            aria-label={contextSetting.title}
-            className="w-full"
-            disabled={fitEnabled}
-            value={[Math.min(Math.max(draftContext, sliderMin), sliderMax)]}
-            min={sliderMin}
-            max={sliderMax}
-            step={sliderStep}
-            onValueChange={([value]) => setDraftContext(value)}
-            onValueCommit={([value]) => handleContextChange(value)}
-          />
-          <div className="flex justify-between font-mono text-[10px] text-muted-foreground">
-            <span>{formatContextSize(sliderMin)}</span>
-            <span>{formatContextSize(sliderMax)}</span>
+            <Slider
+              aria-label={contextSetting.title}
+              className="w-full"
+              disabled={fitEnabled}
+              value={[Math.min(Math.max(draftContext, sliderMin), sliderMax)]}
+              min={sliderMin}
+              max={sliderMax}
+              step={sliderStep}
+              onValueChange={([value]) => setDraftContext(value)}
+              onValueCommit={([value]) => handleContextChange(value)}
+            />
+            <div className="flex justify-between font-mono text-[10px] text-muted-foreground">
+              <span>{formatContextSize(sliderMin)}</span>
+              <span>{formatContextSize(sliderMax)}</span>
+            </div>
           </div>
-        </div>
+        )}
       </PopoverContent>
     </Popover>
   )

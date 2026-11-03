@@ -30,6 +30,26 @@ test('real stdio MCP handshake, tool invocation and persistence', async () => {
     assert.equal((await a.request('initialize', {})).result.serverInfo.name, 'atomic-personal-tools')
     const names = (await a.request('tools/list', {})).result.tools.map(tool => tool.name)
     assert.ok(names.includes('personal_task_delivery'))
+    const expired = await a.request('tools/call', { name: 'personal_tasks', arguments: { action: 'create', prompt: 'Expired synthetic task', at: '2000-01-01T00:00:00Z' } })
+    assert.equal(expired.result.isError, true)
+    const expiry = JSON.parse(expired.result.content[0].text)
+    assert.equal(expiry.code, 'start_time_passed')
+    assert.equal(expiry.retryable, false)
+    assert.equal(expiry.taskCreated, false)
+    assert.ok(expiry.overdueSeconds > 0)
+
+    const knowledgeSchema = (await a.request('tools/list', {})).result.tools.find(tool => tool.name === 'personal_knowledge').inputSchema
+    assert.deepEqual(knowledgeSchema.properties.entityType.enum, ['note', 'profile'])
+    const knowledge = async arguments_ => {
+      const response = await a.request('tools/call', { name: 'personal_knowledge', arguments: arguments_ })
+      assert.equal(response.result.isError, undefined)
+      return JSON.parse(response.result.content[0].text)
+    }
+    const factA = await knowledge({ area: 'profile', action: 'save', key: 'protocol_path', text: '경로 personal_document', sourceReference: 'qa/protocol-a' })
+    const factB = await knowledge({ area: 'profile', action: 'save', key: 'protocol_other', text: 'other', sourceReference: 'qa/protocol-b' })
+    assert.equal((await knowledge({ area: 'profile', action: 'search', query: 'personal_document 경로' })).total, 1)
+    await knowledge({ area: 'links', entityType: 'profile', action: 'save', id: factA.fact.id, targetId: factB.fact.id, kind: 'DUPLICATES' })
+    assert.deepEqual(await knowledge({ area: 'links', entityType: 'profile', action: 'get', id: factA.fact.id }), [factB.fact.id])
     const delivery = await a.request('tools/call', { name: 'personal_task_delivery', arguments: { action: 'pending' } })
     assert.deepEqual(JSON.parse(delivery.result.content[0].text), [])
     for (const name of ['personal_memory', 'personal_tasks', 'personal_browser', 'personal_windows', 'personal_watch', 'personal_verify']) assert.ok(names.includes(name))

@@ -6,6 +6,7 @@ import { messageClockLabel } from './messageClock'
 
 export const COMPACTION_TRIGGER = 0.7
 export const RECENT_CONTEXT_FRACTION = 0.2
+export const COMPACTION_TARGET = 0.5
 
 export type SummaryCheckpoint = {
   version: 1
@@ -56,7 +57,7 @@ const fingerprint = (messages: UIMessage[]) => JSON.stringify(stable(messages.ma
   metadata: Object.fromEntries(Object.entries((m.metadata ?? {}) as Record<string, unknown>)
     .filter(([key]) => !volatileMetadata.has(key))),
 }))))
-const cost = (messages: UIMessage[]) => estimateTokens(JSON.stringify(messages.map(({ role, parts }) => ({ role, parts }))))
+const cost = (messages: UIMessage[]) => messages.length === 0 ? 0 : estimateTokens(JSON.stringify(messages.map(({ role, parts }) => ({ role, parts }))))
 
 /** Keep complete user turns, including every tool call/result in that turn.
  * The newest user turn is always retained, even when it exceeds the target. */
@@ -100,7 +101,7 @@ export function estimateConversationUsage(messages: UIMessage[], heuristic: numb
     const metadata = messages[i].metadata as { usage?: { inputTokens?: number; outputTokens?: number } } | undefined
     const usage = metadata?.usage
     if (messages[i].role === 'assistant' && typeof usage?.inputTokens === 'number' && Number.isFinite(usage.inputTokens)) {
-      return Math.max(heuristic, usage.inputTokens + (usage.outputTokens ?? 0) + cost(messages.slice(i + 1)))
+      return usage.inputTokens + (usage.outputTokens ?? 0) + cost(messages.slice(i + 1))
     }
   }
   return heuristic
@@ -200,10 +201,23 @@ export class ContextCompaction {
 
   /** Snapshot synchronously, then archive and summarize off the request path.
    * Appended messages are not in the snapshot and can never be discarded. */
-  schedule(messages: UIMessage[], context: number, promptTokens: number, summarize: Summarize, recoveryBoundary?: number): void {
+  schedule(messages: UIMessage[], context: number, promptTokens: number, summarize: Summarize, recoveryBoundary?: number, retainedPromptCost?: (retained: UIMessage[]) => number): void {
     const ledgerMigration = this.active && !this.active.requests && this.matches(this.active, messages)
     if (!Number.isFinite(context) || context <= 0 || (!ledgerMigration && promptTokens < context * COMPACTION_TRIGGER) || this.pending || this.ready) return
-    const boundary = recoveryBoundary ?? (ledgerMigration ? this.active!.source.length : compactionBoundary(messages, context))
+    let boundary = recoveryBoundary ?? (ledgerMigration ? this.active!.source.length : compactionBoundary(messages, context))
+    if (retainedPromptCost && recoveryBoundary === undefined && !ledgerMigration && boundary > 0) {
+      // Hidden historical tool catalogs are model input too. Select complete
+      // turns using their rendered cost, rather than raw message JSON alone.
+      // Never move past the nominal recent-history boundary: recent dialogue
+      // remains intact even when fixed overhead makes the target impossible.
+      const recentBoundary = boundary
+      const archived = this.active?.source.length ?? 0
+      const candidates = messages.flatMap((m, i) =>
+        i > archived && i <= recentBoundary && m.role === 'user' ? [i] : [])
+      boundary = candidates.find(i => retainedPromptCost(messages.slice(i)) <= context * COMPACTION_TARGET) ?? 0
+      // A tiny refresh that cannot reach the target only invalidates a large
+      // usable prefix. Emergency overflow recovery remains a separate path.
+    }
     if (!boundary || (!ledgerMigration && boundary <= (this.active?.source.length ?? 0))) return
     // A resumed snapshot keeps its exact evidence even if newer turns have
     // arrived. Those newer turns remain raw and can be summarized later.

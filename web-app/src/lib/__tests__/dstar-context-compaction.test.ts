@@ -1,7 +1,7 @@
 import { convertUIMessageToThreadMessage, convertThreadMessageToUIMessage } from '../messages'
 import { expect, it } from 'vitest'
 import { convertToModelMessages, type UIMessage } from 'ai'
-import { ContextCompaction, compactionBoundary, summaryEvidence, projectCompactedMessages, type ArchiveRecord } from '../dstar-context-compaction'
+import { ContextCompaction, compactionBoundary, estimateConversationUsage, summaryEvidence, projectCompactedMessages, type ArchiveRecord } from '../dstar-context-compaction'
 
 const history = (): UIMessage[] => Array.from({ length: 20 }, (_, n) => ({ id: String(n), role: n % 2 ? 'assistant' : 'user', parts: [{ type: 'text', text: `${n}:` + 'x'.repeat(200) }] }))
 const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
@@ -307,4 +307,48 @@ it('keeps the summary at a stable tail anchor when the SDK assistant ID changes'
   const restarted = new ContextCompaction('thread', store)
   await restarted.initialize()
   expect(restarted.apply([...persisted, question, { ...question, id: 'later' }]).slice(0, first.length)).toEqual(first)
+})
+
+
+it('uses measured usage rather than an inflated heuristic after a completed request', () => {
+  const response: UIMessage = { id: 'answer', role: 'assistant',
+    parts: [{ type: 'text', text: 'done' }],
+    metadata: { usage: { inputTokens: 800, outputTokens: 100 } } }
+  expect(estimateConversationUsage([response], 9000)).toBe(900)
+})
+
+it('selects a complete-turn boundary using the rendered prompt budget', async () => {
+  const store = storage(); const c = new ContextCompaction('thread', store)
+  await c.initialize()
+  const messages = history()
+  const recent = compactionBoundary(messages, 2000)
+  c.schedule(messages, 2000, 1500, async (_previous, _evidence, _signal, _progress, checkpoints) => {
+    await checkpoints!.save({ version: 1, inputKey: 'test', offset: 1, completed: 1,
+      summary: 'compact memory', requests: { open: [], resolved: [] } })
+    return 'compact memory'
+  }, undefined,
+    retained => retained.length > messages.length - recent + 2 ? 1300 : 900)
+  await settle()
+  const record = store.saved.at(-1)!
+  expect(record.summary).toBe('compact memory')
+  expect(messages[record.source.length].role).toBe('user')
+  expect(record.source.length).toBeLessThanOrEqual(recent)
+  expect(record.source.length).toBe(recent - 2)
+  const next = c.apply(messages)
+  expect(next.filter(m => m.role !== 'system')).toEqual(messages.slice(record.source.length))
+  const count = store.saved.length
+  c.schedule(messages, 2000, 1000, async () => 'should not run', undefined, () => 900)
+  await settle()
+  expect(store.saved).toHaveLength(count)
+})
+
+it('does not repeatedly refresh tiny summaries when protected recent turns cannot reach the target', async () => {
+  const store = storage(); const c = new ContextCompaction('thread', store)
+  await c.initialize()
+  for (let i = 0; i < 3; i++) {
+    c.schedule(history(), 2000, 1500, async () => 'should not run', undefined, () => 1100)
+    await settle()
+  }
+  expect(store.saved).toHaveLength(0)
+  expect(c.status).toBe('idle')
 })

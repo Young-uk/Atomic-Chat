@@ -2,8 +2,18 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { page } from '@vitest/browser/context'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ThreadMessage } from '@janhq/core'
 import { ContextSizeControl } from './ContextSizeControl'
 import { setFontSize, setTheme, settle, withTranslations } from '@/test/layout'
+
+const dstarLayout = vi.hoisted(() => ({
+  isDstar: false,
+  modelId: 'qwen-test',
+  maxTokens: 65536,
+}))
+vi.mock('@/hooks/useDstarContextLimit', () => ({
+  useDstarContextLimit: () => dstarLayout,
+}))
 
 vi.mock('@/hooks/useTokensCount', () => ({
   useTokensCount: () => ({
@@ -50,6 +60,7 @@ function visibleLineCount(element: Element): number {
 describe('context-size popover geometry', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
+    dstarLayout.isDstar = false
   })
 
   for (const width of [390, 1024]) {
@@ -88,4 +99,51 @@ describe('context-size popover geometry', () => {
       }
     }
   }
+})
+
+describe('read-only Dstar context gauge geometry', () => {
+  for (const width of [1024, 1280])
+    for (const font of ['16px', '20px'])
+      for (const theme of ['light', 'dark'] as const) {
+        it(`${width}px / ${font} / ${theme}: percentage and counts stay readable`, async () => {
+          dstarLayout.isDstar = true
+          await page.viewport(width, 800)
+          setFontSize(font)
+          setTheme(theme)
+          render(
+            withTranslations(
+              <div style={{ position: 'fixed', top: 24, right: 24 }}>
+                <ContextSizeControl
+                  messages={
+                    [
+                      {
+                        role: 'assistant',
+                        metadata: {
+                          modelId: 'qwen-test',
+                          usage: {
+                            inputTokens: 65000,
+                            outputTokens: 1000,
+                            totalTokens: 66000,
+                          },
+                        },
+                      },
+                    ] as ThreadMessage[]
+                  }
+                />
+              </div>
+            )
+          )
+          const trigger = screen.getByRole('button', {
+            name: 'Context usage: 100.7%',
+          })
+          fireEvent.click(trigger)
+          const panel = await screen.findByTestId('context-size-popover')
+          await settle(panel)
+          expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth + 1)
+          expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(
+            width - 16
+          )
+          expect(visibleLineCount(trigger.querySelector('span')!)).toBe(1)
+        })
+      }
 })

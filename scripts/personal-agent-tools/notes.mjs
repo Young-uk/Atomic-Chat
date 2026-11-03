@@ -1,3 +1,4 @@
+import { ProfileLinks } from './profile-links.mjs'
 import { semanticMemory } from './semantic-memory.mjs'
 import { join } from 'node:path'
 import { MemoryStore } from './agent-source/memory/memory-store.mjs'
@@ -121,9 +122,12 @@ export class PersonalNotes {
       }
       if (args.action === 'search') {
         if (typeof args.query !== 'string' || !args.query.trim()) throw new Error('A profile search query is required')
-        const query = args.query.trim().toLocaleLowerCase()
-        const facts = this.profile.list().filter(fact => [fact.key, fact.value, ...(fact.keywords ?? [])].some(value => value.toLocaleLowerCase().includes(query)))
-        return { mode: 'profile-substring', facts: facts.slice(0, 50), total: facts.length, truncated: facts.length > 50 }
+        const terms = [...new Set(args.query.trim().toLowerCase().split(/\s+/u))]
+        const facts = this.profile.list().filter(fact => {
+          const fields = [fact.key, fact.value, ...(fact.keywords ?? [])].map(value => value.toLowerCase())
+          return terms.every(term => fields.some(value => value.includes(term)))
+        })
+        return { mode: 'profile-substring-all-terms', facts: facts.slice(0, 50), total: facts.length, truncated: facts.length > 50 }
       }
       // IDs returned by save/list are accepted for reads; mutation still
       // requires an explicit key so an old historical ID cannot delete a
@@ -144,6 +148,16 @@ export class PersonalNotes {
         return { fact: this.profile.set(args.key, args.text), evidenceNoteId: evidence.id }
       }
     } else if (args.area === 'links') {
+      if (args.entityType === 'profile') {
+        this.profile ??= new ProfileStore(options)
+        return new ProfileLinks(store.getDatabaseHandleForEmbeddings(), this.profile).call(args)
+      }
+      if (args.entityType !== undefined && args.entityType !== 'note') throw new Error('Link entityType must be note or profile')
+      if (args.action !== 'list') {
+        for (const id of [args.id, ...(args.action === 'get' ? [] : [args.targetId])]) {
+          if (!Number.isSafeInteger(id) || !store.get(id)) throw new Error('An existing note id is required; use entityType: profile for profile fact IDs')
+        }
+      }
       this.links ??= new LinkStore({ db: store.getDatabaseHandleForEmbeddings() })
       if (args.action === 'list') return this.links.listAll({ limit: 100 })
       if (args.action === 'get') return this.links.expand([args.id], { depth: 2, maxExpanded: 50 })
@@ -153,6 +167,16 @@ export class PersonalNotes {
       const isLesson = args.area === 'lessons'
       const domain = isLesson ? (this.lessons ??= new LessonStore(options)) : (this.procedures ??= new ProcedureStore(options))
       if (args.action === 'list') return domain.listIndex({ limit: 100 })
+      if (args.action === 'history') {
+        if (!Number.isSafeInteger(args.id) || args.id < 1) throw new Error('A positive integer history id is required')
+        const entry = domain.getById(args.id)
+        if (!entry) return { scope: 'lifecycle', found: false, reason: 'not_found', entry: null, events: [] }
+        // These records retain their content on deprecation, but do not
+        // version arbitrary edits. Report only lifecycle events we can prove.
+        const events = [{ action: 'created', at: entry.createdAt }]
+        if (entry.deprecatedAt !== null) events.push({ action: 'deprecated', at: entry.deprecatedAt })
+        return { scope: 'lifecycle', found: true, entry, events }
+      }
       if (args.action === 'get') return domain.getById(args.id)
       if (args.action === 'search') return domain.recall({ query: args.query, k: 20 })
       if (args.action === 'save') {

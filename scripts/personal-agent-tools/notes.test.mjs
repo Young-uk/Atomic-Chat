@@ -87,3 +87,57 @@ test('knowledge exposes profile search and explicit evidence identifiers with le
   assert.throws(() => n.knowledge({ area: 'lessons', action: 'save', sourceNoteId: 999999, activation: 'paths', text: 'No evidence' }), /sourceNoteId/)
   n.close()
 })
+
+test('profile search matches all terms independently and fact links never alias note links', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-profile-links-'))
+  let n = new PersonalNotes(directory, directory)
+  const a = n.knowledge({ area: 'profile', action: 'save', key: 'path', text: '상대경로 personal_document 모두', source: 'qa/a' }).fact
+  const b = n.knowledge({ area: 'profile', action: 'save', key: 'other', text: 'personal_document only', source: 'qa/b' }).fact
+  for (const query of ['경로 personal_document', 'PERSONAL_DOCUMENT 경로', ' path   경로 ']) {
+    assert.deepEqual(n.knowledge({ area: 'profile', action: 'search', query }).facts.map(f => f.id), [a.id])
+  }
+  assert.equal(n.knowledge({ area: 'profile', action: 'search', query: '경로 absent' }).total, 0)
+  const edge = { area: 'links', entityType: 'profile', action: 'save', id: a.id, targetId: b.id, kind: 'DUPLICATES' }
+  n.knowledge(edge)
+  n.knowledge(edge)
+  assert.equal(n.knowledge({ area: 'links', action: 'list' }).length, 0)
+  assert.equal(n.knowledge({ ...edge, action: 'list' }).length, 1)
+  assert.deepEqual(n.knowledge({ ...edge, action: 'get' }), [b.id])
+  assert.throws(() => n.knowledge({ ...edge, targetId: 99999 }), /existing profile fact/)
+  assert.throws(() => n.knowledge({ ...edge, entityType: 'note', targetId: 99999 }), /existing note/)
+  n.close()
+  n = new PersonalNotes(directory, directory)
+  assert.deepEqual(n.knowledge({ ...edge, action: 'get' }), [b.id])
+  assert.equal(n.knowledge({ ...edge, action: 'forget' }).removed, true)
+  assert.deepEqual(n.knowledge({ ...edge, action: 'get' }), [])
+  n.knowledge(edge)
+  n.knowledge({ area: 'profile', action: 'forget', key: 'other' })
+  assert.equal(n.knowledge({ ...edge, action: 'list' }).length, 0)
+  n.close()
+})
+
+test('lesson and procedure history reports retained lifecycle without inventing versions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-knowledge-lifecycle-'))
+  let n = new PersonalNotes(directory, directory)
+  const note = n.call({ action: 'save', text: 'History evidence', source: 'qa/history' })
+  const lesson = n.knowledge({ area: 'lessons', action: 'save', sourceNoteId: note.id, activation: 'history test', text: 'Keep evidence.' })
+  const procedure = n.knowledge({ area: 'procedures', action: 'save', sourceNoteId: note.id, parentLessonId: lesson.id, activation: 'history test', steps: ['Read evidence', 'Report result'] })
+  for (const [area, entry] of [['lessons', lesson], ['procedures', procedure]]) {
+    const query = { area, action: 'history', id: entry.id }
+    assert.equal(n.knowledge(query).found, true)
+    assert.deepEqual(n.knowledge(query).events, [{ action: 'created', at: entry.createdAt }])
+    n.knowledge({ ...query, action: 'forget' })
+    const history = n.knowledge(query)
+    assert.equal(history.scope, 'lifecycle')
+    assert.equal(history.found, true)
+    assert.equal(history.reason, undefined)
+    assert.equal(history.entry.status, 'deprecated')
+    assert.equal(history.events[1].at, history.entry.deprecatedAt)
+    assert.deepEqual(n.knowledge({ ...query, id: 999999 }), { scope: 'lifecycle', found: false, reason: 'not_found', entry: null, events: [] })
+    for (const id of [undefined, 0, -1, 1.5, '2']) assert.throws(() => n.knowledge({ ...query, id }), /positive integer/)
+  }
+  n.close()
+  n = new PersonalNotes(directory, directory)
+  assert.equal(n.knowledge({ area: 'lessons', action: 'history', id: lesson.id }).events.length, 2)
+  n.close()
+})

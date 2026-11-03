@@ -12,6 +12,14 @@ const startModel = vi.fn()
 const getActiveModels = vi.fn()
 const syncActiveModelsFromEngines = vi.fn()
 const tokenCountState = vi.hoisted(() => ({ value: 164 }))
+const dstarState = vi.hoisted(() => ({
+  isDstar: false,
+  maxTokens: 65536 as number | undefined,
+  modelId: 'qwen-test',
+}))
+vi.mock('@/hooks/useDstarContextLimit', () => ({
+  useDstarContextLimit: () => dstarState,
+}))
 
 class MockResizeObserver {
   observe() {}
@@ -83,6 +91,8 @@ describe('ContextSizeControl', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     tokenCountState.value = 164
+    dstarState.isDstar = false
+    dstarState.maxTokens = 65536
     getActiveModels.mockResolvedValue([])
     seedServiceHub({
       models: {
@@ -178,9 +188,7 @@ describe('ContextSizeControl', () => {
       setSelectedModel('llamacpp')
       render(<ContextSizeControl additionalTokens={additionalTokens} />)
 
-      fireEvent.click(
-        screen.getByRole('button', { name: /Context usage:/ })
-      )
+      fireEvent.click(screen.getByRole('button', { name: /Context usage:/ }))
 
       expect(screen.getByRole('progressbar').firstElementChild).toHaveClass(
         expectedClass
@@ -205,11 +213,9 @@ describe('ContextSizeControl', () => {
 
   it('uses the model training limit when the engine provides one', async () => {
     const getMaxCtxTrain = vi.fn().mockResolvedValue(131072)
-    const engineManager = vi
-      .spyOn(EngineManager, 'instance')
-      .mockReturnValue({
-        get: () => ({ getMaxCtxTrain }),
-      } as unknown as EngineManager)
+    const engineManager = vi.spyOn(EngineManager, 'instance').mockReturnValue({
+      get: () => ({ getMaxCtxTrain }),
+    } as unknown as EngineManager)
     setSelectedModel('llamacpp')
     render(<ContextSizeControl />)
 
@@ -317,5 +323,59 @@ describe('ContextSizeControl', () => {
       expect(screen.queryByRole('switch')).toBeNull()
       expect(screen.getByRole('slider')).not.toHaveAttribute('data-disabled')
     })
+  })
+})
+
+describe('Dstar context usage', () => {
+  beforeEach(() => {
+    dstarState.maxTokens = 65536
+    seedServiceHub({
+      models: {
+        stopModel,
+        startModel,
+        getActiveModels,
+      } as unknown as ModelsService,
+    })
+  })
+  it('shows reported request usage for Dstar without a local context slider', () => {
+    setSelectedModel('custom-dstar')
+    dstarState.isDstar = true
+    const messages = [
+      {
+        role: 'assistant',
+        metadata: {
+          modelId: 'qwen-test',
+          usage: { inputTokens: 48000, outputTokens: 1152, totalTokens: 49152 },
+        },
+      },
+    ] as ThreadMessage[]
+    render(<ContextSizeControl messages={messages} />)
+    const trigger = screen.getByRole('button', { name: 'Context usage: 75.0%' })
+    expect(trigger.title).toContain('49.2K / 65.5K tokens')
+    fireEvent.click(trigger)
+    expect(
+      screen.getByText(/Last reported request, including/)
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument()
+  })
+
+  it('does not present another model usage or an unknown limit as a measured percentage', () => {
+    setSelectedModel('custom-dstar')
+    dstarState.isDstar = true
+    const messages = [
+      {
+        role: 'assistant',
+        metadata: { modelId: 'another-model', usage: { totalTokens: 60000 } },
+      },
+    ] as ThreadMessage[]
+    const view = render(<ContextSizeControl messages={messages} />)
+    expect(
+      screen.getByRole('button', { name: 'Context usage: —' })
+    ).toBeInTheDocument()
+    dstarState.maxTokens = undefined
+    view.rerender(<ContextSizeControl messages={messages} />)
+    expect(
+      screen.getByRole('button', { name: 'Context usage: —' })
+    ).toBeInTheDocument()
   })
 })
