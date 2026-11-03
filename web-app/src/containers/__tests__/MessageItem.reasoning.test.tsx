@@ -263,6 +263,7 @@ describe('MessageItem live reasoning viewport', () => {
   })
 
   it('keeps live reasoning closed by default and preserves an explicit open on finish', () => {
+    vi.useFakeTimers()
     const text =
       '**Full reasoning starts here**\n\n' +
       'A line of reasoning.\n'.repeat(500)
@@ -299,6 +300,12 @@ describe('MessageItem live reasoning viewport', () => {
     fireEvent.click(screen.getByRole('button', { name: /activity\.thinking/ }))
     expect(viewport).toHaveAttribute('data-state', 'open')
 
+    // Advance real update intervals; a single large clock jump now models a
+    // suspended webview and is covered separately by the sleep regression.
+    for (let second = 2; second <= 6; second++) {
+      now.mockReturnValue(second * 1000)
+      act(() => vi.advanceTimersByTime(1000))
+    }
     now.mockReturnValue(6200)
     rerender(item(false))
     expect(viewport).toHaveAttribute('data-state', 'open')

@@ -660,3 +660,6 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Bind Personal verification to the originating chat workdir](2026-11-03-bind-personal-verification-to-chat-workdir.md)
 
 - [Recover a missing summary insertion anchor](2026-11-03-recover-missing-summary-insertion-anchor.md)
+
+- [Chat file paths and suspend-aware reasoning time](2026-11-03-chat-file-paths-and-suspend-aware-reasoning.md)
+- [Resumable Dstar streams](2026-11-03-resumable-dstar-streams.md) — Retained request IDs, byte cursors and explicit cancellation across connection loss.

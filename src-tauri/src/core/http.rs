@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
 use tokio_util::sync::CancellationToken;
 
+#[path = "resumable_stream.rs"]
+mod resumable_stream;
+
 /// Fallback when the caller passes no (or a nonsensical) timeout, matching the
 /// llama.cpp extension's `timeout` setting default.
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -303,10 +306,15 @@ pub async fn stream_local_http(
     body: String,
     timeout_secs: u64,
     request_id: Option<String>,
+    resumable_base_url: Option<String>,
     on_chunk: Channel<HttpStreamChunk>,
 ) -> Result<u16, String> {
     let _in_flight = StreamInFlight::enter();
     let cancel = CancelRegistration::register(request_id);
+    let retained_url = resumable_base_url.as_ref().map(|base| format!("{}/chat/completions", base.trim_end_matches('/')));
+    if let Some(result) = resumable_stream::try_stream(retained_url.as_deref().unwrap_or(&url), &headers, &body, &cancel.token, &on_chunk, retained_url.is_some()).await {
+        return result;
+    }
     let configured_secs = timeout_secs;
     let timeout_secs = stream_idle_timeout_secs(timeout_secs);
     // The Settings UI shows the raw configured value, so log both — otherwise
@@ -512,6 +520,7 @@ mod cancel_tests {
             "{}".into(),
             5,
             Some(id.clone()),
+            None,
             counting_channel(first.clone()),
         ));
         first.notified().await;
@@ -543,6 +552,7 @@ mod cancel_tests {
                 "{}".into(),
                 5,
                 Some(id.clone()),
+                None,
                 counting_channel(Arc::new(Notify::new())),
             ),
         )

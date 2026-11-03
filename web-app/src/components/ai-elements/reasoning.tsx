@@ -13,6 +13,7 @@ import {
   createContext,
   memo,
   useContext,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -98,24 +99,33 @@ export const Reasoning = memo(
     const [startTime, setStartTime] = useState<number | null>(() =>
       isStreaming ? performance.now() : null
     )
+    const activeClock = useRef({ last: startTime, elapsed: 0 })
+    const activeElapsed = useCallback(() => {
+      const now = performance.now()
+      const clock = activeClock.current
+      const delta = clock.last === null ? 0 : Math.max(0, now - clock.last)
+      // A suspended webview cannot measure work during the missing interval.
+      // Exclude long gaps (sleep or a blocked UI) instead of calling them thought.
+      if (delta <= 5_000) clock.elapsed += delta
+      clock.last = now
+      return Math.max(1, Math.ceil(clock.elapsed / MS_IN_S))
+    }, [])
     const streamedThisMountRef = useRef(isStreaming)
     if (isStreaming) streamedThisMountRef.current = true
     const [readerReopened, setReaderReopened] = useState(false)
 
-    // Use elapsed monotonic time, so wall-clock corrections cannot freeze or
+    // Use observed monotonic time, so wall-clock corrections cannot freeze or
     // jump the timer while the enclosing turn moves through tools and waits.
     useEffect(() => {
       if (isStreaming) {
         if (startTime === null) {
+          activeClock.current = { last: performance.now(), elapsed: 0 }
           setStartTime(performance.now())
           setDuration((current) => Math.max(current ?? 0, 1))
           return
         }
         const update = () => {
-          const elapsed = Math.max(
-            1,
-            Math.ceil((performance.now() - startTime) / MS_IN_S)
-          )
+          const elapsed = activeElapsed()
           setDuration((current) => Math.max(current ?? 0, elapsed))
         }
         update()
@@ -123,14 +133,11 @@ export const Reasoning = memo(
         return () => window.clearInterval(timer)
       }
       if (startTime !== null) {
-        const elapsed = Math.max(
-          1,
-          Math.ceil((performance.now() - startTime) / MS_IN_S)
-        )
+        const elapsed = activeElapsed()
         setDuration((current) => Math.max(current ?? 0, elapsed))
         setStartTime(null)
       }
-    }, [isStreaming, startTime, setDuration])
+    }, [isStreaming, startTime, setDuration, activeElapsed])
 
     const handleOpenChange = (newOpen: boolean) => {
       if (!isStreaming && newOpen && !isOpen) setReaderReopened(true)

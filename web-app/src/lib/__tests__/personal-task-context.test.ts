@@ -11,7 +11,7 @@ describe('scheduled task context', () => {
     expect(personalTaskInput('personal_tasks', 'real', { action: 'list' })).toEqual({ action: 'list' })
   })
   it('binds verification paths to the actual chat rather than a model override', () => {
-    expect(personalTaskInput('personal_verify', 'real', { action: 'syntax', files: ['winter_test.py'], originThreadId: 'fake' })).toEqual({ action: 'syntax', files: ['winter_test.py'], originThreadId: 'real' })
+    for (const tool of ['personal_verify', 'personal_document', 'personal_watch', 'personal_git']) expect(personalTaskInput(tool, 'real', { action: 'syntax', files: ['winter_test.py'], originThreadId: 'fake' })).toEqual({ action: 'syntax', files: ['winter_test.py'], originThreadId: 'real' })
   })
   it('gives repeated delivery the same message id and keeps native millisecond timestamps', () => {
     const row = { taskId: 'task', id: 'run', threadId: 'real', finishedAt: 1793574012517, result: 'Reminder text' }

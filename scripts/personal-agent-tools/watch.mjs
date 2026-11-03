@@ -1,3 +1,4 @@
+import { personalWorkdir } from './verify.mjs'
 import { watch } from 'chokidar'
 import { realpath, stat } from 'node:fs/promises'
 import { relative, resolve, isAbsolute } from 'node:path'
@@ -6,9 +7,9 @@ import { randomUUID } from 'node:crypto'
 /** Watches report bounded change events, never execute code or ingest contents. */
 export class PersonalWatch {
   constructor(root, store) { this.root = root; this.store = store; this.watches = new Map(); this.restoreErrors = [] }
-  async call(args) {
+  async call(args, threadId) {
     if (args.action === 'start') {
-      return this.start(args)
+      return this.start(args, undefined, threadId)
     }
     if (args.action === 'stop') {
       const entry = this.watches.get(args.id)
@@ -29,11 +30,11 @@ export class PersonalWatch {
     }
     return [...[...this.watches.values()].map(({ id, path, events, dropped, error, persistent }) => ({ id, path, persistent, pendingEvents: events.length, dropped, error })), ...this.restoreErrors]
   }
-  async start(args, id = randomUUID()) {
+  async start(args, id = randomUUID(), threadId) {
       if (this.watches.size >= 8) throw new Error('At most eight active watches are supported')
       if (typeof args.path !== 'string' || !args.path) throw new Error('A path relative to the configured workspace is required')
       const root = await realpath(this.root)
-      const target = await realpath(resolve(root, args.path))
+      const target = await realpath(resolve(personalWorkdir(root, threadId), args.path))
       const rel = relative(root, target)
       if (isAbsolute(rel) || rel === '..' || rel.startsWith('../')) throw new Error('Watch target is outside the configured workspace')
       if (!(await stat(target)).isDirectory()) throw new Error('Watch a directory, not an individual file')

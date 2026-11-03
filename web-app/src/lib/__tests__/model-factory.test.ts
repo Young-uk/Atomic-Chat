@@ -1087,8 +1087,9 @@ describe('custom endpoint progress observation', () => {
       queueMicrotask(() => channel?.onmessage({ data: comment }))
       return new Promise(() => {})
     })
-    const localFetch = createLocalStreamingFetch(vi.fn(), {}, undefined, 'progress-test')
+    const localFetch = createLocalStreamingFetch(vi.fn(), {}, undefined, 'progress-test', 'http://127.0.0.1:8010/v1')
     const response = await localFetch('http://localhost:1337/v1/chat/completions', { method: 'POST', body: '{}' })
+    expect(mockedInvoke).toHaveBeenCalledWith('stream_local_http', expect.objectContaining({ resumableBaseUrl: 'http://127.0.0.1:8010/v1' }))
     expect(useInferenceProgress.getState().byThread['progress-test']).toMatchObject({ phase: 'reading', processed: 5, total: 10 })
     const answer = 'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'
     channel?.onmessage({ data: answer })

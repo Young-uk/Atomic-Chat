@@ -267,5 +267,26 @@ it.skipIf(!process.env.ATOMIC_COMPACTION_REPLAY_DIR)('replays a persisted local 
   const projected = c.apply(messages)
   expect(projected.some(m => m.id === `atomic-context-${record.id}`)).toBe(true)
   expect(projected.length).toBe(messages.length - record.source.length + 1)
+  const { withDstarToolUpdates } = await import('../dstar-tools')
+  const { estimatePromptTokensHeuristic } = await import('../prompt-size')
+  console.info('[local-compaction-replay]', { count: messages.length, archived: record.source.length, boundary: compactionBoundary(messages, 65536), projectedEstimate: estimatePromptTokensHeuristic({ messages: convertToModelMessages(withDstarToolUpdates(projected)) }) })
+  await c.recover(messages, 65536, async () => 'Synthetic recovery summary used only by this read-only test', undefined, 4096)
+  const recovered = c.apply(messages)
+  expect(recovered.length).toBeLessThan(projected.length)
+  expect(recovered).toContainEqual(messages.at(-1))
   expect(await readFile(join(root, 'messages.jsonl'), 'utf8')).toBe(raw)
+})
+
+it('advances beyond an already summarized recent-history boundary during overflow recovery', async () => {
+  const messages = history()
+  const boundary = compactionBoundary(messages, 2000)
+  const record: ArchiveRecord = { version: 1, id: 'existing', threadId: 'thread', source: messages.slice(0, boundary), summary: 'verified memory', requests: { open: [], resolved: [] } }
+  const saved: ArchiveRecord[] = []
+  const c = new ContextCompaction('thread', { load: async () => record, save: async r => { saved.push(structuredClone(r)) } })
+  await c.initialize(); c.apply(messages)
+  await c.recover(messages, 2000, async () => 'expanded verified memory', undefined, 100)
+  const view = c.apply(messages)
+  expect(saved.at(-1)!.source.length).toBeGreaterThan(boundary)
+  expect(view).toContainEqual(messages.at(-1))
+  expect(view).toContainEqual(messages.at(-2))
 })

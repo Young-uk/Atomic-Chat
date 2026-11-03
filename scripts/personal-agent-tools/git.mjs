@@ -1,3 +1,4 @@
+import { personalWorkdir } from './verify.mjs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { realpath } from 'node:fs/promises'
@@ -5,9 +6,9 @@ import { resolve, relative, isAbsolute, sep } from 'node:path'
 import { parsePorcelain } from './agent-source/git-status-parser.mjs'
 
 const execute = promisify(execFile)
-export async function gitCall(args, workspace) {
+export async function gitCall(args, workspace, threadId) {
   const root = await realpath(workspace)
-  const repo = await realpath(resolve(root, args.repo ?? '.'))
+  const repo = await realpath(resolve(personalWorkdir(root, threadId), args.repo ?? '.'))
   const rel = relative(root, repo)
   if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('Repository is outside the Personal workspace')
   // No provider credentials, injected Git configuration or credential prompts

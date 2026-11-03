@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -11,6 +12,7 @@ test('real stdio MCP handshake, tool invocation and persistence', async () => {
   await mkdir(join(directory, 'chat', 'path-test'), { recursive: true })
   await writeFile(join(directory, 'chat', 'path-test', 'winter_test.py'), 'print("OK")')
   await writeFile(join(directory, 'winter_test.py'), 'def broken(')
+  execFileSync('git', ['init', '-q', join(directory, 'chat', 'path-test')])
   async function session() {
     const child = spawn(process.execPath, ['scripts/personal-agent-tools/server.mjs'], { env: { ...process.env, ATOMIC_PERSONAL_TOOLS_DIR: directory, ATOMIC_PERSONAL_WORKSPACE: directory }, stdio: ['pipe','pipe','pipe'] })
     const waiting = new Map()
@@ -34,6 +36,17 @@ test('real stdio MCP handshake, tool invocation and persistence', async () => {
     const checked = await a.request('tools/call', { name: 'personal_verify', arguments: { action: 'syntax', files: ['winter_test.py'], originThreadId: 'path-test' } })
     assert.equal(checked.result.isError, undefined)
     assert.equal(JSON.parse(checked.result.content[0].text).passed, 1)
+    const document = await a.request('tools/call', { name: 'personal_document', arguments: { action: 'read', path: 'winter_test.py', format: 'plain', originThreadId: 'path-test' } })
+    assert.equal(document.result.isError, undefined)
+    assert.match(JSON.parse(document.result.content[0].text).text, /print/)
+    const git = await a.request('tools/call', { name: 'personal_git', arguments: { action: 'status', originThreadId: 'path-test' } })
+    assert.equal(git.result.isError, undefined)
+    assert.equal(JSON.parse(git.result.content[0].text).repo, await realpath(join(directory, 'chat', 'path-test')))
+    const watching = await a.request('tools/call', { name: 'personal_watch', arguments: { action: 'start', path: '.', originThreadId: 'path-test' } })
+    assert.equal(watching.result.isError, undefined)
+    const entry = JSON.parse(watching.result.content[0].text)
+    assert.equal(entry.path, await realpath(join(directory, 'chat', 'path-test')))
+    await a.request('tools/call', { name: 'personal_watch', arguments: { action: 'stop', id: entry.id, originThreadId: 'path-test' } })
     const saved = await a.request('tools/call', { name: 'personal_memory', arguments: { action: 'save', text: 'Protocol canary', source: 'synthetic/test' } })
     assert.equal(saved.result.isError, undefined)
     const invalid = await a.request('tools/call', { name: 'personal_memory', arguments: { action: 'save', text: 'missing source' } })

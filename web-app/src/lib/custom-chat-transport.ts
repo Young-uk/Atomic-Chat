@@ -1314,6 +1314,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     let completionReviewSupported = false
     let summaryTokenCounting = false
     let compactionContext = 0
+    let recoveryOverflow = 0
     const compactionThread = this.threadId ?? options.chatId
     if (appendOnlyDstar && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && compactionThread !== TEMPORARY_CHAT_ID) {
       try {
@@ -1398,7 +1399,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
         this.contextRecovery = () => coordinator.recover(original, compactionContext,
-          summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal)
+          summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow)
         summaryAfterTurn = response => {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
@@ -1507,6 +1508,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         estimatePromptTokensHeuristic({ system: effectiveSystemMessage, messages: finalModelMessages, tools: activeTools }))
       const reserve = Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
       if (input + reserve > compactionContext) {
+        recoveryOverflow = input + reserve - compactionContext
         throw new Error(`${OUT_OF_CONTEXT_SIZE} This conversation needs more space than the current context window. ${compaction.status === 'summarizing' ? 'A background summary is still being prepared; wait for it before retrying.' : 'No verified summary is ready. Start a new conversation or increase the context size.'}`)
       }
     }

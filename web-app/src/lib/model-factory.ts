@@ -1,3 +1,4 @@
+import { usesAppendOnlyDstarEffort } from '@/lib/dstar-effort'
 import { observeInferenceProgress } from '@/lib/inference-progress'
 /**
  * Model Factory
@@ -465,7 +466,8 @@ export function createLocalStreamingFetch(
   shapeBody?: (
     body: Record<string, unknown>
   ) => Record<string, unknown> | Promise<Record<string, unknown>>,
-  progressThreadId?: string
+  progressThreadId?: string,
+  resumableBaseUrl?: string
 ): typeof httpFetch {
   const normalFetch = createCustomFetch(fallbackFetch, parameters)
 
@@ -613,6 +615,7 @@ export function createLocalStreamingFetch(
       body: bodyStr,
       timeoutSecs: LOCAL_STREAM_IDLE_TIMEOUT_SECS,
       requestId,
+      resumableBaseUrl,
       onChunk: channel,
     })
 
@@ -1666,7 +1669,8 @@ export class ModelFactory {
       headers,
       includeUsage: true,
       // Use the IPC-channel streaming fetch (see OpenAI factory rationale).
-      fetch: createLocalStreamingFetch(httpFetch, parameters, undefined, progressThreadId),
+      fetch: createLocalStreamingFetch(httpFetch, parameters, undefined, progressThreadId,
+        usesAppendOnlyDstarEffort(provider.base_url, modelId) ? provider.base_url : undefined),
     })
 
     // Some OpenAI-compatible providers (MiniMax, DeepSeek, Moonshot, NVIDIA

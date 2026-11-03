@@ -1,3 +1,4 @@
+import { personalWorkdir } from './verify.mjs'
 import { realpath, stat, readFile } from 'node:fs/promises'
 import { resolve, relative, isAbsolute, sep, extname } from 'node:path'
 import { pdfExtractor } from './agent-source/documents/pdf-extractor.mjs'
@@ -11,10 +12,10 @@ import { plainTextExtractor } from './agent-source/documents/plain-text-extracto
 import { validateZipDirectory } from './agent-source/suite/tools/os/archive/archive-budget.mjs'
 
 const extractors = { pdf: pdfExtractor, docx: docxExtractor, doc: docExtractor, xlsx: xlsxExtractor, pptx: pptxExtractor, odt: odtExtractor, rtf: rtfExtractor, plain: plainTextExtractor }
-export async function documentCall(args, workspace) {
+export async function documentCall(args, workspace, threadId) {
   if (args.action !== 'read' || typeof args.path !== 'string' || !args.path.trim()) throw new Error('A document path is required')
   const root = await realpath(workspace)
-  const path = await realpath(resolve(root, args.path))
+  const path = await realpath(resolve(personalWorkdir(root, threadId), args.path))
   const rel = relative(root, path)
   if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('Document is outside the Personal workspace')
   const info = await stat(path)

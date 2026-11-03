@@ -18,7 +18,7 @@ vi.mock('streamdown', async (importOriginal) => {
   return { ...actual, Streamdown }
 })
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('ReasoningContent', () => {
   it('uses the shared action-icon scale and a vertically centred trigger', () => {
@@ -78,6 +78,23 @@ describe('ReasoningContent', () => {
     expect(queryByText('Thought for 2s')).toBeInTheDocument()
     act(() => vi.advanceTimersByTime(10_000))
     expect(getByRole('button')).toHaveTextContent('Thought for 2s')
+  })
+
+  it('excludes a suspended webview gap and resumes counting active time', () => {
+    vi.useFakeTimers()
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const { rerender, getByRole } = render(<Reasoning isStreaming><ReasoningTrigger /></Reasoning>)
+    now = 2_000
+    act(() => vi.advanceTimersByTime(1_000))
+    expect(getByRole('button')).toHaveTextContent('Thinking for 2s')
+    now += 6 * 60 * 60 * 1000
+    act(() => vi.advanceTimersByTime(1_000))
+    expect(getByRole('button')).toHaveTextContent('Thinking for 2s')
+    now += 1_000
+    act(() => vi.advanceTimersByTime(1_000))
+    rerender(<Reasoning><ReasoningTrigger /></Reasoning>)
+    expect(getByRole('button')).toHaveTextContent('Thought for 3s')
   })
 
   it('continues elapsed time when the wall clock moves backwards or forwards', () => {

@@ -194,10 +194,10 @@ export class ContextCompaction {
 
   /** Snapshot synchronously, then archive and summarize off the request path.
    * Appended messages are not in the snapshot and can never be discarded. */
-  schedule(messages: UIMessage[], context: number, promptTokens: number, summarize: Summarize): void {
+  schedule(messages: UIMessage[], context: number, promptTokens: number, summarize: Summarize, recoveryBoundary?: number): void {
     const ledgerMigration = this.active && !this.active.requests && this.matches(this.active, messages)
     if (!Number.isFinite(context) || context <= 0 || (!ledgerMigration && promptTokens < context * COMPACTION_TRIGGER) || this.pending || this.ready) return
-    const boundary = ledgerMigration ? this.active!.source.length : compactionBoundary(messages, context)
+    const boundary = recoveryBoundary ?? (ledgerMigration ? this.active!.source.length : compactionBoundary(messages, context))
     if (!boundary || (!ledgerMigration && boundary <= (this.active?.source.length ?? 0))) return
     // A resumed snapshot keeps its exact evidence even if newer turns have
     // arrived. Those newer turns remain raw and can be summarized later.
@@ -260,10 +260,23 @@ export class ContextCompaction {
 
   /** Emergency recovery is awaited only when the foreground prompt cannot fit.
    * Reuse an existing job, preserve raw archives, and never discard the newest turn. */
-  async recover(messages: UIMessage[], context: number, summarize: Summarize, signal?: AbortSignal): Promise<void> {
+  async recover(messages: UIMessage[], context: number, summarize: Summarize, signal?: AbortSignal, overflowTokens = 0): Promise<void> {
     signal?.throwIfAborted()
     if (this.ready) return
-    this.schedule(messages, context, context, summarize)
+    // The regular recent-history target ignores fixed prompt overhead (system
+    // instructions and historical/current tool schemas). Once that overhead
+    // fills the window, reusing the same archive boundary cannot free space.
+    // Advance only across complete older user turns, never the newest turn.
+    const archived = this.active?.source.length ?? 0
+    let boundary = compactionBoundary(messages, context)
+    const newest = messages.findLastIndex(message => message.role === 'user')
+    const target = Math.max(0, overflowTokens) + (overflowTokens > 0 ? 1024 : 0)
+    while (boundary <= archived || cost(messages.slice(archived, boundary)) < target) {
+      const next = messages.findIndex((message, index) => index > Math.max(boundary, archived) && message.role === 'user')
+      if (next < 0 || next > newest) break
+      boundary = next
+    }
+    this.schedule(messages, context, context, summarize, boundary)
     const completion = this.pending ? this.pendingCompletion : undefined
     if (!completion) throw new Error('No earlier complete turns are available to summarize')
     await new Promise<void>((resolve, reject) => {
