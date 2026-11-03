@@ -669,3 +669,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Preserve active summaries during foreground chat](2026-11-03-preserve-active-summary-requests.md)
 
 - [Separate note references from chat sessions](2026-11-03-separate-note-provenance.md)
+
+- [Make knowledge tool identifiers explicit](2026-11-03-knowledge-tool-contract.md)

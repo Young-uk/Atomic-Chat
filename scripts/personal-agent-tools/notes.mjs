@@ -119,17 +119,28 @@ export class PersonalNotes {
         const facts = this.profile.list()
         return { facts: facts.slice(0, 50).map(fact => ({ ...fact, value: fact.value.slice(0, 240), preview: fact.value.length > 240 })), total: facts.length, truncated: facts.length > 50 }
       }
-      if (typeof args.key !== 'string' || !args.key.trim()) throw new Error('A profile key is required')
-      if (args.action === 'get') return this.profile.get(args.key)
+      if (args.action === 'search') {
+        if (typeof args.query !== 'string' || !args.query.trim()) throw new Error('A profile search query is required')
+        const query = args.query.trim().toLocaleLowerCase()
+        const facts = this.profile.list().filter(fact => [fact.key, fact.value, ...(fact.keywords ?? [])].some(value => value.toLocaleLowerCase().includes(query)))
+        return { mode: 'profile-substring', facts: facts.slice(0, 50), total: facts.length, truncated: facts.length > 50 }
+      }
+      // IDs returned by save/list are accepted for reads; mutation still
+      // requires an explicit key so an old historical ID cannot delete a
+      // different active version accidentally.
+      if (args.action === 'get' && Number.isSafeInteger(args.id) && !args.key) return this.profile.getById(args.id)
+      const key = args.key ?? (args.action === 'history' && Number.isSafeInteger(args.id) ? this.profile.getById(args.id)?.key : undefined)
+      if (typeof key !== 'string' || !key.trim()) throw new Error('A profile key is required (get/history also accept a fact id)')
+      if (args.action === 'get') return this.profile.get(key)
       if (args.action === 'history') {
-        const facts = this.profile.history(args.key)
+        const facts = this.profile.history(key)
         return { facts: facts.slice(-20), total: facts.length, truncated: facts.length > 20 }
       }
-      if (args.action === 'forget') return { removed: this.profile.remove(args.key) }
+      if (args.action === 'forget') return { removed: this.profile.remove(key) }
       if (args.action === 'save') {
         // Preserve an explicit source note before any profile write. A failed
         // profile write can leave an audit note, never an untraceable fact.
-        const evidence = this.call({ action: 'save', text: `Profile ${args.key}: ${args.text}`, source: args.source, tags: ['profile-evidence'] })
+        const evidence = this.call({ action: 'save', text: `Profile ${args.key}: ${args.text}`, sourceReference: args.sourceReference ?? args.source, sessionId: args.sessionId, tags: ['profile-evidence'] })
         return { fact: this.profile.set(args.key, args.text), evidenceNoteId: evidence.id }
       }
     } else if (args.area === 'links') {
@@ -145,14 +156,16 @@ export class PersonalNotes {
       if (args.action === 'get') return domain.getById(args.id)
       if (args.action === 'search') return domain.recall({ query: args.query, k: 20 })
       if (args.action === 'save') {
-        if (!Number.isSafeInteger(args.id) || !store.get(args.id)) throw new Error('An existing source note id is required')
+        const sourceNoteId = args.sourceNoteId ?? args.id
+        const parentLessonId = args.parentLessonId ?? args.targetId
+        if (!Number.isSafeInteger(sourceNoteId) || !store.get(sourceNoteId)) throw new Error('An existing sourceNoteId is required (legacy alias: id)')
         if (!isLesson) {
           this.lessons ??= new LessonStore(options)
-          if (!Number.isSafeInteger(args.targetId) || !this.lessons.getById(args.targetId)) throw new Error('An existing parent lesson targetId is required for a procedure')
+          if (!Number.isSafeInteger(parentLessonId) || !this.lessons.getById(parentLessonId)) throw new Error('An existing parentLessonId is required for a procedure (legacy alias: targetId)')
         }
         return isLesson
-          ? domain.create({ activation: args.activation, principle: args.text, parentIds: [args.id], workingDir: this.workspace })
-          : domain.create({ activation: args.activation, steps: (args.steps ?? []).map(description => ({ description, toolHint: null })), parentLessonIds: [args.targetId], parentMemoryIds: [args.id], source: 'manual', workingDir: this.workspace })
+          ? domain.create({ activation: args.activation, principle: args.text, parentIds: [sourceNoteId], workingDir: this.workspace })
+          : domain.create({ activation: args.activation, steps: (args.steps ?? []).map(description => ({ description, toolHint: null })), parentLessonIds: [parentLessonId], parentMemoryIds: [sourceNoteId], source: 'manual', workingDir: this.workspace })
       }
       if (args.action === 'forget') return { deprecated: domain.markDeprecated(args.id, 'Explicit Personal Chat tool request') }
     }
