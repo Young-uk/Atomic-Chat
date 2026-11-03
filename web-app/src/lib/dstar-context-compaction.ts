@@ -2,6 +2,7 @@ import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
 import type { SummaryProgress } from './context-summary-progress'
 import type { UIMessage } from 'ai'
 import { estimateTokens } from './prompt-size'
+import { prepareToolResultImagesForModel } from './toolResultImages'
 import { messageClockLabel } from './messageClock'
 
 export const COMPACTION_TRIGGER = 0.7
@@ -57,7 +58,7 @@ const fingerprint = (messages: UIMessage[]) => JSON.stringify(stable(messages.ma
   metadata: Object.fromEntries(Object.entries((m.metadata ?? {}) as Record<string, unknown>)
     .filter(([key]) => !volatileMetadata.has(key))),
 }))))
-const cost = (messages: UIMessage[]) => messages.length === 0 ? 0 : estimateTokens(JSON.stringify(messages.map(({ role, parts }) => ({ role, parts }))))
+const cost = (messages: UIMessage[]) => messages.length === 0 ? 0 : estimateTokens(JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false }).map(({ role, parts }) => ({ role, parts }))))
 
 /** Keep complete user turns, including every tool call/result in that turn.
  * The newest user turn is always retained, even when it exceeds the target. */
@@ -80,7 +81,8 @@ export function compactionBoundary(messages: UIMessage[], context: number): numb
  * Preserve the complete source, including private reasoning, in the archive;
  * do not turn speculative private reasoning into remembered facts. */
 export function summaryEvidence(messages: UIMessage[]): string {
-  return JSON.stringify(messages.map(m => ({
+  // Image bytes are archived, not textual evidence for the summary model.
+  return JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false }).map(m => ({
     id: m.id, role: m.role,
     // Repeated hidden tool catalogs can dwarf the actual dialogue. Preserve
     // them in the original archive, never repeat them as summary evidence.
@@ -113,7 +115,10 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
   const byId = new Map(prepared.map(m => [m.id, m]))
   return view.flatMap(m => {
     const existing = byId.get(m.id)
-    return existing ? [existing]
+    // Tool images are derived model-only messages. Keep them only when their
+    // owning source turn survives compaction; they are not separate history.
+    const toolImage = byId.get(`${m.id}_toolimg`)
+    return existing ? [existing, ...(toolImage ? [toolImage] : [])]
       : m.role === 'system' && m.id.startsWith('atomic-context-') ? [m] : []
   })
 }

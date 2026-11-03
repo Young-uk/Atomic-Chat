@@ -352,3 +352,21 @@ it('does not repeatedly refresh tiny summaries when protected recent turns canno
   expect(store.saved).toHaveLength(0)
   expect(c.status).toBe('idle')
 })
+
+it('excludes screenshot bytes from summary evidence and usage estimates without altering originals', () => {
+  const image = 'A'.repeat(400000)
+  const messages = [{ id: 'image', role: 'assistant', parts: [{ type: 'tool-personal_browser', toolCallId: 'screenshot', state: 'output-available', input: { action: 'screenshot' }, output: [{ type: 'text', text: 'Screenshot captured' }, { type: 'image', data: image, mimeType: 'image/jpeg' }] }] }] as unknown as UIMessage[]
+  const evidence = summaryEvidence(messages)
+  expect(evidence).toContain('Screenshot captured')
+  expect(evidence).toContain('cannot view tool-result images')
+  expect(evidence).not.toContain(image)
+  expect(estimateConversationUsage([{ id: 'answer', role: 'assistant', parts: [], metadata: { usage: { inputTokens: 100, outputTokens: 10 } } }, ...messages], 999999)).toBeLessThan(1000)
+  expect(JSON.stringify(messages)).toContain(image)
+})
+
+ it('retains a tool image only with its retained owning turn', () => {
+   const owner = { id: 'image-owner', role: 'assistant', parts: [] } as UIMessage
+   const image = { id: 'image-owner_toolimg', role: 'user', parts: [] } as UIMessage
+   expect(projectCompactedMessages([owner], [owner, image])).toEqual([owner, image])
+   expect(projectCompactedMessages([], [owner, image])).toEqual([])
+ })

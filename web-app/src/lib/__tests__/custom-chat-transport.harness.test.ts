@@ -1670,3 +1670,31 @@ describe('Personal Dstar completion review', () => {
     } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
 })
+
+describe('Dstar screenshot tool-result payloads', () => {
+  it('does not serialize image bytes as text on a custom Dstar connection', async () => {
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true')
+    vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('data:')
+      ? new Response(new Uint8Array([255, 216, 255, 217]), { headers: { 'content-type': 'image/jpeg' } })
+      : { ok: true, json: async () => ({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat', context_length: 65536 }] }) }))
+    const { ContextCompaction } = await import('../dstar-context-compaction')
+    vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never, messages: { modifyMessage: vi.fn(async m => m) } as never })
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: [], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'finish', finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const data = 'A'.repeat(100000)
+    const screenshot = { id: 'screen', role: 'assistant', parts: [{ type: 'tool-personal_browser', toolCallId: 'screen', state: 'output-available', input: { action: 'screenshot' }, output: [{ type: 'image', data, mimeType: 'image/jpeg' }] }] } as unknown as UIMessage
+    try {
+      const transport = new CustomChatTransport(undefined, 'screenshot-test')
+      await readChunks(await transport.sendMessages({ chatId: 'screenshot-test', messages: [userMessage, screenshot], abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+      const request = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0]
+      expect(JSON.stringify(request.prompt)).toContain('attached below')
+      expect(JSON.stringify(request.prompt)).not.toContain('cannot view tool-result images')
+      expect(request.prompt.some((message: { content: unknown }) => Array.isArray(message.content) && message.content.some((part: { type: string }) => part.type === 'file'))).toBe(true)
+      expect(JSON.stringify(screenshot)).toContain(data)
+    } finally { vi.unstubAllEnvs() }
+  })
+})

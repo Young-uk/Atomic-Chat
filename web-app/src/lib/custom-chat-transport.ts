@@ -1279,11 +1279,15 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // the model payload (placeholder) and, for vision models, re-attach the
     // image as a proper multimodal user message. Cloud providers are left
     // untouched (they have large contexts and handle this differently).
-    if (isLocalInferenceProvider(effectiveProviderName)) {
-      const supportsVision =
+    // Dstar is a custom endpoint, but has the same text-only tool-result wire format.
+    if (isLocalInferenceProvider(effectiveProviderName) || usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+      // Dstar accepts multimodal input, but its model discovery does not yet
+      // advertise vision. Preserve images on that endpoint instead of treating
+      // missing discovery metadata as an explicit lack of image support.
+      const supportsVision = usesAppendOnlyDstarEffort(provider.base_url, modelId) ||
         useModelProvider
           .getState()
-          .selectedModel?.capabilities?.includes('vision') ?? false
+          .selectedModel?.capabilities?.includes('vision') === true
       preparedMessages = prepareToolResultImagesForModel(preparedMessages, {
         supportsVision,
       })
