@@ -3252,7 +3252,7 @@ const ChatInput = memo(function ChatInput({
                       // - The streaming content has finished
                       // - Prompt is not empty
                       if (
-                        !isStreaming &&
+                        (!isStreaming || !!onSubmit) &&
                         prompt.trim() &&
                         !isAttachmentPipelineBusy &&
                         !blockSendUntilModelReady
@@ -3705,6 +3705,15 @@ const ChatInput = memo(function ChatInput({
                       onAnimationComplete={() => setSendControlMoving(false)}
                     >
                       {isStreaming ? (
+                        <div className="flex items-center gap-1">
+                        {onSubmit && prompt.trim() && <Button
+                          size="icon-sm"
+                          className="rounded-full mb-1"
+                          disabled={isAttachmentPipelineBusy || blockSendUntilModelReady}
+                          aria-label="Add to queue"
+                          title="Add to queue"
+                          onClick={() => handleSendMessage(prompt)}
+                        ><ArrowRight /></Button>}
                         <Button
                           variant="destructive"
                           size="icon-sm"
@@ -3716,6 +3725,7 @@ const ChatInput = memo(function ChatInput({
                         >
                           <IconPlayerStopFilled />
                         </Button>
+                        </div>
                       ) : needsReplyModel ? (
                         // Nothing to answer with yet. The button says so before it is
                         // pressed — the old behaviour let it look ready and answered

@@ -20,6 +20,8 @@ import HeaderPage from '@/containers/HeaderPage'
 import HeaderContextSize from '@/containers/HeaderContextSize'
 import { useThreads } from '@/hooks/useThreads'
 import ChatInput from '@/containers/ChatInput'
+import { MessageQueue } from '@/containers/MessageQueue'
+import { useMessageQueue, emptyMessageQueue, steerQueuedMessage } from '@/hooks/useMessageQueue'
 import { useShallow } from 'zustand/react/shallow'
 import { MessageItem } from '@/containers/MessageItem'
 
@@ -191,6 +193,8 @@ import { useReasoningAutoScroll } from '@/hooks/useReasoningAutoScroll'
 const CHAT_STATUS = {
   STREAMING: 'streaming',
   SUBMITTED: 'submitted',
+  READY: 'ready',
+  ERROR: 'error',
 } as const
 
 type ThreadModel = {
@@ -968,6 +972,7 @@ function ThreadDetail() {
       source: ChatTurnSource = 'agent',
       routeReason: RouteReason = 'user-selected-agent'
     ) => {
+      const preparationEpoch = useMessageQueue.getState().epoch[threadId] ?? 0
       const agentProvider = getProviderByName(selectedProvider)
       const blockReason = agentProviderBlockReason(agentProvider)
       if (blockReason) {
@@ -1155,9 +1160,12 @@ function ThreadDetail() {
         chatMessagesRef.current = messages
         setChatMessages(messages)
         useOptimisticUserMessage.getState().clear(threadId)
-        clearAttachmentsForThread(attachmentsKey)
+        if (documentsFromPayload === undefined) clearAttachmentsForThread(attachmentsKey)
       }
 
+      // A Stop during asynchronous attachment preparation must also cancel
+      // a request that has not reached the engine yet.
+      if ((useMessageQueue.getState().epoch[threadId] ?? 0) !== preparationEpoch) return
       const runId = generateId()
       useAgentRun.getState().startRun(threadId, runId)
       const agentAttachments = attachmentTelemetry(combinedAttachments)
@@ -1203,6 +1211,10 @@ function ThreadDetail() {
       // no globe to turn it off with, so web access stays off — an existing
       // chat setup without a search server never made web requests.
       await settleMcpActivationsBeforeSend()
+      if ((useMessageQueue.getState().epoch[threadId] ?? 0) !== preparationEpoch) {
+        applyAgentEvent({ type: 'turn_finished', reason: 'cancelled', step_count: 0 })
+        return
+      }
       const webSearchServer = findWebSearchServer(
         useMCPServers.getState().mcpServers
       )
@@ -1294,6 +1306,7 @@ function ThreadDetail() {
       documentsFromPayload?: Attachment[],
       agentSkillName?: string
     ) => {
+      const preparationEpoch = useMessageQueue.getState().epoch[threadId] ?? 0
       // Documents may be passed explicitly via the initial-message payload
       // (home → new thread flow). In that case the store has already been
       // cleared synchronously on send to avoid the chip lingering in the
@@ -1483,6 +1496,7 @@ function ThreadDetail() {
       // Hide the optimistic bubble in the same synchronous block as
       // sendMessage so React 18 batches both updates and the user sees the
       // real bubble appear in the same position without a flicker.
+      if ((useMessageQueue.getState().epoch[threadId] ?? 0) !== preparationEpoch) return
       useOptimisticUserMessage.getState().clear(threadId)
       setIsChatRequestActive(true)
       sendMessage({
@@ -1535,8 +1549,9 @@ function ThreadDetail() {
         tools_heavy_servers: toolCost?.heavyServers.length ?? 0,
       })
 
+      // Queued sends own a snapshot; preserve attachments in the next draft.
       // Clear attachments after sending
-      clearAttachmentsForThread(attachmentsKey)
+      if (documentsFromPayload === undefined) clearAttachmentsForThread(attachmentsKey)
     },
     [
       sendMessage,
@@ -1598,9 +1613,14 @@ function ThreadDetail() {
       files?: InitialMessageFile[],
       agentSkillName?: string
     ) => {
-      await processAndSendMessage(text, files, undefined, agentSkillName)
+      // Every composer send uses the same atomic claim, including rapid
+      // submissions before attachment processing has marked the request busy.
+      useMessageQueue.getState().enqueue(threadId, {
+        text, files, agentSkillName,
+        documents: getAttachments(attachmentsKey).filter(a => a.type === 'document' || a.type === 'video'),
+      })
     },
-    [processAndSendMessage]
+    [threadId, getAttachments, attachmentsKey]
   )
 
   // Handle regenerate from any message (user or assistant)
@@ -1981,7 +2001,9 @@ function ThreadDetail() {
     () => searchThreadModel ?? thread?.model,
     [searchThreadModel, thread]
   )
-  const handleStop = useCallback(() => {
+  const handleStop = useCallback(async () => {
+    useMessageQueue.getState().invalidate(threadId)
+    useMessageQueue.getState().pause(threadId, true)
     // Decide by live run state, not by routing: a chat-transport stream must
     // survive a provider flip mid-generation.
     if (!isAgentRunning || !agentRun?.runId) {
@@ -1989,7 +2011,7 @@ function ThreadDetail() {
       sessionData.toolAbort = null
       sessionData.tools = []
       setIsChatRequestActive(false)
-      stop()
+      await stop()
       return
     }
     if (agentRun.pendingApproval) {
@@ -1997,7 +2019,7 @@ function ThreadDetail() {
         .getState()
         .clearPendingApproval(threadId, agentRun.pendingApproval.approval_id)
     }
-    void cancelAgentTurn(agentRun.runId).catch(() => {
+    await cancelAgentTurn(agentRun.runId).catch(() => {
       toast.error(t('chat:agentErrors.cancelFailed'))
     })
   }, [
@@ -2011,6 +2033,27 @@ function ThreadDetail() {
   ])
   const requestActive = isAgentRunning || isChatRequestActive
   const inputStatus = requestActive ? CHAT_STATUS.SUBMITTED : status
+  const queuedMessages = useMessageQueue(state => state.byThread[threadId] ?? emptyMessageQueue)
+  const queuePaused = useMessageQueue(state => state.paused[threadId])
+  const queueInFlight = useMessageQueue(state => state.inFlight[threadId])
+  useEffect(() => {
+    if (status === CHAT_STATUS.ERROR || agentRun?.status === 'failed') {
+      useMessageQueue.getState().pause(threadId, true)
+    }
+  }, [status, threadId, agentRun?.status])
+  useEffect(() => {
+    if (requestActive || isAutoIncreasingContext || (status !== CHAT_STATUS.READY && status !== CHAT_STATUS.ERROR) || queuePaused || queueInFlight) return
+    const item = useMessageQueue.getState().claim(threadId)
+    if (!item) return
+    void processAndSendMessage(item.text, item.files, item.documents ?? [], item.agentSkillName)
+      .catch(() => useMessageQueue.getState().pause(threadId, true))
+      .finally(() => useMessageQueue.getState().release(threadId))
+  }, [threadId, queuedMessages, queuePaused, queueInFlight, requestActive, isAutoIncreasingContext, status, processAndSendMessage])
+  const handleQueuedSendNow = useCallback(async (id: string) => {
+    // Never regenerate/replay earlier tool calls when steering.
+    await steerQueuedMessage(threadId, id, handleStop)
+  }, [threadId, handleStop])
+
   // A failed turn stored as the last message is what is left of a live error
   // after a relaunch: it shows as the same error card, retried in place (AC-07).
   const { error: shownError, failedMessageId: failedTurnMessageId } =
@@ -2277,6 +2320,7 @@ function ThreadDetail() {
 
             {/* Chat Input - Fixed at bottom */}
             <div className="py-4 mx-auto w-full md:w-4/5 xl:w-4/6">
+              <MessageQueue threadId={threadId} onSendNow={handleQueuedSendNow} />
               <ChatInput
                 threadId={threadId}
                 model={threadModel}

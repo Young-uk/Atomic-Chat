@@ -92,12 +92,12 @@ afterEach(async () => {
   await page.viewport(1280, 800)
 })
 
-function renderComposer(width: number) {
+function renderComposer(width: number, streaming = false) {
   return render(
     withTranslations(
       <div className="app-shell">
         <div style={{ marginLeft: width >= 1024 ? 304 : 0, padding: 16 }}>
-          <ChatInput />
+          <ChatInput chatStatus={streaming ? "streaming" : undefined} onSubmit={streaming ? () => {} : undefined} />
         </div>
       </div>
     )
@@ -296,4 +296,15 @@ describe('Composer toolbar and Send reveal (Chromium)', () => {
       screen.getByTestId('send-control').getBoundingClientRect().width
     ).toBeCloseTo(32, 0)
   })
+})
+
+it.each([1024, 1280])('queue and Stop fit while streaming at %i', async width => {
+  await page.viewport(width, 800)
+  setFontSize(XL_FONT_SIZE)
+  renderComposer(width, true)
+  await typeMessage('Send this after the current reply')
+  await settle()
+  expect(screen.getByRole('button', { name: 'Add to queue' })).toBeVisible()
+  const composer = screen.getByTestId('chat-input').closest<HTMLElement>('.border-input')!
+  expectNoHorizontalOverflow(composer)
 })

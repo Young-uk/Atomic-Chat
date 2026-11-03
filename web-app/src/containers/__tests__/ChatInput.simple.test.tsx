@@ -675,6 +675,18 @@ describe('ChatInput', () => {
     await waitFor(() => expect(input).toHaveValue(''))
   })
 
+  it('accepts Enter into the queue while a reply is streaming', async () => {
+    const onSubmit = vi.fn()
+    render(<ChatInput onSubmit={onSubmit} chatStatus="streaming" />)
+    const input = screen.getByTestId('chat-input')
+    fireEvent.change(input, { target: { value: 'next message' } })
+    expect(screen.getByRole('button', { name: 'Add to queue' })).toBeEnabled()
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false, isComposing: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('next message', undefined, undefined))
+    expect(input).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'common:stop' })).toBeVisible()
+  })
+
   it('opens the reply-model widget instead of sending when none is selected', async () => {
     // With model preloading off by default, this is the state of every cold
     // launch until the user picks a model in the selector.

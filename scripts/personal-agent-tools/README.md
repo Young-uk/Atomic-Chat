@@ -36,7 +36,7 @@ required. Source availability is not full feature parity or installed-app QA.
   `preview` reports the next five firing times before creation.
 - `personal_watch`: bounded workspace-directory change events, with start/list/
   events/stop. No automatic file content ingestion or command execution.
-- `personal_windows`: macOS list/focus/move/resize/minimize through Accessibility.
+- `personal_windows`: macOS list/focus/move/resize/minimize/restore through Accessibility. Lists and action results include `minimized`: `true`, `false`, or `"unknown"` when unavailable.
   Passwords, payment input and arbitrary executable scripts are not window tools.
 
 Existing Chat filesystem, command/script execution, skills, search, MCP services,

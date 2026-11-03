@@ -689,3 +689,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Native notifications and Accessibility](2026-11-03-native-notifications-and-accessibility.md) — Use the supported notification runtime and request window permissions explicitly.
 
 - [Context-growth status and source-repair input budget](2026-11-03-context-growth-and-summary-repair-budget.md)
+
+- [Message queue and explicit steering](2026-11-03-message-queue-and-steering.md)
+
+- [Retry oversized historical summaries using the completed candidate](2026-11-03-summary-repack-candidate-retry.md)

@@ -143,17 +143,18 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
           }
           if (!low) throw new Error('Historical summary repack has no input space')
           let result: string | undefined
+          let retryPayload = payload(low)
           for (let attempt = 0; attempt < 3; attempt++) {
             const instruction = base + (attempt ? ' The previous attempt was too large. Use shorter phrases and omit repeated context; do not add explanations.' : '')
-            const inputBytes = bytes(instruction) + bytes(payload(low))
-            if (!(await fits(instruction, payload(low)))) throw new Error('Historical summary repack exceeds input budget')
+            const inputBytes = bytes(instruction) + bytes(retryPayload)
+            if (!(await fits(instruction, retryPayload))) throw new Error('Historical summary repack exceeds input budget')
             const choice = await runIdleSummaryRequest(baseUrl, signal, paused => progress?.(completed, paused), async idleSignal => {
               const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
                 method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]),
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model, atomic_summary: true, stream: false, think: false,
                   temperature: 0, max_tokens: tokenCounting ? 2048 : Math.min(2048, 8192 - 512 - inputBytes), messages: [
-                    { role: 'system', content: instruction }, { role: 'user', content: payload(low) },
+                    { role: 'system', content: instruction }, { role: 'user', content: retryPayload },
                   ] }),
               })
               if (!response.ok) throw new Error(`Historical summary repack failed (${response.status})`)
@@ -163,6 +164,11 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
             if (choice?.finish_reason !== 'stop' || typeof choice.message?.content !== 'string' || !choice.message.content.trim()) throw new Error('Historical summary repack did not complete')
             const text = choice.message.content.trim()
             if (bytes(JSON.stringify(text)) <= target) { result = text; break }
+            // Compress the completed candidate instead of deterministically
+            // regenerating the same oversized handoff from the original input.
+            // Never promote truncated output or advance the evidence checkpoint.
+            const candidatePayload = JSON.stringify({ historicalHandoff: text })
+            if (await fits(base, candidatePayload, 256)) retryPayload = candidatePayload
           }
           if (!result) throw new Error('Historical summary repack exceeded its bounded output budget')
           compacted.push(result)

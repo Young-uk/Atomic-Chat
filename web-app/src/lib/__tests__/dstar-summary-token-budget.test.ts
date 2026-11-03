@@ -108,3 +108,36 @@ it('reserves source-repair instructions before filling the fragment and keeps re
   expect(repaired).toBeGreaterThan(0)
   expect(originals.join('')).toBe(evidence)
 })
+
+it('recompresses a completed oversized repack instead of repeating the original input', async () => {
+  const original = 'Original history '.repeat(300)
+  const oversized = '한'.repeat(950)
+  const repacks: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (String(url).endsWith('/summary-token-count')) return { ok: true, json: async () => ({ input_tokens: count(body), context_length: 16384 }) }
+    expect(body.think).toBe(false)
+    const input = JSON.parse(body.messages[1].content)
+    if ('historicalHandoff' in input) repacks.push(input.historicalHandoff)
+    const content = 'historicalHandoff' in input && repacks.length === 1 ? oversized : 'Compact verified handoff'
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) }
+  }))
+  const result = await summarizeWithDstar('http://localhost/v1', 'm', { tokenCounting: true })(original, 'New evidence', new AbortController().signal)
+  expect(repacks).toEqual([original, oversized])
+  expect(result).toBe('Compact verified handoff')
+})
+
+it('does not reuse truncated repacks or commit failed repack checkpoints', async () => {
+  const original = 'Original history '.repeat(300)
+  const inputs: string[] = []
+  const save = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (String(url).endsWith('/summary-token-count')) return { ok: true, json: async () => ({ input_tokens: count(body), context_length: 16384 }) }
+    inputs.push(JSON.parse(body.messages[1].content).historicalHandoff)
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'length', message: { content: 'Incomplete handoff' } }] }) }
+  }))
+  await expect(summarizeWithDstar('http://localhost/v1', 'm', { tokenCounting: true })(original, 'New evidence', new AbortController().signal, undefined, { save })).rejects.toThrow('bounded output budget')
+  expect(inputs).toEqual([original, original, original])
+  expect(save).not.toHaveBeenCalled()
+})

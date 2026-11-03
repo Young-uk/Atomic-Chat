@@ -24,21 +24,25 @@ const permissionRequired = () => ({
 // Arguments are JSON data passed in argv, never interpolated AppleScript.
 const SCRIPT = `function run(argv) {
   const a = JSON.parse(argv[0]); const se = Application('System Events');
+  // Unsupported or unreadable attributes are unknown, never assumed normal.
+  function minimized(w) {try {const value=w.attributes.byName('AXMinimized').value(); return typeof value === 'boolean' ? value : 'unknown';} catch (_) {return 'unknown';}}
   const processes = se.applicationProcesses.whose({backgroundOnly:false})();
-  if(a.action === 'list') return JSON.stringify(processes.map(p => ({app:p.name(), windows:p.windows().map((w,i)=>({index:i+1,title:w.name(),position:w.position(),size:w.size()}))})));
+  if(a.action === 'list') return JSON.stringify(processes.map(p => ({app:p.name(), windows:p.windows().map((w,i)=>({index:i+1,title:w.name(),position:w.position(),size:w.size(),minimized:minimized(w)}))})));
   const p = processes.find(p => p.name() === a.app); if(!p) throw Error('Application not found');
   const windows = p.windows(); const w = windows[a.index-1]; if(!w) throw Error('Window not found; list windows first');
   if(a.action === 'focus') {p.frontmost=true; w.actions.byName('AXRaise').perform();}
   else if(a.action === 'move') w.position=[a.x,a.y];
   else if(a.action === 'resize') w.size=[a.width,a.height];
+  // Restore explicitly before raising; AXRaise alone does not unminimize.
+  else if(a.action === 'restore') {w.attributes.byName('AXMinimized').value=false; p.frontmost=true; w.actions.byName('AXRaise').perform();}
   else if(a.action === 'minimize') w.attributes.byName('AXMinimized').value=true;
   else throw Error('Unsupported window action');
-  return JSON.stringify({app:a.app,index:a.index,action:a.action});
+  return JSON.stringify({app:a.app,index:a.index,action:a.action,minimized:minimized(w)});
 }`
 
 export async function windowCall(args, runner = execute) {
   if (process.platform !== 'darwin') throw new Error('Window control currently requires macOS')
-  if (!['list', 'focus', 'move', 'resize', 'minimize', 'permissions', 'request_permission'].includes(args.action)) throw new Error('Unknown window action')
+  if (!['list', 'focus', 'move', 'resize', 'minimize', 'restore', 'permissions', 'request_permission'].includes(args.action)) throw new Error('Unknown window action')
   if (!['list', 'permissions', 'request_permission'].includes(args.action) && (typeof args.app !== 'string' || !Number.isInteger(args.index) || args.index < 1)) throw new Error('An application name and window index from list are required')
   const fields = args.action === 'move' ? ['x', 'y'] : args.action === 'resize' ? ['width', 'height'] : []
   for (const field of fields) if (!Number.isInteger(args[field]) || Math.abs(args[field]) > 20000 || (args.action === 'resize' && args[field] < 100)) throw new Error('Invalid window geometry')
