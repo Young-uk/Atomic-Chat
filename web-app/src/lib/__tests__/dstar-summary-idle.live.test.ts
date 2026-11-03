@@ -6,7 +6,7 @@ import { beginDstarForeground } from '../dstar-summary-idle'
 import { summarizeWithDstar } from '../dstar-context-archive'
 import { ContextCompaction, type ArchiveRecord } from '../dstar-context-compaction'
 
-it.skipIf(process.env.DSTAR_IDLE_LIVE !== 'true')('summarizes after an actual answer, yields to another question, then resumes', async () => {
+it.skipIf(process.env.DSTAR_IDLE_LIVE !== 'true')('summarizes after an actual answer, preserves its request while another question completes', async () => {
   const native = transferableAbortController()
   vi.stubGlobal('AbortController', native.constructor)
   vi.stubGlobal('AbortSignal', native.signal.constructor)
@@ -45,7 +45,7 @@ it.skipIf(process.env.DSTAR_IDLE_LIVE !== 'true')('summarizes after an actual an
   while (c.status === 'summarizing' && Date.now() < deadline) await new Promise(r => setTimeout(r, 100))
   expect(c.error).toBeUndefined()
   expect(c.status).toBe('ready')
-  expect(phases).toContain('paused')
+  expect(phases).not.toContain('paused')
   expect(phases.at(-1)).toBe('ready')
   expect(records.at(-1)?.summary).toContain('MAPLE_CANARY')
   expect(c.apply(next).at(-1)).toEqual(next.at(-1))

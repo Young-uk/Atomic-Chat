@@ -15,11 +15,42 @@ export class PersonalNotes {
     this.store ??= new MemoryStore({ dbFile: join(this.directory, 'agent-notes.sqlite'), maxEntries: 2000 })
     return this.store
   }
+  // Keep provenance separate from the upstream author classification. Older
+  // Chat notes placed the source reference in session_id; decode that legacy
+  // representation without rewriting the original row.
+  provenanceDatabase() {
+    const db = this.database().getDatabaseHandleForEmbeddings()
+    db.exec('CREATE TABLE IF NOT EXISTS atomic_note_provenance (note_id INTEGER PRIMARY KEY, source_reference TEXT NOT NULL)')
+    return db
+  }
+  withProvenance(value) {
+    if (Array.isArray(value)) return value.map(row => this.withProvenance(row))
+    if (!value || typeof value !== 'object') return value
+    if (Array.isArray(value.entries)) return { ...value, entries: this.withProvenance(value.entries) }
+    if (!Number.isSafeInteger(value.id)) return value
+    const row = this.provenanceDatabase().prepare('SELECT source_reference FROM atomic_note_provenance WHERE note_id = ?').get(value.id)
+    const original = this.database().get(value.id)
+    if (!original) return value
+    return { ...value, author: original.source,
+      sourceReference: row?.source_reference ?? original.sessionId,
+      sessionId: row ? original.sessionId : null }
+  }
   call(args) {
+    const result = this.callRaw(args)
+    return result instanceof Promise ? result.then(value => this.withProvenance(value)) : this.withProvenance(result)
+  }
+  callRaw(args) {
     const store = this.database()
     if (args.action === 'save') {
-      if (typeof args.source !== 'string' || !args.source.trim() || args.source.length > 2000) throw new Error('A verifiable source reference is required')
-      return store.store({ content: args.text, tags: args.tags, source: 'user', sessionId: args.source, workingDir: this.workspace })
+      const sourceReference = args.sourceReference ?? args.source
+      if (typeof sourceReference !== 'string' || !sourceReference.trim() || sourceReference.length > 2000) throw new Error('A verifiable source reference is required')
+      if (args.sessionId !== undefined && (typeof args.sessionId !== 'string' || !args.sessionId.trim() || args.sessionId.length > 2000)) throw new Error('A valid sessionId is required')
+      const db = this.provenanceDatabase()
+      return db.transaction(() => {
+        const entry = store.store({ content: args.text, tags: args.tags, source: 'user', sessionId: args.sessionId, workingDir: this.workspace })
+        db.prepare('INSERT OR REPLACE INTO atomic_note_provenance (note_id, source_reference) VALUES (?, ?)').run(entry.id, sourceReference)
+        return entry
+      })()
     }
     if (args.action === 'search') return this.semantic?.enabled ? this.semanticSearch(args.query) : { mode: 'fts5', entries: store.recall(args.query, { k: 5, scope: 'all' }) }
     if (args.action === 'recall') {
@@ -33,7 +64,14 @@ export class PersonalNotes {
     if (args.action === 'list') return store.listIndex({ limit: 100, scope: 'all' })
     if (!Number.isSafeInteger(args.id) || args.id < 1) throw new Error('A positive note id is required')
     if (args.action === 'get') return store.get(args.id)
-    if (args.action === 'forget') return { removed: store.remove(args.id) }
+    if (args.action === 'forget') {
+      const db = this.provenanceDatabase()
+      return db.transaction(() => {
+        const removed = store.remove(args.id)
+        db.prepare('DELETE FROM atomic_note_provenance WHERE note_id = ?').run(args.id)
+        return { removed }
+      })()
+    }
     throw new Error('Unknown notes action')
   }
   maintenanceStores() {

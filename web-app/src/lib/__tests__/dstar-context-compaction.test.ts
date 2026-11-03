@@ -243,11 +243,11 @@ it('restores a matching summary whose old insertion message disappeared without 
     save: async r => { saved.push(structuredClone(r)) } })
   await c.initialize()
   const view = c.apply(messages)
-  expect(view[0].id).toBe('atomic-context-restored')
-  expect(view.slice(1)).toEqual(messages.slice(12))
+  expect(view.at(-3)?.id).toBe('atomic-context-restored')
+  expect(view.filter(m => m.id !== 'atomic-context-restored')).toEqual(messages.slice(12))
   expect(view.some(m => m.id === '0')).toBe(false)
   await settle()
-  expect(saved.at(-1)?.summaryAfterMessageId).toBe('11')
+  expect(saved.at(-1)?.summaryAfterMessageId).toBe('17')
   const edited = structuredClone(messages); edited[0].parts = [{ type: 'text', text: 'edited original' }]
   expect(c.apply(edited)).toEqual(edited)
 })
@@ -289,4 +289,22 @@ it('advances beyond an already summarized recent-history boundary during overflo
   expect(saved.at(-1)!.source.length).toBeGreaterThan(boundary)
   expect(view).toContainEqual(messages.at(-1))
   expect(view).toContainEqual(messages.at(-2))
+})
+
+it('keeps the summary at a stable tail anchor when the SDK assistant ID changes', async () => {
+  const messages = history(), store = storage(), c = new ContextCompaction('thread', store)
+  await c.initialize()
+  c.schedule(messages, 2000, 1400, async () => 'Historical facts')
+  await settle()
+  const persisted = structuredClone(messages)
+  persisted[persisted.length - 1].id = 'persisted-assistant'
+  const question: UIMessage = { id: 'pending-user', role: 'user', parts: [{ type: 'text', text: 'Next' }] }
+  const first = c.apply([...persisted, question])
+  const at = first.findIndex(m => m.id.startsWith('atomic-context-'))
+  expect(first[at - 1].id).toBe('18')
+  expect(first[at + 1].id).toBe('persisted-assistant')
+  await settle()
+  const restarted = new ContextCompaction('thread', store)
+  await restarted.initialize()
+  expect(restarted.apply([...persisted, question, { ...question, id: 'later' }]).slice(0, first.length)).toEqual(first)
 })

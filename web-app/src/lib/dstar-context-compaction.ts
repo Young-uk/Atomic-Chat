@@ -24,6 +24,7 @@ export type ArchiveRecord = {
   previousSummary: string
   /** Stable insertion boundary after retained completed dialogue. */
   summaryAfterMessageId?: string
+  summaryFallbackAfterMessageId?: string
   createdAt?: number
   summary?: string
   requests?: RequestLedger
@@ -173,13 +174,18 @@ export class ContextCompaction {
         this.error = `Summary placement could not be saved: ${error instanceof Error ? error.message : String(error)}`
       })
     }
-    const boundary = retained.findIndex(m => m.id === archived.summaryAfterMessageId)
+    let boundary = retained.findIndex(m => m.id === archived.summaryAfterMessageId)
     // If a retained boundary was edited away, do not silently relocate memory.
-    // Recover explicitly at the archived-prefix boundary instead of expanding
+    // Recover explicitly at a fixed retained-tail boundary instead of expanding
     // back to raw history. Source matching above still rejects edited history;
-    // the summary remains older than every retained turn at this safe anchor.
+    // the summary remains explicitly historical at this safe anchor.
     if (boundary < 0 && archived.summaryAfterMessageId !== archived.source.at(-1)?.id) {
-      archived.summaryAfterMessageId = archived.source.at(-1)?.id
+      // SDK response IDs may differ from the persisted assistant message ID.
+      // Capture a stable user anchor and keep it fixed across later requests.
+      const fallback = retained.findIndex(m => m.id === archived.summaryFallbackAfterMessageId)
+      const newestUser = retained.findLastIndex(m => m.role === 'user')
+      boundary = fallback >= 0 ? fallback : (newestUser >= 0 ? newestUser - 1 : retained.length - 1)
+      archived.summaryAfterMessageId = retained[boundary]?.id ?? archived.source.at(-1)?.id
       void this.store.save({ ...archived }).catch(error => {
         this.error = `Recovered summary placement could not be saved: ${error instanceof Error ? error.message : String(error)}`
       })
@@ -207,7 +213,8 @@ export class ContextCompaction {
     const source = JSON.parse(JSON.stringify(resume?.source ?? messages.slice(0, boundary))) as UIMessage[]
     const record: ArchiveRecord = resume ?? { version: 1, id: crypto.randomUUID(), threadId: this.threadId,
       source, previousSummary: this.active?.summary ?? '', createdAt: Date.now(),
-      summaryAfterMessageId: (messages.at(-1)?.role === 'user' ? messages.at(-2) : messages.at(-1))?.id }
+      summaryAfterMessageId: (messages.at(-1)?.role === 'user' ? messages.at(-2) : messages.at(-1))?.id,
+      summaryFallbackAfterMessageId: messages.findLast(m => m.role === 'user')?.id }
     const controller = new AbortController()
     const task = { record, sourceKey: fingerprint(source), controller }
     this.pending = task

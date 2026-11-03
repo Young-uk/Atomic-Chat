@@ -21,37 +21,16 @@ export function beginDstarForeground(baseUrl: string): () => void {
   }
 }
 
-/** A new foreground turn aborts only the uncommitted HTTP fragment. Retry the
- * same fragment after the foreground turn finishes; completed merges survive. */
-export async function runIdleSummaryRequest<T>(baseUrl: string, signal: AbortSignal,
+/** Previously a new foreground turn aborted the uncommitted HTTP fragment
+ * and retried it after chat. Completed merges survived, but active work was lost.
+ * The dedicated server scheduler now yields GPU work without cancelling this
+ * request. Only the owner's signal (edits, shutdown, explicit cancellation)
+ * can cancel the summary; foreground activity never restarts a fragment. */
+export async function runIdleSummaryRequest<T>(_baseUrl: string, signal: AbortSignal,
   paused: (value: boolean) => void, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const value = lane(baseUrl)
-  for (;;) {
-    signal.throwIfAborted()
-    if (value.active) {
-      paused(true)
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => { value.listeners.delete(changed); signal.removeEventListener('abort', aborted) }
-        const changed = () => { if (!value.active) { cleanup(); resolve() } }
-        const aborted = () => { cleanup(); reject(signal.reason) }
-        value.listeners.add(changed)
-        signal.addEventListener('abort', aborted, { once: true })
-        if (signal.aborted) aborted()
-        else changed()
-      })
-    }
-    signal.throwIfAborted()
-    paused(false)
-    const interrupted = new AbortController()
-    const changed = () => { if (value.active) { paused(true); interrupted.abort() } }
-    value.listeners.add(changed)
-    try {
-      const result = await run(AbortSignal.any([signal, interrupted.signal]))
-      if (!interrupted.signal.aborted) return result
-    } catch (error) {
-      if (!interrupted.signal.aborted || signal.aborted) throw error
-    } finally { value.listeners.delete(changed) }
-  }
+  signal.throwIfAborted()
+  paused(false)
+  return run(signal)
 }
 
 /** A provider's stop label alone is insufficient: client tools can still be

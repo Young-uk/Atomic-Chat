@@ -663,3 +663,9 @@ decision is reversed, add a new one that says which record it supersedes.
 
 - [Chat file paths and suspend-aware reasoning time](2026-11-03-chat-file-paths-and-suspend-aware-reasoning.md)
 - [Resumable Dstar streams](2026-11-03-resumable-dstar-streams.md) — Retained request IDs, byte cursors and explicit cancellation across connection loss.
+
+- [Preserve a stable retained-tail summary anchor](2026-11-03-stable-summary-tail-anchor.md)
+
+- [Preserve active summaries during foreground chat](2026-11-03-preserve-active-summary-requests.md)
+
+- [Separate note references from chat sessions](2026-11-03-separate-note-provenance.md)
