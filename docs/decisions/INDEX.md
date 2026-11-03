@@ -683,3 +683,9 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Reasoning scroll ownership](2026-11-03-reasoning-scroll-owner.md) — Avoid inner scroll writes for expanded or hidden reasoning.
 
 - [Compaction refresh budget](2026-11-03-compaction-refresh-budget.md) — Use rendered input and measured usage to avoid tiny repeated refreshes.
+
+- [Recurring failures and local clocks](2026-11-03-recurring-failure-and-local-clock.md) — Preserve repeating schedules after failed occurrences.
+
+- [Native notifications and Accessibility](2026-11-03-native-notifications-and-accessibility.md) — Use the supported notification runtime and request window permissions explicitly.
+
+- [Context-growth status and source-repair input budget](2026-11-03-context-growth-and-summary-repair-budget.md)

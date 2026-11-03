@@ -50,7 +50,7 @@ Install repository dependencies, then run:
 node scripts/personal-agent-tools/install.mjs --install /absolute/path/to/node
 ```
 
-Use a supported Node runtime (the Personal Agent runtime's Node 25.7 works).
+Use Node 24 LTS >=24.15.0 (or another version supported by all runtime dependencies). Node 25 is not in node-notifier 12's supported engine range. The installer checks the SQLite ABI before replacing the worker.
 The installer copies an independent runtime and playwright-core under
 `~/Library/Application Support/Atomic Chat Personal Tools`, backs up the existing
 MCP configuration, merges only `atomic-personal-tools`, and leaves it disabled.

@@ -80,3 +80,31 @@ it('retains verified unresolved work with token-sized evidence', async () => {
   expect(saved.at(-1).requests.open).toHaveLength(1)
   expect(saved.at(-1).requests.open[0].id).toBe('user-keep')
 })
+
+it('reserves source-repair instructions before filling the fragment and keeps repairs identical', async () => {
+  const sources = Array.from({ length: 100 }, (_, i) => ({ id: `user-${String(i).padStart(4, '0')}-${'x'.repeat(30)}`, role: 'user' as const,
+    parts: [{ type: 'text' as const, text: 'Keep the requested report pending.' }] }))
+  const originals: string[] = []
+  let pendingFragment = ''
+  let repaired = 0
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (String(url).endsWith('/summary-token-count')) return { ok: true, json: async () => ({ input_tokens: count(body), context_length: 16384 }) }
+    expect(count(body)).toBeLessThanOrEqual(13312)
+    expect(body.think).toBe(false)
+    const repair = body.messages[0].content.startsWith('Repair attempt')
+    if (repair) {
+      expect(body.messages[1].content).toBe(pendingFragment)
+      repaired++
+    } else {
+      pendingFragment = body.messages[1].content
+      originals.push(JSON.parse(pendingFragment).newEvidence)
+    }
+    const content = JSON.stringify({ summary: 'Verified handoff.', openRequests: repair ? [] : [{ id: 'not-a-user', request: 'Pending report' }], resolvedRequests: [] })
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) }
+  }))
+  const evidence = 'historical evidence '.repeat(3000)
+  await summarizeWithDstar('http://localhost/v1', 'm', { tokenCounting: true })('', evidence, new AbortController().signal, undefined, { requestSources: sources, save: async () => {} })
+  expect(repaired).toBeGreaterThan(0)
+  expect(originals.join('')).toBe(evidence)
+})

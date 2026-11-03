@@ -177,3 +177,50 @@ test('relative repeats start at receipt and expired explicit starts never create
   const future = await store.task('create', { prompt: 'Explicit', at: '2026-11-03T14:15:00+09:00' })
   assert.equal(future.dueAt, Date.parse('2026-11-03T05:15:00Z'))
 })
+
+test('failed repeating occurrences skip delivery and continue on the original interval grid', async () => {
+  let now = Date.parse('2026-11-03T06:38:00Z')
+  const store = await fresh(() => now)
+  const task = await store.task('create', { prompt: 'Synthetic repeat', intervalSeconds: 120 })
+  now = task.dueAt
+  await store.claimDue()
+  now += 185000
+  await store.finish(task.id, null, 'This operation was aborted')
+  const restored = await store.task('get', { id: task.id })
+  assert.equal(restored.status, 'scheduled')
+  assert.equal(restored.dueAt, task.dueAt + 240000)
+  assert.equal(restored.runs.at(-1).error, 'This operation was aborted')
+  assert.equal(restored.runs.at(-1).delivery.status, 'skipped')
+  assert.deepEqual(await store.delivery('pending'), [])
+})
+
+test('failed cron occurrence advances without replaying missed fires', async () => {
+  let now = Date.parse('2026-11-03T06:37:00Z')
+  const store = await fresh(() => now)
+  const task = await store.task('create', { prompt: 'Synthetic cron', cron: '*/2 * * * *', timezone: 'Asia/Seoul' })
+  now = task.dueAt
+  await store.claimDue()
+  now = Date.parse('2026-11-03T06:45:00Z')
+  await store.finish(task.id, null, 'This operation was aborted')
+  const restored = await store.task('get', { id: task.id })
+  assert.equal(restored.status, 'scheduled')
+  assert.equal(restored.dueAt, Date.parse('2026-11-03T06:46:00Z'))
+  assert.equal(restored.runs.at(-1).delivery.status, 'skipped')
+})
+
+test('scheduled inference explicitly receives the schedule local time zone', async () => {
+  const originalFetch = globalThis.fetch
+  let sent
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith('/models')) return new Response(JSON.stringify({ atomic_summary_slot: true }))
+    sent = JSON.parse(options.body)
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'Synthetic reminder' } }] }))
+  }
+  const store = await fresh()
+  const tools = new PersonalTools({ directory: store.directory, store })
+  try {
+    await tools.infer('Synthetic reminder', new AbortController().signal, { schedule: { tz: 'Asia/Seoul' } })
+    assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
+    assert.match(sent.messages[0].content, /Use the local execution time/)
+  } finally { globalThis.fetch = originalFetch; await tools.shutdown() }
+})

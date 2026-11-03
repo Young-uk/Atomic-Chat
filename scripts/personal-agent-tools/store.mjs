@@ -156,16 +156,19 @@ export class PersonalStore {
       const task = state.tasks.find(item => item.id === id)
       if (!task) return
       const run = { id: randomUUID(), finishedAt: this.now(), result, error,
-        delivery: { status: 'pending', attempts: 0 } }
+        delivery: error ? { status: 'skipped', attempts: 0, reason: 'generation_failed' } : { status: 'pending', attempts: 0 } }
       task.runs.push(run)
       task.runs = task.runs.slice(-20)
       // A cancellation that races inference must remain cancelled.
       if (task.status === 'cancelled') { run.delivery.status = 'cancelled'; return }
-      if (error) task.status = 'failed'
-      else if (task.schedule || task.intervalSeconds) {
-        task.dueAt = task.schedule ? resolveScheduledFor(task.schedule, this.now()) : this.now() + task.intervalSeconds * 1000
+      // A failed occurrence is history, not cancellation of the recurrence.
+      // Skip missed intervals rather than flooding the model with catch-up work.
+      if (task.schedule || task.intervalSeconds) {
+        const now = this.now()
+        task.dueAt = task.schedule ? resolveScheduledFor(task.schedule, now) :
+          task.dueAt + Math.max(1, Math.floor((now - task.dueAt) / (task.intervalSeconds * 1000)) + 1) * task.intervalSeconds * 1000
         task.status = 'scheduled'
-      } else task.status = 'completed'
+      } else task.status = error ? 'failed' : 'completed'
     })
   }
 
@@ -179,7 +182,7 @@ export class PersonalStore {
       const task = state.tasks.find(task => task.id === args.taskId)
       const run = task?.runs.find(run => run.id === args.runId)
       if (!run?.delivery) throw new Error('Scheduled result not found')
-      if (run.delivery.status === 'cancelled' || run.delivery.status === 'delivered') return run.delivery
+      if (['cancelled', 'delivered', 'skipped'].includes(run.delivery.status)) return run.delivery
       run.delivery = { ...run.delivery, status: args.error ? 'failed' : 'delivered',
         attempts: run.delivery.attempts + 1, attemptedAt: this.now(),
         ...(args.error ? { error: bounded(args.error, 2000, 'delivery error') } : { error: null }),

@@ -14,9 +14,15 @@ const node = resolve(args[1])
 const source = dirname(fileURLToPath(import.meta.url))
 // Check native ABI compatibility before modifying the installed worker. Yarn
 // may run under a different Node than the independently packaged Personal Node.
-await promisify(execFile)(node, ['--input-type=module', '-e', `import {createRequire} from 'node:module'; const require=createRequire(${JSON.stringify(import.meta.url)}); const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.close();`], { timeout: 30000 })
+await promisify(execFile)(node, ['--input-type=module', '-e', `import {createRequire} from 'node:module'; const [major,minor,patch]=process.versions.node.split('.').map(Number); if(!((major===22&&(minor>22||(minor===22&&patch>=2)))||(major===24&&minor>=15)||major>=26)) throw Error('Personal tools require a Node version supported by node-notifier 12; use Node 24 LTS >=24.15.0.'); const require=createRequire(${JSON.stringify(import.meta.url)}); const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.close(); require('node-notifier');`], { timeout: 30000 })
 const target = join(homedir(), 'Library/Application Support/Atomic Chat Personal Tools')
 await mkdir(join(target, 'node_modules'), { recursive: true, mode: 0o700 })
+// A signed app bundle must not be overlaid with a newer release: files removed
+// upstream would remain and invalidate its resource seal. Preserve the previous
+// notifier outside node_modules so copying starts from an empty package path.
+try {
+  await rename(join(target, 'node_modules/node-notifier'), join(target, `node-notifier-before-${Date.now()}`))
+} catch (error) { if (error.code !== 'ENOENT') throw error }
 if (resolve(node) !== resolve(join(target, 'node'))) await cp(node, join(target, 'node'))
 for (const name of ['server.mjs','store.mjs','browser.mjs','windows.mjs','watch.mjs','verify.mjs','notes.mjs','profile-links.mjs','documents.mjs','git.mjs','native-suite.mjs','native-approval.mjs','memory-lifecycle.mjs','semantic-memory.mjs','feature-settings.mjs']) await cp(join(source, name), join(target, name))
 await cp(join(source, 'agent-source'), join(target, 'agent-source'), { recursive: true })

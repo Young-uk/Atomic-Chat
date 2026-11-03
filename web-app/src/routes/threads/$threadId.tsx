@@ -1860,13 +1860,17 @@ function ThreadDetail() {
   const handleContextSizeIncrease = useCallback(async () => {
     if (!selectedModel) return
 
+    // A continuation snapshot only preserves the previous answer. Scope this
+    // indicator to the actual context-growth operation, not its next request.
+    setIsAutoIncreasingContext(true)
+
     // The ladder itself lives in `growModelContext` (shared with the chat
     // transport's pre-flight); this reactive path only adds the regenerate.
     const result = await growModelContext({
       providerId: selectedProvider,
       modelId: selectedModel.id,
       serviceHub,
-    })
+    }).finally(() => setIsAutoIncreasingContext(false))
     if (!result.ok) {
       // No reload will follow. Release the request here because the chat
       // status is already "error" and its status effect will not run again.
@@ -1954,12 +1958,6 @@ function ThreadDetail() {
     // #endregion
     if (status === 'streaming' || status === 'submitted') {
       setContextLimitError(null)
-    }
-    if (
-      isAutoIncreasingContext &&
-      (status === 'streaming' || status === 'error')
-    ) {
-      setIsAutoIncreasingContext(false)
     }
     if (status === 'error' && pendingContinueMessage) {
       setPendingContinueMessage(null)
@@ -2147,16 +2145,16 @@ function ThreadDetail() {
                     <div className="flex flex-row items-center gap-2">
                       {/* One indicator at a time: the context-growth shimmer
                       replaces the generic "Working" progress, never joins it. */}
-                      {pendingContinueMessage || isAutoIncreasingContext ? (
+                      {isAutoIncreasingContext ? (
                         <Shimmer duration={1}>Growing the Mind...</Shimmer>
                       ) : (
                         inputStatus === CHAT_STATUS.SUBMITTED &&
                         !isAgentRunning &&
-                        !hasActiveAssistantMessage && !hasInferenceProgress && <PromptProgress />
+                        (!hasActiveAssistantMessage || !!pendingContinueMessage) && !hasInferenceProgress && <PromptProgress />
                       )}
                     </div>
                   )}
-                  {!hasActiveAssistantMessage && <InferenceProgress threadId={threadId} />}
+                  {!isAutoIncreasingContext && (!hasActiveAssistantMessage || !!pendingContinueMessage) && <InferenceProgress threadId={threadId} />}
                   <ContextSummaryProgress threadId={threadId} />
                   {shownError &&
                     !isAutoIncreasingContext &&
