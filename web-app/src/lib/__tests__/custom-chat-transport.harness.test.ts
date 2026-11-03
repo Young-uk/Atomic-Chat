@@ -1658,6 +1658,10 @@ describe('Personal Dstar completion review', () => {
       const chunks = await readChunks(await transport.sendMessages({ chatId: `review-${decision}`, messages: [userMessage], abortSignal: abort.signal, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
       expect(chunks.filter(c => c.type === 'text-delta').map(c => c.delta).join('')).toBe('I will check the forecast.')
       expect(chunks.filter(c => c.type === 'finish')).toHaveLength(1)
+      expect(chunks.find(c => c.type === 'finish')?.messageMetadata).toMatchObject({
+        usage: { outputTokens: decision === 'needs_tool' ? 5 : 8 },
+        modelId: 'qwen3.8-flash-next-chat',
+      })
       expect(doStream).toHaveBeenCalledTimes(decision === 'needs_tool' ? 2 : 1)
       expect(chunks.some(c => c.type === 'tool-input-available')).toBe(decision === 'needs_tool')
       expect(schedule).toHaveBeenCalledTimes(decision === 'complete' ? 1 : 0)

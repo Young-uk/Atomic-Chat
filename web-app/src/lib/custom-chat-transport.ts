@@ -1588,6 +1588,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const latestUser = options.messages.findLast(message => message.role === 'user')
     const reviewEnabled = completionReviewSupported && shouldEnableTools && !continueContent && !!latestUser && !this.reviewedToolTurns.has(latestUser.id) && !toolReviewBlocked(options.messages)
     let primaryParts = 0
+    let finalResponseMetadata: Record<string, unknown> | undefined
     const streamOptions: NonNullable<Parameters<typeof result.toUIMessageStream>[0]> = {
       messageMetadata: ({ part }) => {
         // Start the wall-clock timer on the first generated delta (text or
@@ -1637,7 +1638,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             durationSec: streamStartTime === undefined ? 0 : durationSec,
           })
 
-          return {
+          finalResponseMetadata = {
             finishReason: finishPart.finishReason,
             activityDurationMs: Math.max(0, Date.now() - requestStartedAt),
             // Provider-agnostic time to first token: `streamStartTime` is the
@@ -1673,6 +1674,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
                 }
               : {}),
           }
+          return finalResponseMetadata
         }
 
         return undefined
@@ -1745,7 +1747,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             finalReason = await continuation.finishReason
           }
         }
-        writer.write({ type: 'finish', finishReason: finalReason })
+        // Inner streams suppress finish events while completion review runs.
+        // Forward their final usage metadata with the single outer finish so
+        // completed messages retain token counts and decode speed.
+        writer.write({ type: 'finish', finishReason: finalReason, messageMetadata: finalResponseMetadata })
       },
       onError: error => { requestFailed = true; return error instanceof Error ? error.message : String(error) },
     })

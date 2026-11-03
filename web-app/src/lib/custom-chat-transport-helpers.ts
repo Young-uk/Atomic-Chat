@@ -63,7 +63,11 @@ export function buildToolsRecord(
     if (disabled.has(`${serverName}::${tool.name}`)) continue
 
     toolsRecord[tool.name] = {
-      description: tool.description,
+      description: (tool.description ?? '') + (tool.name === 'tavily_search'
+        ? ' Start with search_depth="fast" and max_results=5. Use advanced only when initial results are insufficient. Avoid repeating identical searches. If Tavily is rate limited, use another available provider instead of retrying Tavily endpoints.'
+        : tool.name === 'tavily_research'
+          ? ' Use only for an explicitly requested in-depth multi-source investigation. Never use as a fallback for failed or rate-limited ordinary search.'
+          : ''),
       inputSchema: jsonSchema(tool.inputSchema),
     } as Tool
   }

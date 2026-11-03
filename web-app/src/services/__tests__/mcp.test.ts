@@ -120,6 +120,21 @@ describe('TauriMCPService', () => {
     })
   })
 
+  it('applies Tavily defaults through both invocation paths and preserves cancellation', async () => {
+    ipcHandler.mockReturnValue({ error: '', content: [] })
+    await mcpService.callTool({ toolName: 'tavily_search', arguments: { query: 'first' } })
+    const call = mcpService.callToolWithCancellation({ toolName: 'tavily_search', arguments: { query: 'second' }, cancellationToken: 'tavily-token' })
+    await call.promise
+    expect(ipcHandler).toHaveBeenCalledWith('call_tool', {
+      toolName: 'tavily_search', arguments: { query: 'first', search_depth: 'fast', max_results: 5 },
+    })
+    expect(ipcHandler).toHaveBeenCalledWith('call_tool', {
+      toolName: 'tavily_search', arguments: { query: 'second', search_depth: 'fast', max_results: 5 }, cancellationToken: 'tavily-token',
+    })
+    await call.cancel()
+    expect(ipcHandler).toHaveBeenCalledWith('cancel_tool_call', { cancellationToken: 'tavily-token' })
+  })
+
   it('adds and forwards cancellation tokens through the real API facade', async () => {
     ipcHandler.mockReturnValue({
       error: '',

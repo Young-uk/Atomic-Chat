@@ -693,3 +693,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Message queue and explicit steering](2026-11-03-message-queue-and-steering.md)
 
 - [Retry oversized historical summaries using the completed candidate](2026-11-03-summary-repack-candidate-retry.md)
+
+- [Tavily search budgets and rate limiting](tavily-search-budget.md)

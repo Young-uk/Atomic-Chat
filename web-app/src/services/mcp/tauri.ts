@@ -2,12 +2,16 @@
  * Tauri MCP Service - Desktop implementation
  */
 
+import { TavilyPolicy } from '@/lib/tavily-policy'
+
 import { invoke } from '@tauri-apps/api/core'
 import { MCPTool } from '@/types/completion'
 import { DEFAULT_MCP_SETTINGS } from '@/hooks/useMCPServers'
 import type { MCPServerConfig, MCPServers, MCPSettings } from '@/hooks/useMCPServers'
 import type { MCPConfig, MCPServerStatus, MCPToolsResponse } from './types'
 import { DefaultMCPService } from './default'
+
+const tavilyPolicy = new TavilyPolicy()
 
 export class TauriMCPService extends DefaultMCPService {
   async updateMCPConfig(configs: string): Promise<void> {
@@ -85,7 +89,8 @@ export class TauriMCPService extends DefaultMCPService {
     arguments: object
     threadId?: string
   }): Promise<{ error: string; content: { text: string }[] }> {
-    return window.core?.api?.callTool(args)
+    return tavilyPolicy.call(args.toolName, args.arguments, arguments_ =>
+      window.core?.api?.callTool({ ...args, arguments: arguments_ }))
   }
 
   callToolWithCancellation(args: {
@@ -103,10 +108,11 @@ export class TauriMCPService extends DefaultMCPService {
     const token = args.cancellationToken ?? `tool_call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
     // Create the tool call promise with cancellation token
-    const promise = window.core?.api?.callTool({
+    const promise = tavilyPolicy.call<{ error: string; content: { text: string }[] }>(args.toolName, args.arguments, arguments_ => window.core?.api?.callTool({
       ...args,
+      arguments: arguments_,
       cancellationToken: token
-    })
+    }))
 
     // Create cancel function
     const cancel = async () => {
