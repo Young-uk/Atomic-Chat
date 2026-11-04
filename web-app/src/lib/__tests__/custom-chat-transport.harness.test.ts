@@ -1554,7 +1554,7 @@ describe('Dstar summary scheduling after the final answer', () => {
 })
 
 describe('Dstar emergency full-context recovery', () => {
-  it.each([[true, false], [false, false], [true, true]])('summarizes before inference and retries at most once: recovery=%s provider=%s', async (succeeds, providerReject) => {
+  it.each([[true, false, false], [false, false, false], [true, true, false], [true, false, true], [true, true, true]])('summarizes before inference and retries at most once: recovery=%s provider=%s continuation=%s', async (succeeds, providerReject, continuation) => {
     const { ContextCompaction } = await import('../dstar-context-compaction')
     const { runIdleSummaryRequest } = await import('../dstar-summary-idle')
     vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true'); vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
@@ -1583,6 +1583,7 @@ describe('Dstar emergency full-context recovery', () => {
     })
     vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
     const transport = new CustomChatTransport(undefined, `full-recovery-${succeeds}-${providerReject}`)
+    if (continuation) transport.setContinueFromContent('Previously streamed answer')
     const messages = [{ ...userMessage, id: 'old-user', parts: [{ type: 'text' as const, text: 'old data '.repeat(providerReject ? 1 : 10000) }] },
       { id: 'old-answer', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'confirmed' }] }, userMessage]
     const abort = new AbortController()
@@ -1593,6 +1594,15 @@ describe('Dstar emergency full-context recovery', () => {
         expect(JSON.stringify(chunks)).toContain('RECOVERED')
         expect(doStream).toHaveBeenCalledTimes(providerReject ? 2 : 1)
         expect(chunks.filter(chunk => chunk.type === 'start')).toHaveLength(1)
+        if (continuation) {
+          const text = chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.delta).join('')
+          expect(text).toBe('Previously streamed answerRECOVERED')
+          const prompt = doStream.mock.calls.at(-1)![0].prompt
+          expect(prompt.at(-1)).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: 'Previously streamed answer' }] })
+          // The prefill belongs only to the recovered logical request.
+          await readChunks(await transport.sendMessages({ chatId: 'next-turn', messages: [userMessage], abortSignal: abort.signal, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+          expect(JSON.stringify(doStream.mock.calls.at(-1)![0].prompt)).not.toContain('Previously streamed answer')
+        }
       } else await expect(response).rejects.toThrow('Archive verification failed')
       expect(recover).toHaveBeenCalledTimes(1)
       expect(recover.mock.calls[0][0].at(-1)?.id).toBe(userMessage.id)

@@ -92,8 +92,9 @@ it('reserves source-repair instructions before filling the fragment and keeps re
     if (String(url).endsWith('/summary-token-count')) return { ok: true, json: async () => ({ input_tokens: count(body), context_length: 16384 }) }
     expect(count(body)).toBeLessThanOrEqual(13312)
     expect(body.think).toBe(false)
-    const repair = body.messages[0].content.startsWith('Repair attempt')
+    const repair = body.messages.at(-1).content.startsWith('Repair attempt')
     if (repair) {
+      expect(body.messages[0].content).toContain('Create a faithful conversation handoff')
       expect(body.messages[1].content).toBe(pendingFragment)
       repaired++
     } else {
@@ -140,4 +141,24 @@ it('does not reuse truncated repacks or commit failed repack checkpoints', async
   await expect(summarizeWithDstar('http://localhost/v1', 'm', { tokenCounting: true })(original, 'New evidence', new AbortController().signal, undefined, { save })).rejects.toThrow('bounded output budget')
   expect(inputs).toEqual([original, original, original])
   expect(save).not.toHaveBeenCalled()
+})
+
+it('keeps the repack source prefix identical when retrying an output limit', async () => {
+  const repacks: { messages: { role: string, content: string }[] }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (String(url).endsWith('/summary-token-count')) return { ok: true, json: async () => ({ input_tokens: count(body), context_length: 16384 }) }
+    const input = JSON.parse(body.messages[1].content)
+    const repack = 'historicalHandoff' in input
+    if (repack) repacks.push(body)
+    return { ok: true, json: async () => ({ choices: [{
+      finish_reason: repack && repacks.length === 1 ? 'length' : 'stop',
+      message: { content: 'Compact faithful handoff.' },
+    }] }) }
+  }))
+  await summarizeWithDstar('http://localhost/v1', 'm', { tokenCounting: true })(
+    'Original history '.repeat(300), 'New evidence', new AbortController().signal)
+  expect(repacks).toHaveLength(2)
+  expect(repacks[1].messages.slice(0, 2)).toEqual(repacks[0].messages.slice(0, 2))
+  expect(repacks[1].messages[2].content).toContain('previous attempt was too large')
 })

@@ -288,8 +288,8 @@ it('repairs an assistant-as-user source against the same evidence and saves only
   await summarizeWithDstar('http://localhost/v1', 'model')('', 'Short evidence', new AbortController().signal, undefined,
     { requestSources: source, save: async point => { saved.push(structuredClone(point)) } })
   expect(bodies).toHaveLength(2)
-  expect(bodies[1].messages[1].content).toBe(bodies[0].messages[1].content)
-  expect(bodies[1].messages[0].content).toContain('user-only allowlist: ["ask"]')
+  expect(bodies[1].messages.slice(0, 2)).toEqual(bodies[0].messages.slice(0, 2))
+  expect(bodies[1].messages.at(-1)?.content).toContain('user-only allowlist: ["ask"]')
   expect(saved).toHaveLength(1)
   expect(saved[0].requests?.open[0].id).toBe('ask')
 })
@@ -321,7 +321,7 @@ it('repacks short prose when the retained request ledger fills the input envelop
   let repacks = 0, merges = 0
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url, init) => {
     const body = JSON.parse(init.body), input = JSON.parse(body.messages[1].content)
-    expect(new TextEncoder().encode(body.messages[0].content).length + new TextEncoder().encode(body.messages[1].content).length).toBeLessThanOrEqual(5632)
+    expect(body.messages.reduce((total: number, message: { content: string }) => total + new TextEncoder().encode(message.content).length, 0)).toBeLessThanOrEqual(5632)
     const repack = 'historicalHandoff' in input
     if (repack) repacks++
     else {
@@ -338,4 +338,14 @@ it('repacks short prose when the retained request ledger fills the input envelop
   expect(saved.at(-1)?.offset).toBe(13)
   expect(saved.every(c => c.requests?.open.length === 4)).toBe(true)
   expect(previousRequests.open).toHaveLength(4)
+})
+
+it('returns JSON-safe search results for archived messages without clocks', async () => {
+  const legacy = { ...record, source: record.source.map(({ metadata: _metadata, ...message }) => message) }
+  vi.mocked(invoke).mockResolvedValue([JSON.stringify(legacy)])
+  const hits = await searchConversationArchive('thread', 'Maple')
+  expect(hits).toHaveLength(2)
+  // Serialization must not silently discard fields before the SDK can accept it.
+  expect(hits).toEqual(JSON.parse(JSON.stringify(hits)))
+  expect(hits.every(hit => !Object.hasOwn(hit, 'time'))).toBe(true)
 })

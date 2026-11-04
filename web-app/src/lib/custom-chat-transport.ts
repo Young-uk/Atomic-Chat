@@ -1,10 +1,11 @@
+import { summarizeBatchesWithDstar } from './dstar-summary-batches'
 import { beginCompletionReviewProgress } from './inference-progress'
 import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
 import { publishSummaryProgress } from './context-summary-progress'
 import { TEMPORARY_CHAT_ID } from '@/constants/chat'
 import { ContextCompaction, estimateConversationUsage, projectCompactedMessages } from './dstar-context-compaction'
-import { archiveStore, fetchDstarContext, searchConversationArchive, summarizeWithDstar } from './dstar-context-archive'
+import { archiveStore, fetchDstarContext, searchConversationArchive } from './dstar-context-archive'
 import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from './dstar-tools'
 import { useMessages } from '@/hooks/useMessages'
 import { trackThreadMessageWrite, waitForThreadMessageWrites } from './thread-message-sync'
@@ -912,6 +913,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
   }
 
   private async sendWithContextRecovery(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0], recovered: boolean): Promise<ReadableStream<UIMessageChunk>> {
+    // Keep the continuation attached to this logical request until context
+    // recovery succeeds. Preparing an oversized prompt consumes the pending
+    // prefill, but has not yet generated any replacement text.
+    const continuationForRecovery = this.continueFromContent
     this.contextRecovery = undefined
     const state = useModelProvider.getState()
     const provider = state.getProviderByName(state.selectedProvider)
@@ -972,6 +977,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // so the bounded summary request cannot deadlock behind this request.
         await recover()
         options.abortSignal?.throwIfAborted()
+        this.continueFromContent = continuationForRecovery
         return this.sendWithContextRecovery(options, true)
       }
       throw error
@@ -1403,13 +1409,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
         this.contextRecovery = () => coordinator.recover(original, compactionContext,
-          summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow)
+          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow)
         summaryAfterTurn = response => {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
           coordinator.schedule(history, compactionContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            summarizeWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), undefined,
+            summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), undefined,
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)
               const wire = withToolCompletionReviews(withDstarEffortUpdates(

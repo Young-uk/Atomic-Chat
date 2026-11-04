@@ -94,7 +94,7 @@ inventory.
 | --- | --- | --- |
 | Browser | Dedicated Chrome navigation, reads and element actions | No attach-to-existing-browser workflow or Agent browser profile migration |
 | Memory | Legacy explicit memories; source-backed FTS5 notes, profile history, note links, lessons and procedures; immutable per-turn keyword recall for Personal Dstar | Optional local hybrid embeddings, query rewriting, idle link generation and consolidation are connected but default off; voting remains absent |
-| Tasks | One-shot ISO times, intervals, cron/timezone previews and local text results | Webhook triggers, durable tool turns, external delivery and execution while Chat is closed |
+| Tasks | One-shot ISO times, intervals, cron/timezone previews, local text results and opt-in macOS background service | Webhook triggers, durable tool turns and external delivery |
 | Workspace events | Bounded file events and opt-in same-id persistent watch definitions | Event-triggered tool workflows; events themselves are not persisted |
 | Desktop | Window controls; task-result notifications | Source clipboard tools are connected; optional screen control remains disabled until explicitly configured |
 | Files/Git/documents/verification | Ported document extraction and syntax checks; existing Chat commands/scripts, attachments and skills remain available | Source filesystem/Git/GitHub and throwaway-workspace verification tools are connected; detached shell jobs still need authenticated session lifecycle wiring |
@@ -144,3 +144,15 @@ heights and top/bottom boundaries. Without a ref it scrolls the document; with a
 current element ref it scrolls that element's nearest scrollable ancestor.
 References expire after scrolling. Inspect with read or screenshot before the
 next scroll, especially when no movement is reported; do not repeat blindly.
+
+## Optional background service
+
+The application settings can register, start or stop `chat.atomic.personal.worker`
+and choose whether it runs at login. It is off by default and installation does
+not activate it. App and service transports share one worker, scheduler, watch
+registry and persistence owner. Closing the app only keeps tasks alive when the
+service is running; stopping the service leaves an app-connected worker alive.
+Sleep may delay execution. This service does not keep Dstar running or bypass
+native tool approvals. Results remain in the durable delivery outbox until Chat
+reconnects. External channels and unattended tool workflows are not enabled by
+this service.

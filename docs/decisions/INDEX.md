@@ -697,3 +697,11 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Tavily search budgets and rate limiting](tavily-search-budget.md)
 
 - [Dstar tool image context](dstar-tool-image-context.md)
+
+- [Opt-in Personal background worker](2026-11-04-personal-worker-service.md) — Share one scheduler between Chat and an optional login service.
+
+- [2026-11-04 — Keep summary evidence ahead of repair instructions](2026-11-04-summary-evidence-cache.md)
+
+- [Preserve continuation prefill across context recovery](2026-11-04-continuation-context-recovery.md)
+
+- [Accumulate independent summaries and consolidate five](2026-11-04-independent-summary-batches.md)

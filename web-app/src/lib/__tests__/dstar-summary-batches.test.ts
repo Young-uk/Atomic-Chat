@@ -1,0 +1,241 @@
+import { afterEach, expect, it, vi } from 'vitest'
+import type { UIMessage } from 'ai'
+import { summarizeBatchesWithDstar } from '../dstar-summary-batches'
+import { ContextCompaction, type ArchiveRecord, type Summarize } from '../dstar-context-compaction'
+
+const turn = (n: number): UIMessage[] => [
+  { id: `u${n}`, role: 'user', parts: [{ type: 'text', text: `Request ${n}` }] },
+  { id: `a${n}`, role: 'assistant', parts: [{ type: 'text', text: `Result ${n}` }] },
+]
+const settle = async () => { for (let i = 0; i < 120; i++) await Promise.resolve() }
+afterEach(() => vi.unstubAllGlobals())
+
+it('extracts independently, commits each batch and consolidates five without changing raw history', async () => {
+  const saved: ArchiveRecord[] = []
+  const summarize = vi.fn(async (previous, _evidence, _signal, _progress, cp) => {
+    expect(previous).toBe('')
+    const summary = `segment:${cp.requestSources[0].id}`
+    await cp.save({ version: 1, inputKey: summary, offset: 1, completed: 1, summary, requests: { open: [], resolved: [] } })
+    return summary
+  }) as unknown as Summarize
+  const consolidate = vi.fn(async batches => [{ id: 'combined', summary: 'Five chronological segments', sourceEndId: batches[4].sourceEndId }])
+  summarize.batches = { selectCompletePrefix: async () => 2, consolidate }
+  const store = { save: async (r: ArchiveRecord) => { saved.push(structuredClone(r)) }, load: async () => saved.filter(r => r.summary).at(-1) }
+  const c = new ContextCompaction('batch-thread', store)
+  const messages = Array.from({ length: 6 }, (_, n) => turn(n)).flat()
+  const original = structuredClone(messages)
+  c.schedule(messages, 1, 100000, summarize)
+  await settle()
+  expect(c.error).toBeUndefined()
+  expect(consolidate).toHaveBeenCalledTimes(1)
+  expect(consolidate.mock.calls[0][0]).toHaveLength(5)
+  expect(saved.filter(r => r.summary)).toHaveLength(6)
+  expect(saved.at(-1)?.batches).toHaveLength(2)
+  expect(messages).toEqual(original)
+  const restarted = new ContextCompaction('batch-thread', store)
+  await restarted.initialize()
+  const next = turn(9)[0]
+  const view = restarted.apply([...messages, next])
+  expect(view.at(-1)?.id).toBe(next.id)
+  expect(JSON.stringify(view)).toContain('Five chronological segments')
+})
+
+it('does not count existing summaries or provider prompt usage toward the raw-history trigger', async () => {
+  const source = turn(0)
+  const saved: ArchiveRecord = { version: 1, id: 'old', threadId: 'threshold', source, previousSummary: '', summary: 'x'.repeat(100000) }
+  const c = new ContextCompaction('threshold', { save: async () => {}, load: async () => saved })
+  await c.initialize()
+  const summarize = vi.fn() as unknown as Summarize
+  summarize.batches = { selectCompletePrefix: vi.fn(), consolidate: vi.fn() }
+  c.schedule([...source, ...turn(1)], 65536, 65000, summarize)
+  await settle()
+  expect(summarize.batches.selectCompletePrefix).not.toHaveBeenCalled()
+  expect(c.status).toBe('idle')
+  expect(c.apply([...source, ...turn(1)]).at(-1)?.id).toBe('a1')
+})
+
+it('selects complete tool-bearing turns with the full token-counted extraction and repair envelope', async () => {
+  const calls: { messages: { content: string }[]; think: boolean; max_tokens: number }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+    const body = JSON.parse(init.body); calls.push(body)
+    const segment = JSON.parse(body.messages[1].content).segment
+    return { ok: true, json: async () => ({ input_tokens: segment.length <= 3 ? 13312 : 13313, context_length: 16384 }) }
+  }))
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  const messages = [...turn(0), { id: 'tool-result', role: 'assistant', parts: [{ type: 'text', text: 'Tool result and final answer' }] }, ...turn(1)] as UIMessage[]
+  expect(await summarize.batches!.selectCompletePrefix(messages, undefined, new AbortController().signal)).toBe(3)
+  expect(calls.every(c => c.think === false && c.max_tokens === 2048)).toBe(true)
+  expect(calls.some(c => c.messages[2].content.includes('user-message IDs'))).toBe(true)
+})
+
+it('reduces five to four when the actual consolidation envelope exceeds 13312 tokens', async () => {
+  const counts: number[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    const summaries = JSON.parse(body.messages[1].content).summaries
+    if (url.endsWith('summary-token-count')) {
+      counts.push(summaries.length)
+      return { ok: true, json: async () => ({ input_tokens: summaries.length === 5 ? 14000 : 12000, context_length: 16384 }) }
+    }
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'Consolidated four' } }] }) }
+  }))
+  const batches = Array.from({ length: 5 }, (_, n) => ({ id: String(n), summary: `Summary ${n}`, sourceEndId: `a${n}` }))
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  const result = await summarize.batches!.consolidate(batches, undefined, new AbortController().signal)
+  expect(counts.slice(0, 2)).toEqual([5, 4])
+  expect(result).toHaveLength(2)
+  expect(result[0].sourceEndId).toBe('a3')
+  expect(result[1]).toEqual(batches[4])
+  expect(batches).toHaveLength(5)
+})
+
+it('keeps originals and reports an oversized complete turn instead of slicing it', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ input_tokens: 14000, context_length: 16384 }) })))
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  await expect(summarize.batches!.selectCompletePrefix(turn(0), undefined, new AbortController().signal)).rejects.toThrow('No complete conversation turn fits')
+})
+
+it('preserves unfinished work across independent extraction and reuses a completed checkpoint', async () => {
+  let requests = 0
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    expect(body.think).toBe(false)
+    if (url.endsWith('summary-token-count')) return { ok: true, json: async () => ({ input_tokens: 1000, context_length: 16384 }) }
+    requests++
+    expect(JSON.parse(body.messages[1].content)).not.toHaveProperty('previousSummary')
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ summary: 'New segment facts', openRequests: [], resolvedRequests: [] }) } }] }) }
+  }))
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  const ledger = { open: [{ id: 'old-request', request: 'Still unfinished', sourceText: 'Please do this' }], resolved: [] }
+  const save = vi.fn()
+  const messages = turn(1), signal = new AbortController().signal
+  const summary = await summarize('Must not re-summarize this', 'evidence', signal, undefined, { requestSources: messages, previousRequests: ledger, save })
+  expect(save.mock.calls[0][0].requests.open).toEqual(ledger.open)
+  expect(await summarize('Ignored old summary', 'evidence', signal, undefined, { requestSources: messages, previousRequests: ledger, save, resume: save.mock.calls[0][0] })).toBe(summary)
+  expect(requests).toBe(1)
+})
+
+it('does not summarize an unfinished tool call or a leading instruction by itself', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ input_tokens: 1000, context_length: 16384 }) })))
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  const messages: UIMessage[] = [{ id: 's', role: 'system', parts: [{ type: 'text', text: 'Instruction' }] }, turn(0)[0],
+    { id: 'pending', role: 'assistant', parts: [{ type: 'dynamic-tool', toolName: 'search', toolCallId: 'call', state: 'input-available', input: {} }] }]
+  await expect(summarize.batches!.selectCompletePrefix(messages, undefined, new AbortController().signal)).rejects.toThrow('No complete conversation turn fits')
+})
+
+it('resumes completed extraction after a failed five-batch consolidation without generating it again', async () => {
+  const saved: ArchiveRecord[] = []
+  let generated = 0, consolidations = 0
+  const summarize: Summarize = async (_previous, _evidence, _signal, _progress, cp) => {
+    if (cp?.resume?.summary) return cp.resume.summary
+    generated++
+    const summary = `Segment ${generated}`
+    await cp!.save({ version: 1, inputKey: 'test', offset: 1, completed: 1, summary, requests: { open: [], resolved: [] } })
+    return summary
+  }
+  summarize.batches = { selectCompletePrefix: async () => 2, consolidate: async batches => {
+    if (++consolidations === 1) throw new Error('Interrupted consolidation')
+    return [{ id: 'combined', summary: 'All five segments', sourceEndId: batches[4].sourceEndId }]
+  } }
+  const store = { save: async (r: ArchiveRecord) => { saved.push(structuredClone(r)) },
+    load: async () => saved.filter(r => r.summary).at(-1),
+    loadPending: async () => saved.filter(r => !r.summary && r.checkpoint).at(-1) }
+  const messages = Array.from({ length: 5 }, (_, n) => turn(n)).flat()
+  const c = new ContextCompaction('resume', store)
+  c.schedule(messages, 1, 10000, summarize); await settle()
+  expect(c.error).toBe('Interrupted consolidation')
+  expect(generated).toBe(5)
+  expect(saved.at(-1)?.extractedBatches).toHaveLength(5)
+  const restarted = new ContextCompaction('resume', store)
+  await restarted.initialize()
+  restarted.schedule(messages, 1, 10000, summarize); await settle()
+  expect(restarted.error).toBeUndefined()
+  expect(generated).toBe(5)
+  expect(saved.at(-1)?.batches).toHaveLength(1)
+  expect(saved.at(-1)?.summary).toContain('All five segments')
+})
+
+it('reduces oversized tool evidence without slicing the user turn or mutating originals', async () => {
+  let reductions = 0
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    const payload = JSON.parse(body.messages[1].content)
+    if (url.endsWith('summary-token-count')) return { ok: true, json: async () => ({
+      input_tokens: body.messages[1].content.length > 3500 ? 14000 : 2000, context_length: 16384,
+    }) }
+    if ('excerpt' in payload) {
+      reductions++
+      return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'Verified source https://example.com, result uncertain.' } }] }) }
+    }
+    expect(payload.segment[0].parts[0].text).toBe('Request 0')
+    expect(payload.segment[1].parts.at(-1).text).toBe('Result 0')
+    expect(payload.segment[1].parts[0].output).toContain('archivedOriginal')
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ summary: 'Verified source, unfinished work retained.', openRequests: [], resolvedRequests: [] }) } }] }) }
+  }))
+  const messages = turn(0)
+  messages[1].parts.unshift({ type: 'dynamic-tool', toolName: 'search', toolCallId: 'large', state: 'output-available', input: {}, output: 'long result '.repeat(900) })
+  const original = structuredClone(messages)
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  const signal = new AbortController().signal
+  expect(await summarize.batches!.selectCompletePrefix(messages, undefined, signal)).toBe(2)
+  const count = reductions
+  expect(count).toBeGreaterThan(1)
+  const saved: unknown[] = []
+  expect(await summarize('', 'evidence', signal, undefined, { requestSources: messages, save: async cp => { saved.push(cp) } })).toContain('Verified source')
+  expect(reductions).toBe(count)
+  expect(saved).toHaveLength(1)
+  expect(messages).toEqual(original)
+})
+
+it('does not extract or commit when tool evidence reduction is incomplete', async () => {
+  let extractions = 0
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (url.endsWith('summary-token-count')) return { ok: true, json: async () => ({
+      input_tokens: body.messages[1].content.length > 3500 ? 14000 : 2000, context_length: 16384,
+    }) }
+    extractions++
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'length', message: { content: 'Incomplete evidence' } }] }) }
+  }))
+  const messages = turn(0)
+  messages[1].parts.unshift({ type: 'dynamic-tool', toolName: 'search', toolCallId: 'large', state: 'output-available', input: {}, output: 'evidence '.repeat(900) })
+  const original = structuredClone(messages)
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  await expect(summarize.batches!.selectCompletePrefix(messages, undefined, new AbortController().signal)).rejects.toThrow('Tool evidence summary did not complete')
+  expect(extractions).toBe(1)
+  expect(messages).toEqual(original)
+})
+
+
+it('retains existing work unchanged when a segment echoes an earlier request source', async () => {
+  let calls = 0
+  vi.stubGlobal('fetch', vi.fn(async (url) => {
+    if (String(url).endsWith('summary-token-count')) return { ok: true, json: async () => ({ input_tokens: 1000, context_length: 16384 }) }
+    calls++
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+      summary: 'New segment', openRequests: [{ id: 'old', request: 'Changed echo' }, { id: 'done', request: 'Reopen echo' }, { id: 'u1', request: 'New work' }], resolvedRequests: [],
+    }) } }] }) }
+  }))
+  const ledger = { open: [{ id: 'old', request: 'Original work', sourceText: 'Original user text' }], resolved: [{ id: 'done', evidenceId: 'a0', quote: 'Completed' }] }
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
+  let saved: any
+  await summarize('', 'evidence', new AbortController().signal, undefined, { requestSources: turn(1), previousRequests: ledger, save: async cp => { saved = cp } })
+  expect(calls).toBe(1)
+  expect(saved.requests.open).toEqual([...ledger.open, { id: 'u1', request: 'New work', sourceText: 'Request 1' }])
+  expect(saved.requests.resolved).toEqual(ledger.resolved)
+})
+
+
+it('restores a matching saved batch when a longer legacy archive is incompatible', async () => {
+  const source = turn(0)
+  const valid: ArchiveRecord = { version: 1, id: 'valid', threadId: 'restore', source, previousSummary: '', summary: 'Matching saved work', batches: [{ id: 'b', summary: 'Matching saved work', sourceEndId: 'a0' }] }
+  const stale: ArchiveRecord = { ...valid, id: 'stale', source: [...turn(99), ...turn(1)], summary: 'Stale legacy work' }
+  const c = new ContextCompaction('restore', { save: async () => {}, load: async () => stale, loadCandidates: async () => [stale, valid] })
+  await c.initialize()
+  const messages = [...source, ...turn(1), turn(2)[0]]
+  const view = c.apply(messages)
+  expect(JSON.stringify(view)).toContain('Matching saved work')
+  expect(JSON.stringify(view)).not.toContain('Stale legacy work')
+  expect(view.some(m => m.id === 'u0')).toBe(false)
+  expect(view.at(-1)?.id).toBe('u2')
+})

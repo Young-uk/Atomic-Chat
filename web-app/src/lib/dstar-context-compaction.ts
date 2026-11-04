@@ -18,6 +18,8 @@ export type SummaryCheckpoint = {
   requests?: RequestLedger
 }
 
+export type SummaryBatch = { id: string; summary: string; sourceEndId: string }
+
 export type ArchiveRecord = {
   version: 1
   id: string
@@ -31,12 +33,18 @@ export type ArchiveRecord = {
   summary?: string
   requests?: RequestLedger
   checkpoint?: SummaryCheckpoint
+  /** Independent chronological summaries; old archives migrate as one batch. */
+  batches?: SummaryBatch[]
+  /** Preserve pre-consolidation summaries alongside the original source. */
+  extractedBatches?: SummaryBatch[]
+  batchStart?: number
 }
 
 export interface ContextArchiveStore {
   /** Must persist and verify the exact source before resolving. */
   save(record: ArchiveRecord): Promise<void>
   load(threadId: string): Promise<ArchiveRecord | undefined>
+  loadCandidates?(threadId: string): Promise<ArchiveRecord[]>
   loadPending?(threadId: string): Promise<ArchiveRecord | undefined>
 }
 
@@ -125,7 +133,12 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
   })
 }
 
-export type Summarize = (previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>
+export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
+  batches?: {
+    selectCompletePrefix(messages: UIMessage[], requests: RequestLedger | undefined, signal: AbortSignal): Promise<number>
+    consolidate(batches: SummaryBatch[], requests: RequestLedger | undefined, signal: AbortSignal): Promise<SummaryBatch[]>
+  }
+}
 
 /** A per-thread state machine. No history/UI deletion and no inference awaited
  * on the foreground path. A completed snapshot is applied only by the next
@@ -135,6 +148,7 @@ export class ContextCompaction {
   private resumable?: ArchiveRecord
   private pending?: { record: ArchiveRecord; sourceKey: string; controller: AbortController }
   private ready?: { record: ArchiveRecord; sourceKey: string }
+  private archiveCandidates: ArchiveRecord[] = []
   private initialization?: Promise<void>
   private pendingCompletion?: Promise<void>
   error?: string
@@ -144,7 +158,11 @@ export class ContextCompaction {
 
   initialize(): Promise<void> {
     if (!this.initialization) {
-      this.initialization = this.store.load(this.threadId).then(record => {
+      this.initialization = (this.store.loadCandidates
+        ? this.store.loadCandidates(this.threadId)
+        : this.store.load(this.threadId).then(record => record ? [record] : [])).then(records => {
+        this.archiveCandidates = records
+        const record = records[0]
         if (record?.summary?.trim()) this.active = record
         return this.store.loadPending?.(this.threadId).then(pending => { this.resumable = pending })
       }).catch(error => { this.initialization = undefined; throw error })
@@ -169,6 +187,9 @@ export class ContextCompaction {
       this.pending.controller.abort()
     }
     if (this.active && !this.matches(this.active, messages)) this.active = undefined
+    // A longer legacy snapshot can be incompatible after a transcript edit.
+    // Do not let it hide a shorter independently saved, matching checkpoint.
+    if (!this.active) this.active = this.archiveCandidates.find(record => this.matches(record, messages))
     if (!this.active) return messages
     const archived = this.active
     const retained = messages.slice(archived.source.length)
@@ -209,6 +230,10 @@ export class ContextCompaction {
   /** Snapshot synchronously, then archive and summarize off the request path.
    * Appended messages are not in the snapshot and can never be discarded. */
   schedule(messages: UIMessage[], context: number, promptTokens: number, summarize: Summarize, recoveryBoundary?: number, retainedPromptCost?: (retained: UIMessage[]) => number): void {
+    if (summarize.batches) {
+      this.scheduleBatches(messages, context, summarize, recoveryBoundary)
+      return
+    }
     const ledgerMigration = this.active && !this.active.requests && this.matches(this.active, messages)
     if (!Number.isFinite(context) || context <= 0 || (!ledgerMigration && promptTokens < context * COMPACTION_TRIGGER) || this.pending || this.ready) return
     let boundary = recoveryBoundary ?? (ledgerMigration ? this.active!.source.length : compactionBoundary(messages, context))
@@ -282,6 +307,93 @@ export class ContextCompaction {
           this.pending = undefined
           if (controller.signal.aborted) this.onProgress?.(undefined)
         }
+      }
+    })()
+  }
+
+  /** New raw-history policy. Summary text is excluded only from the 60%
+   * trigger; foreground preflight still counts every actual prompt component.
+   * Each independently committed batch is durable before consolidation starts. */
+  private scheduleBatches(messages: UIMessage[], context: number, summarize: Summarize, recoveryBoundary?: number): void {
+    if (!Number.isFinite(context) || context <= 0 || this.pending || this.ready) return
+    const initial = this.active && this.matches(this.active, messages) ? this.active : undefined
+    const archived = initial?.source.length ?? 0
+    const emergency = recoveryBoundary !== undefined
+    if (!emergency && cost(messages.slice(archived)) <= context * 0.6) return
+    const snapshot = structuredClone(messages)
+    // A foreground tool continuation is never eligible. Scheduling normally
+    // happens after its final answer; emergency recovery excludes newest user.
+    const newest = snapshot.findLastIndex(m => m.role === 'user')
+    const limit = emergency ? newest : snapshot.at(-1)?.role === 'assistant' ? snapshot.length : newest
+    if (limit <= archived) return
+    const controller = new AbortController()
+    const planningRecord: ArchiveRecord = { version: 1, id: crypto.randomUUID(), threadId: this.threadId, source: snapshot.slice(0, limit), previousSummary: initial?.summary ?? '' }
+    const task = { record: planningRecord, sourceKey: fingerprint(planningRecord.source), controller }
+    this.pending = task
+    this.error = undefined
+    const progress: SummaryProgress = { phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
+    const report = (phase: SummaryProgress['phase']) => {
+      if (this.pending !== task || controller.signal.aborted) return
+      progress.phase = phase; this.onProgress?.({ ...progress })
+    }
+    report('queued')
+    this.pendingCompletion = (async () => {
+      let current = initial
+      try {
+        do {
+          controller.signal.throwIfAborted()
+          const start = current?.source.length ?? 0
+          if (start >= limit) break
+          const count = await summarize.batches!.selectCompletePrefix(snapshot.slice(start, limit), current?.requests, controller.signal)
+          const end = start + count
+          const batches = current?.batches ?? (current?.summary ? [{ id: current.id, summary: current.summary, sourceEndId: current.source.at(-1)!.id }] : [])
+          const pending = this.resumable
+          const resume = pending?.batchStart === start && pending.source.length === end && this.matches(pending, snapshot) && pending.previousSummary === (current?.summary ?? '') ? pending : undefined
+          const record: ArchiveRecord = resume ?? { version: 1, id: crypto.randomUUID(), threadId: this.threadId,
+            source: snapshot.slice(0, end), previousSummary: current?.summary ?? '', batches, batchStart: start, createdAt: Date.now(),
+            summaryAfterMessageId: snapshot.at(limit - 1)?.id,
+            summaryFallbackAfterMessageId: snapshot.slice(0, limit).findLast(m => m.role === 'user')?.id }
+          task.record = record
+          // Match only this archived prefix; messages appended during extraction
+          // remain raw and never get incorporated into the committed source.
+          task.sourceKey = fingerprint(record.source)
+          await this.store.save(record)
+          progress.archived = true; report('summarizing')
+          const segment = record.source.slice(start)
+          const summary = (await summarize('', summaryEvidence(segment), controller.signal,
+            (_n, paused) => report(paused ? 'paused' : 'summarizing'), {
+              resume: record.checkpoint, requestSources: segment, previousRequests: current?.requests,
+              save: async checkpoint => {
+                await this.store.save({ ...record, checkpoint }); record.checkpoint = checkpoint; this.resumable = record
+              },
+            })).trim()
+          if (!summary) throw new Error('Conversation summary was empty')
+          controller.signal.throwIfAborted()
+          record.requests = record.checkpoint?.requests ?? current?.requests
+          record.batches = [...batches, { id: record.id, summary, sourceEndId: record.source.at(-1)!.id }]
+          if (record.batches.length >= 5) {
+            // Persist extraction separately so a failed consolidation resumes
+            // from this checkpoint rather than generating the segment again.
+            record.extractedBatches = record.batches
+            await this.store.save(record)
+            record.batches = await summarize.batches!.consolidate(record.batches, record.requests, controller.signal)
+          }
+          record.summary = record.batches.map((batch, index) => `Historical segment ${index + 1}:\n${batch.summary}`).join('\n\n')
+          report('saving'); await this.store.save(record)
+          current = record
+          this.ready = { record, sourceKey: fingerprint(record.source) }
+          progress.completed++; report('summarizing')
+          // One bounded extraction normally takes raw history below 60%. If
+          // the backlog is larger, keep processing the frozen snapshot only.
+        } while (current && current.source.length < limit && (emergency
+          ? current.source.length < recoveryBoundary!
+          : cost(snapshot.slice(current.source.length)) > context * 0.6))
+        progress.finishedAt = Date.now(); report('ready')
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error)
+        progress.finishedAt = Date.now(); report('failed')
+      } finally {
+        if (this.pending === task) { this.pending = undefined; if (controller.signal.aborted) this.onProgress?.(undefined) }
       }
     })()
   }
