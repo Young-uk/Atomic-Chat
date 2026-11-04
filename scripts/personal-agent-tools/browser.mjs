@@ -19,6 +19,33 @@ export async function publicUrl(value, lookup = async host => [...await resolve4
   return url.href
 }
 
+// Runs in the page. Explicit targets avoid wheel events scrolling whichever
+// unrelated element happens to be under the last mouse position.
+export function scrollState(input, options = null) {
+  const element = options ? input : null
+  const { direction } = options || input
+  const root = document.scrollingElement || document.documentElement
+  let target = element || root
+  while (target !== root && target) {
+    const overflow = getComputedStyle(target).overflowY
+    if (target.scrollHeight > target.clientHeight && /auto|scroll|overlay/.test(overflow)) break
+    target = target.parentElement || root
+  }
+  const before = target.scrollTop
+  target.scrollBy({ top: direction === 'up' ? -600 : 600, behavior: 'instant' })
+  const after = target.scrollTop
+  const viewportHeight = target.clientHeight
+  const contentHeight = target.scrollHeight
+  const moved = Math.abs(after - before) > 0.5
+  return {
+    target: target === root ? 'document' : 'element',
+    positionBefore: before, positionAfter: after, delta: after - before,
+    viewportHeight, contentHeight, moved,
+    atTop: after <= 1, atBottom: after + viewportHeight >= contentHeight - 1,
+    next: moved ? 'Inspect the page with read or screenshot before scrolling again.' : 'No movement. Do not repeat the same scroll. Inspect with read or screenshot; the boundary may be reached or another scroll target may be needed.',
+  }
+}
+
 export class PersonalBrowser {
   constructor(directory, chromiumLoader = async () => (await import('playwright-core')).chromium) {
     this.directory = directory
@@ -86,9 +113,14 @@ export class PersonalBrowser {
       return { untrustedPageContent: true, tab: args.tab, url: page.url(), title: await page.title(), text: (await page.locator('body').innerText()).slice(0, 16000), elements }
     }
     if (action === 'scroll') {
+      if (!['up', 'down'].includes(args.direction)) throw new Error('Scroll direction must be up or down')
+      const element = args.ref ? this.refs.get(args.tab)?.get(args.ref) : null
+      if (args.ref && !element) throw new Error('Read this page first, then use a current element reference')
+      const result = element
+        ? await element.evaluate(scrollState, { direction: args.direction })
+        : await page.evaluate(scrollState, { direction: args.direction })
       await this.invalidate(args.tab)
-      await page.mouse.wheel(0, args.direction === 'up' ? -600 : 600)
-      return { tab: args.tab, next: 'Read the page again.' }
+      return { tab: args.tab, ref: args.ref ?? null, ...result }
     }
     if (action === 'screenshot') return { image: await page.screenshot({ type: 'jpeg', quality: 65, fullPage: false, mask: [page.locator('input[type=password],input[autocomplete*=cc-],input[autocomplete=one-time-code]')] }) }
     const element = this.refs.get(args.tab)?.get(args.ref)

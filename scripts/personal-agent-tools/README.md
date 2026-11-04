@@ -138,3 +138,9 @@ are off. No remote account or model is activated by installation.
 `personal_semantic_memory` offers status/search and an explicit 100-note indexing
 pass. Ranking falls back to keywords on embedding failure. Consolidation retains
 archived source notes; recent Chat context and conversation archives are unchanged.
+
+Browser scrolling reports before/after positions, actual delta, viewport/content
+heights and top/bottom boundaries. Without a ref it scrolls the document; with a
+current element ref it scrolls that element's nearest scrollable ancestor.
+References expire after scrolling. Inspect with read or screenshot before the
+next scroll, especially when no movement is reported; do not repeat blindly.

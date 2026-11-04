@@ -36,3 +36,33 @@ test('navigation invalidates earlier references', async () => {
   await browser.call('navigate', { tab: '1', url: 'https://93.184.216.34/new' })
   await assert.rejects(browser.call('click', { tab: '1', ref: 'e1' }))
 })
+
+test('scroll reports movement, clamped boundaries and a nested target', async () => {
+  const { scrollState } = await import('./browser.mjs')
+  const previousDocument = globalThis.document
+  const previousStyle = globalThis.getComputedStyle
+  const root = { scrollTop: 0, clientHeight: 800, scrollHeight: 1800 }
+  root.scrollBy = ({ top }) => { root.scrollTop = Math.max(0, Math.min(1000, root.scrollTop + top)) }
+  const nested = { scrollTop: 0, clientHeight: 200, scrollHeight: 500, parentElement: root }
+  nested.scrollBy = ({ top }) => { nested.scrollTop = Math.max(0, Math.min(300, nested.scrollTop + top)) }
+  globalThis.document = { scrollingElement: root }
+  globalThis.getComputedStyle = () => ({ overflowY: 'auto' })
+  try {
+    assert.equal(scrollState({ direction: 'down' }).delta, 600)
+    const bottom = scrollState({ direction: 'down' })
+    assert.equal(bottom.delta, 400)
+    assert.equal(bottom.atBottom, true)
+    const stopped = scrollState({ direction: 'down' })
+    assert.equal(stopped.moved, false)
+    assert.match(stopped.next, /Do not repeat/)
+    assert.equal(scrollState({ direction: 'up' }).delta, -600)
+    const inner = scrollState({ parentElement: nested }, { direction: 'down' })
+    assert.equal(inner.target, 'element')
+    assert.equal(inner.delta, 300)
+    assert.equal(inner.atBottom, true)
+    assert.equal(root.scrollTop, 400)
+  } finally {
+    globalThis.document = previousDocument
+    globalThis.getComputedStyle = previousStyle
+  }
+})
