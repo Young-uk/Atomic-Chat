@@ -222,5 +222,40 @@ test('scheduled inference explicitly receives the schedule local time zone', asy
     await tools.infer('Synthetic reminder', new AbortController().signal, { schedule: { tz: 'Asia/Seoul' } })
     assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
     assert.match(sent.messages[0].content, /Use the local execution time/)
+    await tools.infer('Synthetic one-shot reminder', new AbortController().signal, { timezone: 'Asia/Seoul' })
+    assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
   } finally { globalThis.fetch = originalFetch; await tools.shutdown() }
+})
+
+test('one-shot reminders retain an explicit time zone and occurrence timestamps', async () => {
+  let now = Date.parse('2026-11-05T00:00:00Z')
+  const store = await fresh(() => now)
+  const task = await store.task('create', { prompt: 'Synthetic reminder', at: '2026-11-05T09:01:00+09:00', timezone: 'Asia/Seoul' })
+  now += 60000
+  const claimed = await store.claimDue()
+  assert.equal(claimed.timezone, 'Asia/Seoul')
+  assert.equal(claimed.startedAt, now)
+  now += 5000
+  await store.finish(task.id, 'Synthetic result')
+  const run = (await store.task('get', { id: task.id })).runs[0]
+  assert.equal(run.startedAt, Date.parse('2026-11-05T00:01:00Z'))
+  assert.equal(run.dueAt, run.startedAt)
+  assert.equal(run.finishedAt - run.startedAt, 5000)
+  await assert.rejects(store.task('create', { prompt: 'Invalid zone', at: '2026-11-05T09:10:00+09:00', timezone: 'Invalid/Zone' }))
+})
+
+test('scheduled timeout records its cause rather than an opaque aborted error', async () => {
+  let now = Date.parse('2026-11-05T00:00:00Z')
+  const store = await fresh(() => now)
+  const task = await store.task('create', { prompt: 'Synthetic reminder', at: '2026-11-05T00:01:00Z' })
+  now += 60000
+  const tools = new PersonalTools({ directory: store.directory, store, taskTimeoutMs: 5,
+    infer: async (_prompt, signal) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('This operation was aborted')), { once: true })) })
+  try {
+    await tools.tick()
+    const result = await store.task('get', { id: task.id })
+    assert.match(result.runs[0].error, /Scheduled generation timed out/)
+    assert.equal(result.runs[0].delivery.status, 'skipped')
+    assert.equal(result.status, 'failed')
+  } finally { await tools.shutdown() }
 })

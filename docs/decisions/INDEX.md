@@ -707,3 +707,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Accumulate independent summaries and consolidate five](2026-11-04-independent-summary-batches.md)
 
 - [Native approval handoff and tokenizer-based background trigger](2026-11-04-native-approval-and-token-trigger.md)
+
+- [Account for prompt pressure and retain image tool frontiers](2026-11-05-prompt-pressure-and-image-tool-cache.md)
+
+- [Scheduled occurrence timing and interruption diagnostics](2026-11-05-scheduled-occurrence-diagnostics.md)

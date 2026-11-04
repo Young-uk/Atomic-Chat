@@ -1454,7 +1454,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
                 withDstarToolUpdates(retainedView, history)))
               // Reserve room for historical memory and unresolved work. These
               // are added after the background summary finishes.
-              return estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(wire)), tools: activeTools }) + 2048
+              return estimatePromptTokensHeuristic({ system: systemWithSkills,
+                messages: convertToModelMessages(chatExecOutputsForModel(wire)), tools: activeTools }) +
+                Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
             })
         }
       }

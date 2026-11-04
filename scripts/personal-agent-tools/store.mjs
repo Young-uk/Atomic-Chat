@@ -75,7 +75,7 @@ export class PersonalStore {
       }
       if (action === 'create') {
         if (args.cron && (args.at || args.intervalSeconds)) throw new Error('Choose either cron or at/interval, not both')
-        if (args.timezone && !args.cron) throw new Error('timezone is only used with cron')
+        if (args.timezone) new Intl.DateTimeFormat('en', { timeZone: args.timezone }).format(0)
         const schedule = args.cron ? { kind: 'cron', expression: args.cron, ...(args.timezone ? { tz: args.timezone } : {}) } : null
         const intervalSeconds = args.intervalSeconds ?? null
         if (intervalSeconds !== null && (!Number.isSafeInteger(intervalSeconds) || intervalSeconds < 60)) throw new Error('Repeat interval must be at least 60 seconds')
@@ -93,6 +93,7 @@ export class PersonalStore {
         if (!Number.isFinite(dueAt)) throw invalid('invalid_start_time', 'The schedule does not resolve to a valid timestamp.')
         if (dueAt <= now) throw invalid('start_time_passed', 'The requested start time has passed. No task was created. Do not retry this timestamp or invent a replacement; ask for a new start time. For an authorized relative repeat, omit at and use intervalSeconds.', { requestedTime: new Date(dueAt).toISOString(), overdueSeconds: Math.ceil((now - dueAt) / 1000) })
         const task = { id: randomUUID(), prompt: bounded(args.prompt, 12000, 'prompt'), dueAt, intervalSeconds, ...(schedule ? { schedule } : {}), status: 'scheduled', createdAt: this.now(), runs: [] }
+        if (args.timezone) task.timezone = args.timezone
         if (args.originThreadId) task.originThreadId = bounded(args.originThreadId, 200, 'originThreadId')
         if (args.assistantInstructions) task.assistantInstructions = bounded(args.assistantInstructions, 100000, 'assistantInstructions')
         if (state.tasks.length >= 1000) throw new Error('Scheduled-task capacity reached')
@@ -147,6 +148,7 @@ export class PersonalStore {
       const task = state.tasks.find(item => item.status === 'scheduled' && item.dueAt <= this.now())
       if (!task) return null
       task.status = 'running'
+      task.startedAt = this.now()
       return structuredClone(task)
     })
   }
@@ -155,7 +157,7 @@ export class PersonalStore {
     return this.transact(state => {
       const task = state.tasks.find(item => item.id === id)
       if (!task) return
-      const run = { id: randomUUID(), finishedAt: this.now(), result, error,
+      const run = { id: randomUUID(), dueAt: task.dueAt, startedAt: task.startedAt ?? null, finishedAt: this.now(), result, error,
         delivery: error ? { status: 'skipped', attempts: 0, reason: 'generation_failed' } : { status: 'pending', attempts: 0 } }
       task.runs.push(run)
       task.runs = task.runs.slice(-20)

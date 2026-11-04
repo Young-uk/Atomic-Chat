@@ -37,7 +37,7 @@ export const TOOLS = [
 ]
 
 export class PersonalTools {
-  constructor({ directory, endpoint, model, browser, store, infer, notify } = {}) {
+  constructor({ directory, endpoint, model, browser, store, infer, notify, taskTimeoutMs = 180000 } = {}) {
     if (!directory) throw new Error('A persistent personal tools directory is required')
     const url = new URL(endpoint ?? 'http://127.0.0.1:8010/v1')
     if (!['127.0.0.1','localhost','[::1]'].includes(url.hostname) || url.protocol !== 'http:') throw new Error('Scheduled inference requires a loopback HTTP endpoint')
@@ -49,7 +49,7 @@ export class PersonalTools {
     this.infer = infer ?? (async (prompt, signal, task = {}) => {
       const catalogResponse = await fetch(`${this.endpoint}/models`, { signal })
       if (!catalogResponse.ok || !(await catalogResponse.json()).atomic_summary_slot) throw new Error('Scheduled inference requires Dstar background-slot support')
-      const timeZone = task.schedule?.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+      const timeZone = task.timezone ?? task.schedule?.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone
       const executedAt = new Date()
       const localTime = new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'full', timeStyle: 'long', hourCycle: 'h23' }).format(executedAt)
       const instructions = (task.assistantInstructions ?? '').replace(/\{\{\s*current_date\s*\}\}/gi, executedAt.toLocaleDateString('en-US', { timeZone, dateStyle: 'long' }))
@@ -90,6 +90,7 @@ export class PersonalTools {
       this.memory.configureMaintenance(settings.memoryMaintenance.enabled)
       this.notes.queryRewriteEnabled = settings.memoryMaintenance.queryRewrite
     }).catch(error => { this.featureError = error.message })
+    this.taskTimeoutMs = taskTimeoutMs
     this.controllers = new Map()
     this.queue = Promise.resolve()
   }
@@ -158,7 +159,7 @@ export class PersonalTools {
     if (name === 'personal_memory') return this.store.memory(args.action, args)
     if (name === 'personal_tasks') {
       const result = await this.store.task(args.action, args)
-      if (args.action === 'cancel') this.controllers.get(args.id)?.abort()
+      if (args.action === 'cancel') this.controllers.get(args.id)?.abort(new Error('Scheduled task cancelled by the user. No notification was delivered.'))
       return result
     }
     // Keep browser/window operations sequential so stale reads cannot race a
@@ -197,21 +198,23 @@ export class PersonalTools {
       if (!task) return
       const controller = new AbortController()
       this.controllers.set(task.id, controller)
-      const timeout = setTimeout(() => controller.abort(), 180000)
+      const timeout = setTimeout(() => controller.abort(new Error('Scheduled generation timed out while waiting for the local model; sleep or background-slot contention may have delayed it. No notification was delivered.')), this.taskTimeoutMs)
       try {
         const result = await this.infer(task.prompt, controller.signal, task)
         await this.store.finish(task.id, result)
         // The app consumes the persisted outbox using its own notification
         // identity/permission and stores a delivery receipt or visible error.
       } catch (error) {
-        await this.store.finish(task.id, null, String(error.message))
+        const cause = controller.signal.aborted && controller.signal.reason instanceof Error
+          ? controller.signal.reason.message : error.message
+        await this.store.finish(task.id, null, String(cause))
       }
       finally { clearTimeout(timeout); this.controllers.delete(task.id) }
     } finally { this.ticking = false }
   }
   async shutdown() {
     this.closed = true
-    for (const controller of this.controllers.values()) controller.abort()
+    for (const controller of this.controllers.values()) controller.abort(new Error('Scheduled generation interrupted because the Personal worker is shutting down. No notification was delivered.'))
     this.watch.shutdown()
     await this.memory.close()
     this.notes.close()
@@ -251,7 +254,7 @@ export async function serve({ directory = process.env.ATOMIC_PERSONAL_TOOLS_DIR,
   })
   await new Promise(resolve => lines.once('close', resolve))
   clearInterval(timer)
-  if (!sharedTools) { tools.closed = true; for (const controller of tools.controllers.values()) controller.abort() }
+  if (!sharedTools) { tools.closed = true; for (const controller of tools.controllers.values()) controller.abort(new Error('Scheduled generation interrupted because the Personal worker is shutting down. No notification was delivered.')) }
   await Promise.allSettled([...requests])
   if (!sharedTools) await tools.shutdown()
 }

@@ -8,6 +8,7 @@ import { messageClockLabel } from './messageClock'
 export const COMPACTION_TRIGGER = 0.7
 export const RECENT_CONTEXT_FRACTION = 0.2
 export const COMPACTION_TARGET = 0.5
+export const PROMPT_PRESSURE_TRIGGER = 0.85
 
 export type SummaryCheckpoint = {
   version: 1
@@ -336,13 +337,24 @@ export class ContextCompaction {
 
   /** New raw-history policy. Summary text is excluded only from the 60%
    * trigger; foreground preflight still counts every actual prompt component.
+   * A separate 85% envelope-pressure trigger includes fixed overhead and memory.
    * Each independently committed batch is durable before consolidation starts. */
   private scheduleBatches(messages: UIMessage[], context: number, summarize: Summarize, recoveryBoundary?: number, promptCost?: (view: UIMessage[]) => number): void {
-    if (!Number.isFinite(context) || context <= 0 || this.pending || this.ready) return
+    if (!Number.isFinite(context) || context <= 0 || this.pending || this.ready) {
+      console.info('[context-compaction] scheduling deferred', {
+        threadId: this.threadId, context, pending: !!this.pending, ready: !!this.ready,
+      })
+      return
+    }
     const initial = this.active && this.matches(this.active, messages) ? this.active : undefined
     const archived = initial?.source.length ?? 0
     const emergency = recoveryBoundary !== undefined
-    if (!emergency && !initial?.extractedBatches && !summarize.batches?.countRawTokens && cost(messages.slice(archived)) <= context * 0.6) return
+    // Raw dialogue remains the normal trigger. Fixed instructions, tool
+    // schemas and historical memory can fill the foreground window first;
+    // count that complete envelope independently instead of waiting for overflow.
+    const pressureCost = (record?: ArchiveRecord) => promptCost?.(record ? this.preview(record, messages) : messages) ?? 0
+    const pressure = pressureCost(initial) >= context * PROMPT_PRESSURE_TRIGGER
+    if (!emergency && !pressure && !initial?.extractedBatches && !summarize.batches?.countRawTokens && cost(messages.slice(archived)) <= context * 0.6) return
     const snapshot = structuredClone(messages)
     // A foreground tool continuation is never eligible. Scheduling normally
     // happens after its final answer; emergency recovery excludes newest user.
@@ -372,9 +384,11 @@ export class ContextCompaction {
           console.info('[context-compaction] raw-history trigger', {
             threadId: this.threadId, rawTokens, threshold: context * 0.6,
             archivedMessages: archived, rawMessages: snapshot.length - archived,
-            tokenizer: !!summarize.batches?.countRawTokens, scheduled: rawTokens > context * 0.6,
+            tokenizer: !!summarize.batches?.countRawTokens,
+            promptTokens: pressureCost(initial), pressureThreshold: context * PROMPT_PRESSURE_TRIGGER,
+            scheduled: rawTokens > context * 0.6 || pressure,
           })
-          if (rawTokens <= context * 0.6) {
+          if (rawTokens <= context * 0.6 && !pressure) {
             this.onProgress?.(undefined)
             return
           }
@@ -442,10 +456,15 @@ export class ContextCompaction {
           // the backlog is larger, keep processing the frozen snapshot only.
         } while (current && current.source.length < limit && (emergency
           ? promptCost ? promptCost(this.preview(current, messages)) > context : current.source.length < recoveryBoundary!
-          : await rawCost(snapshot.slice(current.source.length)) > context * 0.6))
+          : await rawCost(snapshot.slice(current.source.length)) > context * 0.6 || pressureCost(current) >= context * PROMPT_PRESSURE_TRIGGER))
+        console.info('[context-compaction] batches completed', {
+          threadId: this.threadId, archivedMessages: current?.source.length ?? archived,
+          completed: progress.completed, promptTokens: pressureCost(current),
+        })
         progress.finishedAt = Date.now(); report('ready')
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error)
+        console.warn('[context-compaction] batches failed', { threadId: this.threadId, completed: progress.completed, error: this.error })
         progress.finishedAt = Date.now(); report('failed')
       } finally {
         if (this.pending === task) { this.pending = undefined; this.notifyBatch(); if (controller.signal.aborted) this.onProgress?.(undefined) }

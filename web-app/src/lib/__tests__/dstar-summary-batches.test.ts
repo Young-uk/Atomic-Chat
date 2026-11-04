@@ -331,3 +331,30 @@ it('uses tokenizer counts when raw dialogue exceeds sixty percent despite a smal
   expect(c.error).toBeUndefined()
   expect(JSON.stringify(c.previewReady([...turn(1), ...turn(2)]))).toContain('handoff')
 })
+
+it('starts a bounded batch under foreground pressure even below the raw-history threshold', async () => {
+  const summarize = vi.fn(async () => 'handoff') as unknown as Summarize
+  const countRawTokens = vi.fn().mockResolvedValue(100)
+  summarize.batches = { countRawTokens, selectCompletePrefix: vi.fn(async () => 2), consolidate: vi.fn() }
+  const c = new ContextCompaction('prompt-pressure', { save: async () => {}, load: async () => undefined })
+  const messages = [...turn(1), ...turn(2)]
+  const original = structuredClone(messages)
+  const promptCost = vi.fn((view: UIMessage[]) => view.some(m => m.id.startsWith('atomic-context-')) ? 40000 : 62000)
+  c.schedule(messages, 65536, 62000, summarize, undefined, promptCost)
+  await settle()
+  expect(summarize).toHaveBeenCalledTimes(1)
+  expect(countRawTokens).toHaveBeenCalled()
+  expect(messages).toEqual(original)
+  expect(c.error).toBeUndefined()
+  expect(JSON.stringify(c.previewReady([...messages, ...turn(3)]))).toContain('handoff')
+})
+
+it('leaves low raw history alone when the complete foreground envelope has room', async () => {
+  const summarize = vi.fn() as unknown as Summarize
+  summarize.batches = { countRawTokens: vi.fn(async () => 100), selectCompletePrefix: vi.fn(), consolidate: vi.fn() }
+  const c = new ContextCompaction('no-pressure', { save: async () => {}, load: async () => undefined })
+  c.schedule(turn(1), 65536, 65000, summarize, undefined, () => 40000)
+  await settle()
+  expect(summarize).not.toHaveBeenCalled()
+  expect(c.status).toBe('idle')
+})
