@@ -74,6 +74,7 @@ const HeaderContextSize = memo(function HeaderContextSize() {
       )}
     >
       <ContextSizeControl
+        threadId={currentThreadId ?? undefined}
         messages={messages || []}
         uploadedFiles={uploadedFiles}
       />

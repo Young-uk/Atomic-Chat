@@ -161,6 +161,40 @@ export async function executeChatToolCalls({
         }
       }
 
+      // Source-native guards return a proposal rather than opening UI. Keep
+      // ownership here: inspect the immutable proposal in approve(), await a
+      // fresh human decision, then confirm without relying on another model turn.
+      const reviewed = new Set<string>()
+      while (toolCall.toolName === 'personal_native' && !result.error) {
+        const content = result.content
+        let proposal: { status?: string; pendingId?: string } | undefined
+        if (Array.isArray(content)) {
+          for (const part of content) {
+            if (part?.type !== 'text' || typeof part.text !== 'string') continue
+            try {
+              const parsed = JSON.parse(part.text)
+              if (parsed?.status === 'approval_required') proposal = parsed
+            } catch { /* Ordinary tool text is not an approval proposal. */ }
+          }
+        }
+        if (!proposal) break
+        const pendingId = proposal.pendingId
+        if (!pendingId || reviewed.has(pendingId) || reviewed.size >= 8) {
+          result = { error: 'Native approval did not produce a fresh bounded proposal' }
+          break
+        }
+        reviewed.add(pendingId)
+        const confirmation = { action: 'confirm', pendingId }
+        const allowed = await approve(toolCall.toolName, threadId, confirmation)
+        if (signal.aborted) break
+        if (!allowed) { result = { error: 'Native action denied or approval proposal expired' }; break }
+        if (isAvailable && !(await isAvailable(toolCall.toolName))) {
+          result = { error: 'Tool is no longer available for this chat' }; break
+        }
+        result = await callMcpTool({ toolName: toolCall.toolName, arguments: confirmation, threadId })
+      }
+      if (signal.aborted) break
+
       if (result.error) {
         addToolOutput({
           state: 'output-error',

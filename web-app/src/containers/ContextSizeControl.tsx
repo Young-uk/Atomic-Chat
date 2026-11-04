@@ -18,8 +18,10 @@ import { useDstarContextLimit } from '@/hooks/useDstarContextLimit'
 import { useTokensCount } from '@/hooks/useTokensCount'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { cn } from '@/lib/utils'
+import { useInferenceProgress } from '@/lib/inference-progress'
 
 interface ContextSizeControlProps {
+  threadId?: string
   messages?: ThreadMessage[]
   additionalTokens?: number
   uploadedFiles?: Array<{
@@ -53,7 +55,7 @@ function getLatestTokenUsage(
 
     const metadata = message.metadata as Record<string, unknown> | undefined
     if (modelId && (metadata?.modelId !== modelId || !metadata?.usage)) continue
-    const usage = metadata?.usage as
+    const usage = (metadata?.contextUsage ?? metadata?.usage) as
       | {
           inputTokens?: unknown
           outputTokens?: unknown
@@ -89,6 +91,7 @@ function getLatestTokenUsage(
 }
 
 export function ContextSizeControl({
+  threadId,
   messages = [],
   additionalTokens = 0,
   uploadedFiles = [],
@@ -100,12 +103,22 @@ export function ContextSizeControl({
     messages,
     dstar.isDstar ? dstar.modelId : undefined
   )
+  const currentUsage = useInferenceProgress(state => threadId ? state.contextByThread?.[threadId] : undefined)
+  const progress = useInferenceProgress(state => threadId ? state.byThread[threadId] : undefined)
+  const activeTokens = progress?.total === undefined ? undefined : progress.total + (progress.cache ?? 0)
+  const current = currentUsage && (!currentUsage.modelId || currentUsage.modelId === dstar.modelId)
+    ? currentUsage : undefined
+  const currentTokens = dstar.isDstar ? activeTokens ?? current?.tokens : undefined
+  const currentEstimate = activeTokens === undefined && current?.estimated
+  const usageLabel = currentTokens !== undefined
+    ? currentEstimate ? 'Estimated next request' : current?.outputTokens && activeTokens === undefined ? 'Latest request including output' : 'Current request input'
+    : 'Last reported request'
   const measuredTokens = tokenData.tokenCount + additionalTokens
   const totalTokens =
     !dstar.isDstar && measuredTokens > 0
       ? measuredTokens
-      : latestUsage.totalTokens + additionalTokens
-  const completionTokens = Math.min(totalTokens, latestUsage.outputTokens)
+      : (currentTokens ?? latestUsage.totalTokens) + additionalTokens
+  const completionTokens = currentTokens !== undefined ? Math.min(totalTokens, activeTokens === undefined ? current?.outputTokens ?? 0 : 0) : Math.min(totalTokens, latestUsage.outputTokens)
   const promptTokens = Math.max(0, totalTokens - completionTokens)
   const percentage = maxTokens ? (totalTokens / maxTokens) * 100 : 0
   const isOverLimit = percentage > 100
@@ -146,7 +159,7 @@ export function ContextSizeControl({
           size="sm"
           className="h-7 gap-2 px-2 font-mono text-xs"
           aria-label={`Context usage: ${percentageLabel}`}
-          title={`${percentageLabel} · ${dstar.isDstar && totalTokens === 0 ? '—' : formatTokenCount(totalTokens)} / ${maxTokens ? formatTokenCount(maxTokens) : '—'} tokens${dstar.isDstar ? ' · Last reported request' : ''}`}
+          title={`${percentageLabel} · ${dstar.isDstar && totalTokens === 0 ? '—' : formatTokenCount(totalTokens)} / ${maxTokens ? formatTokenCount(maxTokens) : '—'} tokens${dstar.isDstar ? ` · ${usageLabel}` : ''}`}
         >
           <span className={cn(isOverLimit && 'text-destructive')}>
             {percentageLabel}
@@ -233,9 +246,11 @@ export function ContextSizeControl({
         </div>
         {dstar.isDstar && (
           <p className="text-sm text-muted-foreground">
-            Last reported request, including its output. Updates after a
-            response completes; pending input and the next summary may change
-            usage.
+            {currentTokens !== undefined
+              ? currentEstimate
+                ? 'Estimated next request. Reflects the compacted conversation; the server will confirm the actual input size.'
+                : current?.outputTokens && activeTokens === undefined ? 'Latest request including output, reported by the server.' : 'Current request input reported by the server, including cached tokens.'
+              : 'Last reported request, including its output. Updates after a response completes; pending input and the next summary may change usage.'}
           </p>
         )}
         {available && contextSetting && (

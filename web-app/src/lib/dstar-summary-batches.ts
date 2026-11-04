@@ -1,4 +1,5 @@
 import type { UIMessage } from 'ai'
+import { prepareToolResultImagesForModel } from './toolResultImages'
 import { fetchDstarContext } from './dstar-context-archive'
 import { summaryEvidence, type Summarize, type SummaryBatch } from './dstar-context-compaction'
 import { mergeRequestLedger, requestSources, InvalidRequestSourceError, type RequestLedger } from './dstar-open-requests'
@@ -132,6 +133,22 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
     throw new Error('Summary request sources remained invalid')
   }
   summarize.batches = {
+    ...(options.tokenCounting ? { countRawTokens: async (messages: UIMessage[], signal: AbortSignal) => {
+      if (!messages.length) return 0
+      // Count the raw model-visible dialogue without image bytes or the
+      // growing handoff. JSON retains tool calls/results and reasoning text.
+      const content = JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false })
+        .map(({ role, parts }) => ({ role, parts })))
+      const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
+        method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, atomic_summary: true, think: false, messages: [{ role: 'user', content }] }),
+      })
+      if (!response.ok) throw new Error(`Raw dialogue token counting failed (${response.status})`)
+      const count = await response.json()
+      if (!Number.isSafeInteger(count.input_tokens) || count.input_tokens < 0) throw new Error('Invalid raw dialogue token count')
+      return count.input_tokens
+    } } : {}),
     async selectCompletePrefix(messages, ledger, signal) {
       // Each candidate ends before the next user request or after the final
       // assistant answer, retaining every tool call/result in its user turn.

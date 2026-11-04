@@ -10,7 +10,8 @@ export type ShowApprovalModalOptions = {
    * composer select outranks the global switch there.
    */
   bypassGlobalAutoApprove?: boolean
-  /** A stored native proposal is one action, never a remembered tool grant. */
+  /** A stored native proposal is one action, never a remembered tool grant.
+   * An explicit exact-action persistentTarget is the only scoped exception. */
   requireFreshApproval?: boolean
   persistentTarget?: ToolPermissionTarget
 }
@@ -24,6 +25,7 @@ export type ToolApprovalModalProps = {
   onAlwaysAllow?: () => void
   requireFreshApproval?: boolean
   permissionSource?: string
+  storedActionPermission?: boolean
 }
 
 type ToolApprovalState = {
@@ -106,9 +108,10 @@ export const useToolApproval = create<ToolApprovalState>()(
           }
 
           // A stored native proposal still needs its own decision. A tool grant
-          // never substitutes for reviewing that immutable pending action.
+          // never substitutes for reviewing that immutable pending action. Only an
+          // explicitly remembered exact-action target can reuse its decision.
           const target = options?.persistentTarget
-          if (!options?.requireFreshApproval && target && state.persistentTools[target.key]?.enabled) {
+          if (target && (!options?.requireFreshApproval || target.storedAction) && state.persistentTools[target.key]?.enabled) {
             resolve(true)
             return
           }
@@ -127,7 +130,8 @@ export const useToolApproval = create<ToolApprovalState>()(
               toolParameters,
               requireFreshApproval: options?.requireFreshApproval,
               permissionSource: target?.source,
-              ...(!options?.requireFreshApproval && target ? { onAlwaysAllow: () => {
+              storedActionPermission: target?.storedAction,
+              ...(target && (!options?.requireFreshApproval || target.storedAction) ? { onAlwaysAllow: () => {
                 get().setPersistentTool(target, true)
                 get().closeModal()
                 resolve(true)

@@ -106,7 +106,7 @@ export default function ToolApproval() {
     return null
   }
 
-  const { toolName, threadId, toolParameters, onApprove, onDeny, onAlwaysAllow, requireFreshApproval, permissionSource } = modalProps
+  const { toolName, threadId, toolParameters, onApprove, onDeny, onAlwaysAllow, requireFreshApproval, permissionSource, storedActionPermission } = modalProps
   const exec = describeExecCall(toolName, toolParameters, t)
   const native = describeNativeCall(toolName, toolParameters, t)
   const secure = exec ? secureEnvironmentForThread(threadId) : undefined
@@ -169,9 +169,9 @@ export default function ToolApproval() {
             {native.target && <p className="whitespace-pre-wrap break-all">
               <span className="font-medium">{t('tools:toolApproval.native.target')}: </span>{native.target}
             </p>}
-            <p className="text-muted-foreground">{t(requireFreshApproval ? 'tools:toolApproval.freshOnly' : 'tools:toolApproval.permissionScope')}</p>
+            <p className="text-muted-foreground">{t(storedActionPermission ? 'tools:toolApproval.storedActionScope' : requireFreshApproval ? 'tools:toolApproval.freshOnly' : 'tools:toolApproval.permissionScope')}</p>
             <p className="text-xs text-muted-foreground mt-1">
-              {t(requireFreshApproval ? 'tools:toolApproval.freshOnly' : 'tools:toolApproval.native.threadScope')}
+              {t(storedActionPermission ? 'tools:toolApproval.storedActionManage' : requireFreshApproval ? 'tools:toolApproval.freshOnly' : 'tools:toolApproval.native.threadScope')}
             </p>
           </div>
         )}
@@ -232,7 +232,7 @@ export default function ToolApproval() {
             >
               {t('tools:toolApproval.alwaysAllow')}
             </Button>}
-            {onAlwaysAllow && !requireFreshApproval && <Button size="sm" variant="outline" onClick={onAlwaysAllow}>
+            {onAlwaysAllow && (!requireFreshApproval || storedActionPermission) && <Button size="sm" variant="outline" onClick={onAlwaysAllow}>
               {t('tools:toolApproval.allowAlways')}
             </Button>}
           </div>

@@ -347,3 +347,20 @@ describe('hasUnresolvedToolCallParts', () => {
     ).toBe(false)
   })
 })
+
+
+describe('source-native approval handoff', () => {
+  it.each([true, false])('requires fresh host approval before confirming: %s', async allowed => {
+    const options = baseOptions()
+    options.approve.mockResolvedValueOnce(true).mockResolvedValueOnce(allowed)
+    const callMcpTool = vi.fn().mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify({ status: 'approval_required', pendingId: 'p1' }) }] })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'executed' }] })
+    const addToolOutput = vi.fn()
+    await executeChatToolCalls({ ...options, toolCalls: [{ toolCallId: 'native', toolName: 'personal_native', input: { action: 'run', name: 'os.shell.run' } }],
+      mcpToolNames: new Set(['personal_native']), signal: new AbortController().signal, callMcpTool, addToolOutput })
+    expect(options.approve).toHaveBeenLastCalledWith('personal_native', 'thread-1', { action: 'confirm', pendingId: 'p1' })
+    expect(callMcpTool).toHaveBeenCalledTimes(allowed ? 2 : 1)
+    if (allowed) expect(callMcpTool).toHaveBeenLastCalledWith({ toolName: 'personal_native', arguments: { action: 'confirm', pendingId: 'p1' }, threadId: 'thread-1' })
+    else expect(addToolOutput.mock.calls[0][0].state).toBe('output-error')
+  })
+})

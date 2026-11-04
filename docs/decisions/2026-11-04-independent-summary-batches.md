@@ -78,3 +78,53 @@ post-tool request 5 reused 39,902 tokens and finished normally. The first
 post-restart request had no matching live/disk prefix and read 38,825 tokens in
 217 seconds; this test does not establish restart KV reuse for that changed
 input. Chat/model files and real KV caches were preserved. No push was made.
+
+## Foreground recovery checkpoints
+
+Publish each verified extraction before the five-batch consolidation begins.
+A context-full foreground request checks the projected model input after every
+published batch, including historical memory, fixed instructions, tool schemas
+and the output reserve. Resume immediately when the existing foreground
+estimator says it fits; do not await the entire frozen backlog or consolidation.
+This is an estimate, not a new server-token-count guarantee. Extraction retains
+its separate server-counted input budget. If an existing normal background job
+stops before sufficient space is available, continue from its durable boundary.
+Consolidation produces a new record rather than mutating a summary adopted by an
+in-flight request. Original messages and the newest turn remain intact.
+
+Validation: `make verify` passed after the final changes (7,913 web tests,
+525 extension tests, 1,329 native main tests and all configured plugin suites).
+The focused transport/batch suite passed 81 tests. Regression coverage includes
+first-fitting-batch release, insufficient-space waiting, adopting the fifth
+segment before consolidation, immutable in-flight memory, resuming a bounded
+background job and preserving interrupted assistant prefill. Earlier verification
+attempts exposed a test-only output-reserve assumption (2,048 instead of the
+existing 1,024 default); the final clean full run passed after correcting it.
+Installed-app recovery and live-model latency for this change remain unverified.
+
+## Live context accounting and image restart recovery
+
+The header uses foreground SSE counts (uncached suffix plus cached prefix), then
+completed server usage. A completed summary publishes a clearly labeled next-turn
+estimate from an isolated compacted view, without adopting it into an in-flight
+request. Foreground progress wins while that request is active. No background
+summary-slot token count is presented as conversation usage.
+
+Dstar disk recovery for image requests is limited to text before the first image.
+The loaded tokens must exactly match the request prefix and end before the image
+wrapper. Image-conditioned snapshots remain excluded from disk writes; changed
+pixels are always evaluated again after a restart. Canonical replay differences
+fall back to prefill without deleting a valid cache. This does not restore KV
+rows after an image: that requires an authenticated image-identity disk format.
+
+Multi-step billing totals remain unchanged. Persisted `contextUsage` records the
+last step separately so reopening a thread does not sum tool-step prompts into
+one context window. This reporting metadata is excluded from summary source
+fingerprints. Estimate failures cannot fail a saved summary.
+
+Validation: the complete `make verify` gate passed, with 7,915 web tests and all
+native suites. The final focused checks passed 103 tests, including restored
+last-step usage, summary estimates, cached-prefix accounting and stale observers.
+The context control passed 16 installed-Chrome layout checks. Dstar server tests
+and its release server build passed; live restart/vision restore validation and
+installation of these changes are still pending.

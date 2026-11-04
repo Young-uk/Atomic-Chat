@@ -1,5 +1,6 @@
+import { convertThreadMessagesToUIMessages } from './messages'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
-import { beginCompletionReviewProgress } from './inference-progress'
+import { beginCompletionReviewProgress, publishContextUsage } from './inference-progress'
 import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
 import { publishSummaryProgress } from './context-summary-progress'
@@ -1337,9 +1338,30 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           compactionContext = runtime.data?.find((m: { id: string }) => m.id === modelId)?.context_length ?? 0
           compaction = threadCompactions.get(compactionThread)
           if (!compaction) {
-            compaction = new ContextCompaction(compactionThread, archiveStore(), progress => publishSummaryProgress(compactionThread, progress))
+            compaction = new ContextCompaction(compactionThread, archiveStore())
             threadCompactions.set(compactionThread, compaction)
           }
+          compaction.setProgressListener(progress => {
+            publishSummaryProgress(compactionThread, progress)
+            if (progress?.phase !== 'ready') return
+            try {
+              // Read the latest persisted history: a summary may finish while
+              // another turn is running. Preview never changes its envelope.
+              const history = convertThreadMessagesToUIMessages(useMessages.getState().getMessages(compactionThread))
+              const coordinator = threadCompactions.get(compactionThread)
+              if (coordinator) {
+                const view = coordinator.previewReady(history)
+                const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(view, history)))
+                publishContextUsage(compactionThread, { modelId, estimated: true,
+                  tokens: estimatePromptTokensHeuristic({ system: systemWithSkills,
+                    messages: convertToModelMessages(chatExecOutputsForModel(wire)),
+                    tools: activeTools }) })
+              }
+            } catch {
+              // A display estimate must never fail a durably saved summary.
+              console.warn('[context-usage] summary estimate unavailable')
+            }
+          })
           await compaction.initialize()
           if (shouldEnableTools) activeTools = { ...activeTools,
             search_conversation_archive: {
@@ -1409,7 +1431,17 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
         this.contextRecovery = () => coordinator.recover(original, compactionContext,
-          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow)
+          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow, view => {
+            const retained = projectCompactedMessages(view, preparedMessages)
+            const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(retained, original)))
+            // Use the foreground envelope, including fixed instructions/tools
+            // and output reserve; raw-history savings alone cannot prove fit.
+            const projected = convertToModelMessages(chatExecOutputsForModel(wire))
+            if (continueContent) projected.push({ role: 'assistant', content: continueContent })
+            return estimatePromptTokensHeuristic({ system: systemWithSkills,
+              messages: projected, tools: activeTools }) +
+              Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
+          })
         summaryAfterTurn = response => {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
@@ -1534,6 +1566,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       }
     }
 
+    if (appendOnlyDstar) publishContextUsage(compactionThread, { modelId, estimated: true,
+      tokens: estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
+        messages: finalModelMessages, tools: activeTools }) })
+
     const requestModel = this.model
     const result = streamText({
       model: requestModel,
@@ -1556,6 +1592,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       },
     })
 
+    let latestStepUsage: LanguageModelUsage | undefined
     let tokensPerSecond = 0
     let draftTokensTotal: number | null = null
     let draftTokensAccepted: number | null = null
@@ -1612,6 +1649,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         }
 
         if (part.type === 'finish-step') {
+          latestStepUsage = part.usage
           const pm = part.providerMetadata?.providerMetadata as
             | Record<string, unknown>
             | undefined
@@ -1648,6 +1686,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             durationSec: streamStartTime === undefined ? 0 : durationSec,
           })
 
+          // Billing totals can sum several tool steps. Context occupancy is
+          // the final request's prompt/output, never the sum of those requests.
+          const contextUsage = latestStepUsage ?? usage
+          if (appendOnlyDstar && contextUsage) publishContextUsage(compactionThread, {
+            modelId, estimated: false, outputTokens: contextUsage.outputTokens ?? 0,
+            tokens: contextUsage.totalTokens ?? (contextUsage.inputTokens ?? 0) + (contextUsage.outputTokens ?? 0),
+          })
           finalResponseMetadata = {
             finishReason: finishPart.finishReason,
             activityDurationMs: Math.max(0, Date.now() - requestStartedAt),
@@ -1662,6 +1707,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             // recorded anywhere, so a finished turn could not be attributed.
             modelId,
             providerId,
+            ...(appendOnlyDstar && contextUsage ? { contextUsage } : {}),
             usage: {
               inputTokens: inputTokens,
               outputTokens: outputTokens,

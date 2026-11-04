@@ -48,7 +48,7 @@ export interface ContextArchiveStore {
   loadPending?(threadId: string): Promise<ArchiveRecord | undefined>
 }
 
-const volatileMetadata = new Set(['activityDurationMs', 'finishReason', 'modelId', 'providerId', 'tokenSpeed', 'ttftMs', 'usage'])
+const volatileMetadata = new Set(['activityDurationMs', 'finishReason', 'modelId', 'providerId', 'tokenSpeed', 'ttftMs', 'usage', 'contextUsage'])
 function stable(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString()
   if (Array.isArray(value)) return value.map(stable)
@@ -135,6 +135,7 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
 
 export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
   batches?: {
+    countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
     selectCompletePrefix(messages: UIMessage[], requests: RequestLedger | undefined, signal: AbortSignal): Promise<number>
     consolidate(batches: SummaryBatch[], requests: RequestLedger | undefined, signal: AbortSignal): Promise<SummaryBatch[]>
   }
@@ -151,10 +152,32 @@ export class ContextCompaction {
   private archiveCandidates: ArchiveRecord[] = []
   private initialization?: Promise<void>
   private pendingCompletion?: Promise<void>
+  private batchWaiters = new Set<() => void>()
+
+  private notifyBatch(): void {
+    for (const notify of this.batchWaiters) notify()
+  }
+
+  private preview(record: ArchiveRecord, messages: UIMessage[]): UIMessage[] {
+    // Preview on an isolated coordinator so an in-flight tool request keeps
+    // its original active summary and placement anchors.
+    const preview = new ContextCompaction(this.threadId, { load: async () => undefined, save: async () => {} })
+    preview.active = structuredClone(record)
+    return preview.apply(messages)
+  }
+  /** Inspect the next-turn view without adopting it into an in-flight request. */
+  previewReady(messages: UIMessage[]): UIMessage[] {
+    const record = this.ready?.record ?? this.active
+    return record && this.matches(record, messages) ? this.preview(record, messages) : messages
+  }
   error?: string
 
   constructor(private threadId: string, private store: ContextArchiveStore,
     private onProgress?: (progress?: SummaryProgress) => void) {}
+
+  setProgressListener(listener: (progress?: SummaryProgress) => void): void {
+    this.onProgress = listener
+  }
 
   initialize(): Promise<void> {
     if (!this.initialization) {
@@ -231,7 +254,7 @@ export class ContextCompaction {
    * Appended messages are not in the snapshot and can never be discarded. */
   schedule(messages: UIMessage[], context: number, promptTokens: number, summarize: Summarize, recoveryBoundary?: number, retainedPromptCost?: (retained: UIMessage[]) => number): void {
     if (summarize.batches) {
-      this.scheduleBatches(messages, context, summarize, recoveryBoundary)
+      this.scheduleBatches(messages, context, summarize, recoveryBoundary, retainedPromptCost)
       return
     }
     const ledgerMigration = this.active && !this.active.requests && this.matches(this.active, messages)
@@ -314,18 +337,18 @@ export class ContextCompaction {
   /** New raw-history policy. Summary text is excluded only from the 60%
    * trigger; foreground preflight still counts every actual prompt component.
    * Each independently committed batch is durable before consolidation starts. */
-  private scheduleBatches(messages: UIMessage[], context: number, summarize: Summarize, recoveryBoundary?: number): void {
+  private scheduleBatches(messages: UIMessage[], context: number, summarize: Summarize, recoveryBoundary?: number, promptCost?: (view: UIMessage[]) => number): void {
     if (!Number.isFinite(context) || context <= 0 || this.pending || this.ready) return
     const initial = this.active && this.matches(this.active, messages) ? this.active : undefined
     const archived = initial?.source.length ?? 0
     const emergency = recoveryBoundary !== undefined
-    if (!emergency && cost(messages.slice(archived)) <= context * 0.6) return
+    if (!emergency && !initial?.extractedBatches && !summarize.batches?.countRawTokens && cost(messages.slice(archived)) <= context * 0.6) return
     const snapshot = structuredClone(messages)
     // A foreground tool continuation is never eligible. Scheduling normally
     // happens after its final answer; emergency recovery excludes newest user.
     const newest = snapshot.findLastIndex(m => m.role === 'user')
     const limit = emergency ? newest : snapshot.at(-1)?.role === 'assistant' ? snapshot.length : newest
-    if (limit <= archived) return
+    if (limit <= archived && !initial?.extractedBatches) return
     const controller = new AbortController()
     const planningRecord: ArchiveRecord = { version: 1, id: crypto.randomUUID(), threadId: this.threadId, source: snapshot.slice(0, limit), previousSummary: initial?.summary ?? '' }
     const task = { record: planningRecord, sourceKey: fingerprint(planningRecord.source), controller }
@@ -339,7 +362,31 @@ export class ContextCompaction {
     report('queued')
     this.pendingCompletion = (async () => {
       let current = initial
+      const rawCost = (view: UIMessage[]) => summarize.batches?.countRawTokens
+        ? summarize.batches.countRawTokens(view, controller.signal) : Promise.resolve(cost(view))
       try {
+        // Count only unarchived dialogue, using the running tokenizer when
+        // available. Fixed instructions and historical summaries do not trigger extraction.
+        if (!emergency && !initial?.extractedBatches) {
+          const rawTokens = await rawCost(snapshot.slice(archived))
+          console.info('[context-compaction] raw-history trigger', {
+            threadId: this.threadId, rawTokens, threshold: context * 0.6,
+            archivedMessages: archived, rawMessages: snapshot.length - archived,
+            tokenizer: !!summarize.batches?.countRawTokens, scheduled: rawTokens > context * 0.6,
+          })
+          if (rawTokens <= context * 0.6) {
+            this.onProgress?.(undefined)
+            return
+          }
+        }
+        if (current?.extractedBatches && (current.batches?.length ?? 0) >= 5) {
+          const batches = await summarize.batches!.consolidate(current.extractedBatches, current.requests, controller.signal)
+          current = { ...current, batches, extractedBatches: undefined,
+            summary: batches.map((batch, index) => `Historical segment ${index + 1}:\n${batch.summary}`).join('\n\n') }
+          await this.store.save(current)
+          this.ready = { record: current, sourceKey: fingerprint(current.source) }
+          this.notifyBatch()
+        }
         do {
           controller.signal.throwIfAborted()
           const start = current?.source.length ?? 0
@@ -371,38 +418,52 @@ export class ContextCompaction {
           controller.signal.throwIfAborted()
           record.requests = record.checkpoint?.requests ?? current?.requests
           record.batches = [...batches, { id: record.id, summary, sourceEndId: record.source.at(-1)!.id }]
-          if (record.batches.length >= 5) {
-            // Persist extraction separately so a failed consolidation resumes
-            // from this checkpoint rather than generating the segment again.
-            record.extractedBatches = record.batches
-            await this.store.save(record)
-            record.batches = await summarize.batches!.consolidate(record.batches, record.requests, controller.signal)
-          }
+          // Persist extraction separately so a failed consolidation resumes
+          // from this checkpoint rather than generating the segment again.
+          if (record.batches.length >= 5) record.extractedBatches = record.batches
           record.summary = record.batches.map((batch, index) => `Historical segment ${index + 1}:\n${batch.summary}`).join('\n\n')
           report('saving'); await this.store.save(record)
           current = record
           this.ready = { record, sourceKey: fingerprint(record.source) }
-          progress.completed++; report('summarizing')
+          progress.completed++; this.notifyBatch(); report('summarizing')
+          if (record.batches.length >= 5) {
+            // Publish the durable extraction before expensive consolidation.
+            // Never mutate a record already adopted by a foreground request.
+            const consolidated = { ...record, extractedBatches: undefined,
+              batches: await summarize.batches!.consolidate(record.batches, record.requests, controller.signal) }
+            consolidated.summary = consolidated.batches.map((batch, index) => `Historical segment ${index + 1}:\n${batch.summary}`).join('\n\n')
+            controller.signal.throwIfAborted()
+            await this.store.save(consolidated)
+            current = consolidated
+            this.ready = { record: consolidated, sourceKey: fingerprint(consolidated.source) }
+            this.notifyBatch()
+          }
           // One bounded extraction normally takes raw history below 60%. If
           // the backlog is larger, keep processing the frozen snapshot only.
         } while (current && current.source.length < limit && (emergency
-          ? current.source.length < recoveryBoundary!
-          : cost(snapshot.slice(current.source.length)) > context * 0.6))
+          ? promptCost ? promptCost(this.preview(current, messages)) > context : current.source.length < recoveryBoundary!
+          : await rawCost(snapshot.slice(current.source.length)) > context * 0.6))
         progress.finishedAt = Date.now(); report('ready')
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error)
         progress.finishedAt = Date.now(); report('failed')
       } finally {
-        if (this.pending === task) { this.pending = undefined; if (controller.signal.aborted) this.onProgress?.(undefined) }
+        if (this.pending === task) { this.pending = undefined; this.notifyBatch(); if (controller.signal.aborted) this.onProgress?.(undefined) }
       }
     })()
   }
 
   /** Emergency recovery is awaited only when the foreground prompt cannot fit.
    * Reuse an existing job, preserve raw archives, and never discard the newest turn. */
-  async recover(messages: UIMessage[], context: number, summarize: Summarize, signal?: AbortSignal, overflowTokens = 0): Promise<void> {
+  async recover(messages: UIMessage[], context: number, summarize: Summarize, signal?: AbortSignal, overflowTokens = 0, promptCost?: (view: UIMessage[]) => number): Promise<void> {
     signal?.throwIfAborted()
-    if (this.ready) return
+    const fits = () => !!this.ready && this.matches(this.ready.record, messages) &&
+      (!promptCost || promptCost(this.preview(this.ready.record, messages)) <= context)
+    if (fits()) return
+    if (this.ready && !this.pending && this.matches(this.ready.record, messages)) {
+      this.active = this.ready.record
+      this.ready = undefined
+    }
     // The regular recent-history target ignores fixed prompt overhead (system
     // instructions and historical/current tool schemas). Once that overhead
     // fills the window, reusing the same archive boundary cannot free space.
@@ -416,18 +477,30 @@ export class ContextCompaction {
       if (next < 0 || next > newest) break
       boundary = next
     }
-    this.schedule(messages, context, context, summarize, boundary)
+    this.schedule(messages, context, context, summarize, boundary, promptCost)
     const completion = this.pending ? this.pendingCompletion : undefined
     if (!completion) throw new Error('No earlier complete turns are available to summarize')
     await new Promise<void>((resolve, reject) => {
+      const cleanup = () => { signal?.removeEventListener('abort', aborted); this.batchWaiters.delete(changed) }
       const aborted = () => { cleanup(); reject(signal?.reason) }
-      const cleanup = () => signal?.removeEventListener('abort', aborted)
+      const changed = () => {
+        if (fits()) { cleanup(); resolve() }
+        else if (!this.pending) {
+          cleanup()
+          // A normal background snapshot may stop at 60% before the full
+          // foreground envelope fits. Continue from its durable boundary.
+          if (this.ready && !this.error) resolve()
+          else reject(new Error(this.error ?? 'No verified recovery summary fits the context window'))
+        }
+      }
       signal?.addEventListener('abort', aborted, { once: true })
-      completion.then(() => { cleanup(); resolve() }, error => { cleanup(); reject(error) })
+      this.batchWaiters.add(changed)
+      completion.then(changed, error => { cleanup(); reject(error) })
       if (signal?.aborted) aborted()
+      else changed()
     })
     signal?.throwIfAborted()
-    if (!this.ready) throw new Error(this.error ?? 'No verified recovery summary is ready')
+    if (!fits()) return this.recover(messages, context, summarize, signal, overflowTokens, promptCost)
   }
 
   cancel(): void {

@@ -31,7 +31,7 @@ export default function ToolPermissionsDialog({ open, onOpenChange }: { open: bo
     return () => { active = false }
   }, [open, tools, servers])
   const rows = new Map(targets.map(target => [target.key, { target, available: true }]))
-  for (const target of Object.values(persistentTools)) if (!rows.has(target.key)) rows.set(target.key, { target, available: false })
+  for (const target of Object.values(persistentTools)) if (!rows.has(target.key)) rows.set(target.key, { target, available: !!target.storedAction && targets.some(provider => provider.key === target.providerKey) })
   const needle = query.trim().toLocaleLowerCase()
   const visible = [...rows.values()].filter(({ target }) => `${target.toolName} ${target.source}`.toLocaleLowerCase().includes(needle))
     .sort((a, b) => a.target.source.localeCompare(b.target.source) || a.target.toolName.localeCompare(b.target.toolName))
@@ -50,6 +50,7 @@ export default function ToolPermissionsDialog({ open, onOpenChange }: { open: bo
           <div className="min-w-0 flex-1 break-words">
             <p className="text-sm font-medium break-all">{target.toolName}</p>
             <p className="text-xs text-muted-foreground break-all">{target.source}</p>
+            {target.storedAction && <p className="text-xs text-muted-foreground break-all">{t('tools:toolApproval.storedActionScope')} · {target.key.slice(0, 12)}</p>}
             {!available && <p className="text-xs text-muted-foreground">{t('tools:permissions.unavailable')}</p>}
           </div>
           {available ? <Switch aria-label={t('tools:permissions.allow', { tool: target.toolName, source: target.source })}

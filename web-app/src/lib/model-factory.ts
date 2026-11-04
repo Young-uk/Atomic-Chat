@@ -490,8 +490,8 @@ export function createLocalStreamingFetch(
     if (!isLocal || !isPost) return normalFetch(input, init)
 
     let bodyStr = (init?.body as string) ?? ''
+    let merged: Record<string, unknown> | undefined
     if (bodyStr) {
-      let merged: Record<string, unknown> | undefined
       try {
         merged = { ...JSON.parse(bodyStr), ...parameters }
       } catch {
@@ -514,7 +514,7 @@ export function createLocalStreamingFetch(
     }
 
     const progress = progressThreadId
-      ? observeInferenceProgress(progressThreadId)
+      ? observeInferenceProgress(progressThreadId, typeof merged?.model === 'string' ? merged.model : undefined)
       : undefined
     const chunks: string[] = []
     let done = false

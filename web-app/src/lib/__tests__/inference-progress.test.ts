@@ -1,6 +1,6 @@
 import { beforeEach, expect, it } from 'vitest'
 import { observeInferenceProgress, useInferenceProgress } from '../inference-progress'
-beforeEach(() => useInferenceProgress.setState({ byThread: {} }))
+beforeEach(() => useInferenceProgress.setState({ byThread: {}, contextByThread: {} }))
 it('accepts fragmented progress followed by reasoning and text', () => {
   const observer = observeInferenceProgress('a')
   observer.push(': atomic-prog')
@@ -32,4 +32,14 @@ it('isolates threads and rejects updates and completion from an older request', 
   expect(useInferenceProgress.getState().byThread.a).toBeUndefined()
   expect(useInferenceProgress.getState().byThread.b).toBeDefined()
   other.finish()
+})
+
+it('keeps full prompt usage after reading and ignores stale observers', () => {
+  const old = observeInferenceProgress('a')
+  const current = observeInferenceProgress('a')
+  current.push(': atomic-progress {"processed":20,"total":80,"cache":32000}\n')
+  expect(useInferenceProgress.getState().contextByThread?.a.tokens).toBe(32080)
+  old.push(': atomic-progress {"processed":1,"total":2,"cache":0}\n')
+  current.finish()
+  expect(useInferenceProgress.getState().contextByThread?.a.tokens).toBe(32080)
 })

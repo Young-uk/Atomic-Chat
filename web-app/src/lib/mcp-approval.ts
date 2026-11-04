@@ -3,7 +3,7 @@ import { useAgentMode } from '@/hooks/useAgentMode'
 import { useToolApproval } from '@/hooks/useToolApproval'
 import { offeredChatExecToolNames } from '@/lib/chat-exec-tools'
 import { getServiceHub } from '@/hooks/useServiceHub'
-import { toolPermissionTarget } from './tool-permission-targets'
+import { toolPermissionTarget, storedActionPermissionTarget, type ToolPermissionTarget } from './tool-permission-targets'
 
 /**
  * Whether MCP/RAG tool calls on this thread run without asking. One rule for
@@ -44,6 +44,7 @@ export async function approveChatToolCall(
   // Confirmation previews come from the worker's immutable pending proposal,
   // never from model-authored text that could misdescribe the native action.
   const nativeConfirmation = toolName === 'personal_native' && (input as { action?: string }).action === 'confirm'
+  let storedTarget: ToolPermissionTarget | undefined
   if (nativeConfirmation) {
     try {
       const pendingId = (input as { pendingId?: unknown }).pendingId
@@ -58,6 +59,7 @@ export async function approveChatToolCall(
       const proposal = JSON.parse(text)
       if (proposal.id !== pendingId || typeof proposal.name !== 'string' ||
           !proposal.request || !proposal.args || proposal.expiresAt <= Date.now()) return false
+      storedTarget = await storedActionPermissionTarget(proposal.name, proposal.args, proposal.request)
       input = { action: 'confirm', pendingId, nativeTool: proposal.name,
         arguments: proposal.args, approval: proposal.request }
     } catch { return false }
@@ -66,10 +68,11 @@ export async function approveChatToolCall(
   // persistent memory. The global MCP switch must not grant those rights.
   // A nested source-native proposal always needs its own human confirmation,
   // even if the surrounding conversation grants ordinary Full access calls.
+  // A user-created exact inspected-action grant is the sole scoped exception.
   const autoApprove = nativeConfirmation ? false : (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
     ? resolveExecAutoApprove(threadId)
     : resolveMcpAutoApprove(threadId)
-  const persistentTarget = !autoApprove && !nativeConfirmation ? await toolPermissionTarget(toolName) : undefined
+  const persistentTarget = storedTarget ?? (!autoApprove && !nativeConfirmation ? await toolPermissionTarget(toolName) : undefined)
   if (autoApprove) return true
   const approved = await useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
         bypassGlobalAutoApprove: true,
@@ -78,7 +81,7 @@ export async function approveChatToolCall(
       })
   // Configuration may change while the user reads the modal. A decision for
   // the old provider must never authorize a replacement under the same name.
-  if (approved && persistentTarget && (await toolPermissionTarget(toolName))?.key !== persistentTarget.key) return false
+  if (approved && persistentTarget && (await toolPermissionTarget(toolName))?.key !== (persistentTarget.providerKey ?? persistentTarget.key)) return false
   return approved
 }
 

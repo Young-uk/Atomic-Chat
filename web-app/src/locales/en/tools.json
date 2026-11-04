@@ -36,7 +36,9 @@
     },
     "allowAlways": "Always allow",
     "persistentScope": "Always allow remembers access to {{tool}} from {{source}} across chats and app restarts. You can revoke it in Settings → General → Tool permissions. Separate native action confirmations still apply.",
-    "freshOnly": "This approval applies only to this stored action. Remembered tool permissions do not approve other stored actions."
+    "freshOnly": "This approval applies only to this stored action. Remembered tool permissions do not approve other stored actions.",
+    "storedActionScope": "Always allow applies only to this exact tool, arguments and action scope. A changed command, path or provider requires approval again.",
+    "storedActionManage": "You can revoke remembered actions in Settings → General → Tool permissions."
   },
   "permissions": {
     "title": "Tool permissions",

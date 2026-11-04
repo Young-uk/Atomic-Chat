@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { useAppState } from '@/hooks/useAppState'
 import { useMCPServers } from '@/hooks/useMCPServers'
-import { toolPermissionTarget } from '../tool-permission-targets'
+import { toolPermissionTarget, storedActionPermissionTarget } from '../tool-permission-targets'
 vi.mock('../chat-exec-tools', () => ({ offeredChatExecToolNames: () => new Set(['run_command']) }))
 beforeEach(() => {
   useAppState.setState({ tools: [{ name: 'read', server: 'local', description: '', inputSchema: { type: 'object' } }] })
@@ -22,4 +22,18 @@ it('refuses unknown or ambiguous providers and distinguishes built-ins', async (
   useAppState.getState().tools.push({ ...useAppState.getState().tools[0], server: 'other' })
   expect(await toolPermissionTarget('read')).toBeUndefined()
   expect((await toolPermissionTarget('run_command'))?.source).toBe('Atomic Chat')
+})
+
+it('scopes stored action grants to canonical arguments, resources and provider', async () => {
+  useAppState.setState({ tools: [{ name: 'personal_native', server: 'atomic-personal-tools', description: '', inputSchema: { type: 'object' } }] })
+  useMCPServers.setState({ mcpServers: { 'atomic-personal-tools': { command: 'node', args: ['worker.mjs'], env: {}, active: true } } })
+  const original = await storedActionPermissionTarget('os.shell.run', { cmd: 'printf synthetic-secret', cwd: '/fixture' }, { category: 'shell' })
+  expect(original?.storedAction).toBe(true)
+  expect(JSON.stringify(original)).not.toContain('synthetic-secret')
+  expect(await storedActionPermissionTarget('os.shell.run', { cwd: '/fixture', cmd: 'printf synthetic-secret' }, { category: 'shell' })).toEqual(original)
+  expect((await storedActionPermissionTarget('os.shell.run', { cmd: 'different' }, { category: 'shell' }))?.key).not.toBe(original?.key)
+  expect((await storedActionPermissionTarget('os.shell.run', { cmd: 'printf synthetic-secret', cwd: '/other' }, { category: 'shell' }))?.key).not.toBe(original?.key)
+  expect((await storedActionPermissionTarget('os.fs.write', { cmd: 'printf synthetic-secret', cwd: '/fixture' }, { category: 'shell' }))?.key).not.toBe(original?.key)
+  useMCPServers.getState().mcpServers['atomic-personal-tools'].args = ['replacement.mjs']
+  expect((await storedActionPermissionTarget('os.shell.run', { cmd: 'printf synthetic-secret', cwd: '/fixture' }, { category: 'shell' }))?.key).not.toBe(original?.key)
 })

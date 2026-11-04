@@ -2,7 +2,7 @@ import { useAppState } from '@/hooks/useAppState'
 import { useMCPServers } from '@/hooks/useMCPServers'
 import { offeredChatExecToolNames } from './chat-exec-tools'
 
-export type ToolPermissionTarget = { key: string; toolName: string; source: string }
+export type ToolPermissionTarget = { key: string; toolName: string; source: string; storedAction?: boolean; providerKey?: string }
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical)
@@ -30,4 +30,16 @@ export async function toolPermissionTarget(toolName: string): Promise<ToolPermis
   }
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(identity))))
   return { key: Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join(''), toolName, source }
+}
+
+/** Remember only an inspected immutable action, including its guard resources.
+ * Pending IDs and expiry are deliberately excluded so a new identical proposal
+ * can reuse the grant. Raw commands/credentials are never persisted. */
+export async function storedActionPermissionTarget(name: string, args: object, request: object): Promise<ToolPermissionTarget | undefined> {
+  const provider = await toolPermissionTarget('personal_native')
+  if (!provider || provider.source !== 'atomic-personal-tools') return undefined
+  const identity = ['atomic-stored-action-v1', provider.key, name, args, request]
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(identity))))
+  return { key: Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join(''),
+    toolName: name, source: provider.source, storedAction: true, providerKey: provider.key }
 }

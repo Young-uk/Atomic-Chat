@@ -512,3 +512,25 @@ describe('useToolApproval', () => {
     })
   })
 })
+
+it('remembers only the opted-in exact stored action and supports revocation', async () => {
+  useToolApproval.setState({ persistentTools: {}, approvedTools: {}, allowAllMCPPermissions: true })
+  const target = { key: 'exact-action', toolName: 'os.shell.run', source: 'atomic-personal-tools', storedAction: true, providerKey: 'provider' }
+  const options = { requireFreshApproval: true, persistentTarget: target }
+  const first = useToolApproval.getState().showApprovalModal('personal_native', 'first', {}, options)
+  expect(useToolApproval.getState().isModalOpen).toBe(true)
+  useToolApproval.getState().modalProps?.onAlwaysAllow?.()
+  expect(await first).toBe(true)
+  expect(useToolApproval.getState().persistentTools[target.key]?.enabled).toBe(true)
+  expect(await useToolApproval.getState().showApprovalModal('personal_native', 'second', {}, options)).toBe(true)
+  expect(useToolApproval.getState().isModalOpen).toBe(false)
+  const changed = useToolApproval.getState().showApprovalModal('personal_native', 'second', {}, { ...options, persistentTarget: { ...target, key: 'different-action' } })
+  expect(useToolApproval.getState().isModalOpen).toBe(true)
+  useToolApproval.getState().modalProps?.onDeny()
+  expect(await changed).toBe(false)
+  useToolApproval.getState().setPersistentTool(target, false)
+  const revoked = useToolApproval.getState().showApprovalModal('personal_native', 'second', {}, options)
+  expect(useToolApproval.getState().isModalOpen).toBe(true)
+  useToolApproval.getState().modalProps?.onDeny()
+  expect(await revoked).toBe(false)
+})

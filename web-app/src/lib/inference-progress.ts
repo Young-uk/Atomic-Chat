@@ -9,11 +9,20 @@ export type InferenceProgress = {
   cache?: number
 }
 
-type ProgressState = { byThread: Record<string, InferenceProgress> }
+export type ContextUsage = { tokens: number; estimated: boolean; modelId?: string; outputTokens?: number }
+type ProgressState = { byThread: Record<string, InferenceProgress>; contextByThread?: Record<string, ContextUsage> }
+/** Keep the most recent foreground measurement after its progress row ends.
+ * Background summaries publish estimates separately, never their slot usage. */
+export function publishContextUsage(threadId: string, usage: ContextUsage) {
+  if (!Number.isFinite(usage.tokens) || usage.tokens < 0) return
+  useInferenceProgress.setState(state => ({ contextByThread: {
+    ...state.contextByThread, [threadId]: usage,
+  } }))
+}
 export const useInferenceProgress = create<ProgressState>(() => ({ byThread: {} }))
 
 /** Observe a copy of SSE bytes; never consume, delay, or rewrite the SDK stream. */
-export function observeInferenceProgress(threadId: string) {
+export function observeInferenceProgress(threadId: string, modelId?: string) {
   const requestId = crypto.randomUUID()
   const startedAt = Date.now()
   const update = (patch: Partial<InferenceProgress>) => {
@@ -45,6 +54,9 @@ export function observeInferenceProgress(threadId: string) {
             if (![processed, total, cache].every(Number.isSafeInteger) ||
                 total <= 0 || processed < 0 || processed > total || cache < 0) continue
             update({ phase: processed === total ? 'preparing' : 'reading', processed, total, cache })
+            // Progress counts the unread suffix; add the cached prefix for context usage.
+            if (useInferenceProgress.getState().byThread[threadId]?.requestId === requestId)
+              publishContextUsage(threadId, { tokens: total + cache, estimated: false, modelId })
           } else if (line.startsWith('data: ') && !line.includes('[DONE]')) {
             const value = JSON.parse(line.slice(6))
             const delta = value.choices?.[0]?.delta

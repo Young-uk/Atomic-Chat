@@ -705,3 +705,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Preserve continuation prefill across context recovery](2026-11-04-continuation-context-recovery.md)
 
 - [Accumulate independent summaries and consolidate five](2026-11-04-independent-summary-batches.md)
+
+- [Native approval handoff and tokenizer-based background trigger](2026-11-04-native-approval-and-token-trigger.md)

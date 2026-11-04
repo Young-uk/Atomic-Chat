@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EngineManager, type ThreadMessage } from '@janhq/core'
 
+import { publishContextUsage, useInferenceProgress } from '@/lib/inference-progress'
 import { ContextSizeControl } from '@/containers/ContextSizeControl'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import type { ModelsService } from '@/services/models/types'
@@ -90,6 +91,7 @@ function setSelectedModel(providerName: string, fit?: boolean) {
 describe('ContextSizeControl', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useInferenceProgress.setState({ byThread: {}, contextByThread: {} })
     tokenCountState.value = 164
     dstarState.isDstar = false
     dstarState.maxTokens = 65536
@@ -378,4 +380,33 @@ describe('Dstar context usage', () => {
       screen.getByRole('button', { name: 'Context usage: —' })
     ).toBeInTheDocument()
   })
+  it('uses the full live prompt including cached tokens and refreshes after a summary', () => {
+    setSelectedModel('custom-dstar')
+    dstarState.isDstar = true
+    useInferenceProgress.setState({ byThread: { live: {
+      requestId: 'new', startedAt: 0, phase: 'reading', total: 8192, cache: 32768,
+    } }, contextByThread: {} })
+    const view = render(<ContextSizeControl threadId="live" />)
+    expect(screen.getByRole('button', { name: 'Context usage: 62.5%' }).title).toContain('Current request input')
+    act(() => {
+      useInferenceProgress.setState({ byThread: {} })
+      publishContextUsage('live', { tokens: 16384, estimated: true, modelId: 'qwen-test' })
+    })
+    view.rerender(<ContextSizeControl threadId="live" />)
+    expect(screen.getByRole('button', { name: 'Context usage: 25.0%' }).title).toContain('Estimated next request')
+    view.rerender(<ContextSizeControl threadId="other" />)
+    expect(screen.getByRole('button', { name: 'Context usage: —' })).toBeInTheDocument()
+  })
+
+  it('uses last-step context rather than cumulative multi-tool billing usage after reload', () => {
+    setSelectedModel('custom-dstar')
+    dstarState.isDstar = true
+    const messages = [{ role: 'assistant', metadata: { modelId: 'qwen-test',
+      usage: { inputTokens: 120000, outputTokens: 512, totalTokens: 120512 },
+      contextUsage: { inputTokens: 32256, outputTokens: 512, totalTokens: 32768 },
+    } }] as ThreadMessage[]
+    render(<ContextSizeControl messages={messages} />)
+    expect(screen.getByRole('button', { name: 'Context usage: 50.0%' })).toBeInTheDocument()
+  })
+
 })

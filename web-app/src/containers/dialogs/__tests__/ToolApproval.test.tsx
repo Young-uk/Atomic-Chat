@@ -137,3 +137,13 @@ it('shows a separate persistent permission action and hides remembered choices f
   expect(screen.queryByRole('button', { name: 'tools:toolApproval.alwaysAllow' })).toBeNull()
   expect(screen.getByRole('button', { name: 'tools:toolApproval.allowOnce' })).toBeDefined()
 })
+
+it('offers an exact-action persistent choice while keeping thread-wide approval hidden', () => {
+  const always = vi.fn()
+  useToolApproval.setState({ isModalOpen: true, modalProps: { toolName: 'personal_native', threadId: 'test', onApprove: vi.fn(), onDeny: vi.fn(), requireFreshApproval: true, storedActionPermission: true, onAlwaysAllow: always, toolParameters: { action: 'confirm', nativeTool: 'os.shell.run' } } })
+  render(<ToolApproval />)
+  expect(screen.getByText('tools:toolApproval.storedActionScope')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'tools:toolApproval.alwaysAllow' })).toBeNull()
+  screen.getByRole('button', { name: 'tools:toolApproval.allowAlways' }).click()
+  expect(always).toHaveBeenCalledOnce()
+})

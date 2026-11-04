@@ -1606,6 +1606,10 @@ describe('Dstar emergency full-context recovery', () => {
       } else await expect(response).rejects.toThrow('Archive verification failed')
       expect(recover).toHaveBeenCalledTimes(1)
       expect(recover.mock.calls[0][0].at(-1)?.id).toBe(userMessage.id)
+      const promptCost = recover.mock.calls[0][5]
+      expect(promptCost).toBeTypeOf('function')
+      expect(promptCost!([userMessage])).toBeGreaterThanOrEqual(1024)
+      expect(promptCost!(messages)).toBeGreaterThan(promptCost!([userMessage]))
     } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
 })

@@ -29,7 +29,7 @@ it('extracts independently, commits each batch and consolidates five without cha
   expect(c.error).toBeUndefined()
   expect(consolidate).toHaveBeenCalledTimes(1)
   expect(consolidate.mock.calls[0][0]).toHaveLength(5)
-  expect(saved.filter(r => r.summary)).toHaveLength(6)
+  expect(saved.filter(r => r.summary)).toHaveLength(7)
   expect(saved.at(-1)?.batches).toHaveLength(2)
   expect(messages).toEqual(original)
   const restarted = new ContextCompaction('batch-thread', store)
@@ -238,4 +238,96 @@ it('restores a matching saved batch when a longer legacy archive is incompatible
   expect(JSON.stringify(view)).not.toContain('Stale legacy work')
   expect(view.some(m => m.id === 'u0')).toBe(false)
   expect(view.at(-1)?.id).toBe('u2')
+})
+
+it('resumes recovery after the first fitting durable batch while later work remains pending', async () => {
+  let finishSecond!: (text: string) => void
+  let calls = 0
+  const summarize = vi.fn(async () => ++calls === 1 ? 'First segment' :
+    await new Promise<string>(resolve => { finishSecond = resolve })) as unknown as Summarize
+  summarize.batches = { selectCompletePrefix: async () => 2, consolidate: vi.fn() }
+  const c = new ContextCompaction('early', { load: async () => undefined, save: async () => {} })
+  const messages = [...turn(0), ...turn(1), turn(2)[0]]
+  // Start a backlog job first, as happens when a new message arrives during
+  // background extraction. It must keep running after foreground recovery.
+  c.schedule(messages, 1, 10000, summarize)
+  const recovery = c.recover(messages, 1000, summarize, undefined, 10, view =>
+    view.some(m => m.role === 'system') ? 500 : 2000)
+  await settle()
+  await recovery
+  expect(c.status).toBe('summarizing')
+  expect(c.apply(messages).some(m => m.id === 'u0')).toBe(false)
+  finishSecond('Second segment')
+  await settle()
+  expect(c.error).toBeUndefined()
+})
+
+it('waits for another batch when the first saved summary still cannot fit', async () => {
+  let finishSecond!: (text: string) => void
+  let calls = 0
+  const summarize = vi.fn(async () => ++calls === 1 ? 'First' :
+    await new Promise<string>(resolve => { finishSecond = resolve })) as unknown as Summarize
+  summarize.batches = { selectCompletePrefix: async () => 2, consolidate: vi.fn() }
+  const c = new ContextCompaction('enough', { load: async () => undefined, save: async () => {} })
+  let resumed = false
+  const messages = [...turn(0), ...turn(1), turn(2)[0]]
+  const recovery = c.recover(messages, 1000, summarize, undefined, 10,
+    view => view.some(m => m.id === 'u1') ? 2000 : 500).then(() => { resumed = true })
+  await settle()
+  expect(resumed).toBe(false)
+  finishSecond('Second')
+  await recovery
+  expect(resumed).toBe(true)
+  expect(c.apply(messages).at(-1)?.id).toBe('u2')
+})
+
+it('publishes the fifth extraction before consolidation and preserves an adopted record', async () => {
+  let finishMerge!: (batches: { id: string; summary: string; sourceEndId: string }[]) => void
+  const summarize = vi.fn(async () => 'Segment') as unknown as Summarize
+  summarize.batches = { selectCompletePrefix: async () => 2,
+    consolidate: () => new Promise(resolve => { finishMerge = resolve }) }
+  const c = new ContextCompaction('merge', { load: async () => undefined, save: async () => {} })
+  const messages = [...Array.from({ length: 5 }, (_, n) => turn(n)).flat(), turn(5)[0]]
+  c.schedule(messages, 1, 100000, summarize)
+  await settle()
+  const adopted = c.apply(messages)
+  expect(JSON.stringify(adopted)).toContain('Historical segment 5:')
+  finishMerge([{ id: 'merged', summary: 'Merged', sourceEndId: 'a4' }])
+  await settle()
+  expect(JSON.stringify(adopted)).toContain('Historical segment 5:')
+  expect(JSON.stringify(c.apply(messages))).toContain('Merged')
+})
+
+it('continues a normal background checkpoint if its raw threshold stops before foreground fit', async () => {
+  let finishFirst!: (text: string) => void
+  let calls = 0
+  const summarize = vi.fn(async () => ++calls === 1 ?
+    await new Promise<string>(resolve => { finishFirst = resolve }) : 'Next') as unknown as Summarize
+  summarize.batches = { selectCompletePrefix: async () => 2, consolidate: vi.fn() }
+  const c = new ContextCompaction('continue', { load: async () => undefined, save: async () => {} })
+  const messages = [...turn(0), ...turn(1), turn(2)[0]]
+  // Explicit recovery boundary one simulates an already scheduled bounded job
+  // that finishes after its first batch rather than consuming the whole backlog.
+  c.schedule(messages, 1000, 10000, summarize, 1)
+  await settle()
+  const recovery = c.recover(messages, 1000, summarize, undefined, 10,
+    view => view.some(m => m.id === 'u1') ? 2000 : 500)
+  finishFirst('First')
+  await recovery
+  expect(calls).toBe(2)
+  expect(c.apply(messages).at(-1)?.id).toBe('u2')
+})
+
+
+it('uses tokenizer counts when raw dialogue exceeds sixty percent despite a small character estimate', async () => {
+  const summarize = vi.fn(async () => 'handoff') as unknown as Summarize
+  const countRawTokens = vi.fn().mockResolvedValueOnce(40000).mockResolvedValue(0)
+  summarize.batches = { countRawTokens, selectCompletePrefix: vi.fn(async () => 2), consolidate: vi.fn() }
+  const c = new ContextCompaction('raw-token-threshold', { save: async () => {}, load: async () => undefined })
+  c.schedule(turn(1), 65536, 1, summarize)
+  await settle()
+  expect(summarize).toHaveBeenCalledTimes(1)
+  expect(countRawTokens).toHaveBeenCalledWith(turn(1), expect.any(AbortSignal))
+  expect(c.error).toBeUndefined()
+  expect(JSON.stringify(c.previewReady([...turn(1), ...turn(2)]))).toContain('handoff')
 })
