@@ -721,3 +721,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Model-authored Personal tools](2026-11-05-custom-personal-tools.md) — Persistent custom code definitions and inspected execution approvals.
 
 - [Desktop controls and bounded crawl envelopes](2026-11-05-desktop-controls-crawl-envelope.md)
+
+- [Strict JSON verification in Personal tools](2026-11-05-personal-json-verification.md)

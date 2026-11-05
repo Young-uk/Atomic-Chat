@@ -136,5 +136,6 @@ export {
   MANY_OCCURRENCES,
   PARSE_CHECK_MAX_CHARS,
   checkFileParses,
-  isParseCheckedPath
+  isParseCheckedPath,
+  stripJsonc
 };

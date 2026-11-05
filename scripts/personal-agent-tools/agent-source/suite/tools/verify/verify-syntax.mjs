@@ -16,7 +16,7 @@ import { checkTypeScriptFiles } from "./check-typescript-syntax.mjs";
 const VERIFY_SYNTAX_TOOL = "verify.syntax";
 const VERIFY_SYNTAX_MAX_FILES = 200;
 const VERIFY_SUMMARY_MAX_CHARS = 4e3;
-const JS_EXTENSIONS = /* @__PURE__ */ new Set([".js", ".cjs", ".mjs", ".json"]);
+const JS_EXTENSIONS = /* @__PURE__ */ new Set([".js", ".cjs", ".mjs", ".json", ".jsonc"]);
 const TS_EXTENSIONS = /* @__PURE__ */ new Set([".ts", ".tsx"]);
 const SHELL_EXTENSIONS = /* @__PURE__ */ new Set([".sh", ".bash"]);
 function parseVerifySyntaxArgs(raw) {

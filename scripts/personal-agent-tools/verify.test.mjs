@@ -43,3 +43,19 @@ test('relative verification follows the script chat directory without shadowing 
   await symlink(join(outside, 'outside.py'), join(root, 'chat', 'thread-a', 'linked.py'))
   await assert.rejects(verifyCall({ action: 'syntax', files: ['linked.py'] }, root, 'thread-a'), /outside/)
 })
+
+test('JSON verification is strict while explicit JSONC keeps comments and trailing commas', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'atomic-verify-json-'))
+  const fixtures = {
+    'bad.json': '{"a": 1,}',
+    'comments.json': '{/* comment */"a":1}',
+    'valid.json': '{"url":"https://example.com/a//b", "text":",}"}',
+    'config.jsonc': '{/* comment */"a":1,}',
+    'broken.jsonc': '{"a": }',
+  }
+  for (const [name, source] of Object.entries(fixtures)) await writeFile(join(root, name), source)
+  const report = await verifyCall({ action: 'syntax', files: Object.keys(fixtures) }, root)
+  assert.deepEqual(report.results.map(result => result.ok), [false, false, true, true, false])
+  assert.deepEqual(report.results.map(result => result.checker), ['JSON.parse', 'JSON.parse', 'JSON.parse', 'JSONC.parse', 'JSONC.parse'])
+  for (const [name, source] of Object.entries(fixtures)) assert.equal(await readFile(join(root, name), 'utf8'), source)
+})

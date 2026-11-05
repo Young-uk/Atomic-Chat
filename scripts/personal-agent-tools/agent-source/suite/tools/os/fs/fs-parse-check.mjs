@@ -173,5 +173,6 @@ export {
   displayPath,
   formatParseWarning,
   isParseCheckedPath,
+  stripJsonc,
   withParseWarning
 };

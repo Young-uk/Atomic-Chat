@@ -34,7 +34,7 @@ export const VERIFY_SYNTAX_TOOL = "verify.syntax";
 export const VERIFY_SYNTAX_MAX_FILES = 200;
 export const VERIFY_SUMMARY_MAX_CHARS = 4_000;
 
-const JS_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".json"]);
+const JS_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".json", ".jsonc"]);
 const TS_EXTENSIONS = new Set([".ts", ".tsx"]);
 const SHELL_EXTENSIONS = new Set([".sh", ".bash"]);
 

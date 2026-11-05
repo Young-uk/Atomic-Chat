@@ -203,7 +203,7 @@ function messageOf(err: unknown): string {
  * Drop `//` and block comments and trailing commas outside strings, so
  * a JSONC file can be judged by `JSON.parse`.
  */
-function stripJsonc(source: string): string {
+export function stripJsonc(source: string): string {
   const parts: string[] = [];
   let start = 0;
   let i = 0;

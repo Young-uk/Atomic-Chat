@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 
 import { isSea as isSeaBuild } from "node:sea";
-import { checkFileParses } from "./fs-parse-check.mjs";
+import { checkFileParses, stripJsonc } from "./fs-parse-check.mjs";
 import { type SyntaxFileResult, tailOfOutput } from "./syntax-check-types.mjs";
 
 export interface CheckerRun {
@@ -175,6 +175,19 @@ export async function checkJavaScriptFile(
   file: string,
   content: string,
 ): Promise<SyntaxFileResult> {
+  // Verification is strict for JSON; only explicit JSONC files allow extensions.
+  // Keep the shared write-time parser's existing configuration-file behavior.
+  const extension = extname(file).toLowerCase();
+  if (extension === ".json" || extension === ".jsonc") {
+    const checker = extension === ".json" ? "JSON.parse" : "JSONC.parse";
+    try {
+      const source = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+      JSON.parse(extension === ".jsonc" ? stripJsonc(source) : source);
+      return { file, ok: true, checker };
+    } catch (error) {
+      return { file, ok: false, checker, error: String(error) };
+    }
+  }
   const parsed = checkFileParses(file, content);
   if (parsed.kind === "ok") return { file, ok: true, checker: "node-vm" };
   if (parsed.kind === "error") {
