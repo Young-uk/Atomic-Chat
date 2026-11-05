@@ -1,3 +1,4 @@
+import { DSTAR_EFFORT_METADATA, withDstarEffortUpdates } from '../dstar-effort'
 import { expect, it } from 'vitest'
 import type { UIMessage } from 'ai'
 import { convertToModelMessages } from 'ai'
@@ -121,4 +122,22 @@ it('keeps the initial catalog and policy prefix after compaction and restart', (
   const restored = JSON.parse(JSON.stringify({ original, retained: [changed, latest] }))
   expect(withDstarToolUpdates(restored.retained, restored.original)).toEqual(compacted)
   expect(withDstarToolUpdates(original, original)).toEqual(full)
+})
+
+it('preserves combined tool and effort anchors when both snapshots changed before compaction', () => {
+  const old = turn('original', [])
+  old.metadata = { ...old.metadata, [DSTAR_EFFORT_METADATA]: 'low', [DSTAR_TOOL_PREAMBLE_METADATA]: 'v4' }
+  const recent = turn('recent', [schema])
+  recent.metadata = { ...recent.metadata, [DSTAR_EFFORT_METADATA]: 'max', [DSTAR_TOOL_PREAMBLE_METADATA]: 'v4' }
+  const history = [old, recent]
+  const expand = (retained: UIMessage[], original: UIMessage[]) =>
+    withDstarEffortUpdates(withDstarToolUpdates(retained, original), original)
+  const leading = (wire: UIMessage[]) => wire.slice(0, wire.findIndex(m => m.role === 'user'))
+  const wire = expand([recent], history)
+  expect(leading(wire)).toEqual(leading(expand(history, history)))
+  expect(wire.findIndex(m => m.id === 'atomic-tools-recent')).toBeGreaterThan(wire.findIndex(m => m.id === recent.id))
+  expect(wire.findIndex(m => m.id === 'atomic-effort-recent')).toBeGreaterThan(wire.findIndex(m => m.id === recent.id))
+  const restored = JSON.parse(JSON.stringify(history))
+  expect(expand([restored[1]], restored)).toEqual(wire)
+  expect(expand(history, history)).toEqual(withDstarEffortUpdates(withDstarToolUpdates(history)))
 })

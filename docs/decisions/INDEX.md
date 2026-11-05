@@ -715,3 +715,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Preserve independent prefix state across summary adoption](2026-11-05-independent-summary-prefix.md)
 
 - [Bound the message queue and disclose editors on demand](2026-11-05-compact-message-queue.md)
+
+- [Preserve configuration order across compaction](2026-11-05-compaction-configuration-order.md)

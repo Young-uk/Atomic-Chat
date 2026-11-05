@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { MessageQueue } from '../MessageQueue'
 import { useMessageQueue } from '@/hooks/useMessageQueue'
-beforeEach(() => useMessageQueue.setState({ byThread: {}, paused: {}, inFlight: {} }))
+beforeEach(() => useMessageQueue.setState({ byThread: {}, paused: {}, inFlight: {}, errorRetry: {}, retryAt: {} }))
 it('lets users edit, prioritize, pause and remove queued messages', () => {
   const queue = useMessageQueue.getState()
   queue.enqueue('a', { text: 'first' })
@@ -20,4 +20,17 @@ it('lets users edit, prioritize, pause and remove queued messages', () => {
   expect(queue.claim('a')).toBeUndefined()
   fireEvent.click(screen.getByLabelText('Remove queued message 1'))
   expect(useMessageQueue.getState().byThread.a.map(item => item.text)).toEqual(['first'])
+})
+
+afterEach(() => useMessageQueue.getState().pause('a', false))
+it('distinguishes automatic error recovery from a manual pause', () => {
+  const queue = useMessageQueue.getState()
+  queue.enqueue('a', { text: 'waiting' })
+  queue.pauseAfterError('a')
+  render(<MessageQueue threadId="a" onSendNow={vi.fn()} />)
+  expect(screen.getByText(/Retrying in 5s/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Resume queue' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Pause queue' }))
+  expect(screen.getByText(/Queue paused/)).toBeInTheDocument()
+  expect(screen.queryByText(/Retrying in/)).toBeNull()
 })

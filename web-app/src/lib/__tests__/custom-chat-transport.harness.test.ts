@@ -1712,3 +1712,30 @@ describe('Dstar screenshot tool-result payloads', () => {
     } finally { vi.unstubAllEnvs() }
   })
 })
+
+it('continues the existing assistant without replacing prior text or replaying completed tools', async () => {
+  const model = fakeStreamingModel([
+    { type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'new-text' },
+    { type: 'text-delta', id: 'new-text', delta: 'Continued answer' },
+    { type: 'text-end', id: 'new-text' },
+    { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 2, totalTokens: 102 } },
+  ])
+  vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+  const partial: UIMessage = { id: 'retained-assistant', role: 'assistant', parts: [
+    { type: 'text', text: 'Already visible answer' },
+    { type: 'tool-personal_browser', toolCallId: 'completed-before-growth', state: 'output-available', input: { action: 'read' }, output: { text: 'Previously fetched evidence' } } as never,
+  ] }
+  const transport = new CustomChatTransport()
+  transport.setContinueFromContent('Already visible answer')
+  const chunks = await readChunks(await transport.sendMessages({ chatId: 'continue-existing',
+    messages: [userMessage, partial], abortSignal: undefined, trigger: 'submit-message',
+    messageId: partial.id, body: { atomic_continue_existing: true },
+  }) as ReadableStream<Record<string, unknown>>)
+  expect(chunks.find(c => c.type === 'start')).toMatchObject({ messageId: partial.id })
+  expect(chunks.filter(c => c.type === 'text-delta').map(c => c.delta).join('')).toBe('Continued answer')
+  expect(partial.parts).toHaveLength(2)
+  expect(partial.parts[1]).toMatchObject({ toolCallId: 'completed-before-growth', state: 'output-available' })
+  const call = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0]
+  expect(JSON.stringify(call.prompt).match(/Already visible answer/g)).toHaveLength(1)
+  expect(JSON.stringify(call.prompt).match(/Previously fetched evidence/g)).toHaveLength(1)
+})

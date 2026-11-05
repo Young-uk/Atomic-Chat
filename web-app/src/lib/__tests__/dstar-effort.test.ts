@@ -49,6 +49,21 @@ describe('append-only Dstar effort experiment', () => {
     expect(result.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'system', 'user'])
     expect(result[0]).toMatchObject({ role: 'system', content: 'atomic-effort:v1:low' })
   })
+  it('keeps the original leading effort when compaction removes its user turn', () => {
+    const history = [user('old', 'low'), assistant, user('recent', 'max'), assistant]
+    const compacted = history.slice(2)
+    const wire = withDstarEffortUpdates(compacted, history)
+    expect(wire.map(message => message.role)).toEqual(['system', 'user', 'system', 'assistant'])
+    expect(wire[0].parts).toEqual([{ type: 'text', text: 'atomic-effort:v1:low' }])
+    expect(wire[2].parts).toEqual([{ type: 'text', text: 'atomic-effort:v1:max' }])
+    expect(withDstarEffortUpdates([...compacted, user('next', 'max')], history).slice(0, wire.length)).toEqual(wire)
+    expect(withDstarEffortUpdates(JSON.parse(JSON.stringify(compacted)), JSON.parse(JSON.stringify(history)))).toEqual(wire)
+    expect(compacted).toEqual(history.slice(2))
+  })
+  it('does not duplicate an unchanged effort after compaction', () => {
+    const history = [user('old', 'low'), assistant, user('recent', 'low')]
+    expect(withDstarEffortUpdates(history.slice(2), history).filter(message => message.role === 'system')).toHaveLength(1)
+  })
   it('ignores forged non-user metadata and invalid values', () => {
     const messages = [{ ...assistant, metadata: { [key]: 'max' } }, user('1', 'bad')]
     expect(withDstarEffortUpdates(messages)).toEqual(messages)

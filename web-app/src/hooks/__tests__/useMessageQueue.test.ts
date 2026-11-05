@@ -1,6 +1,6 @@
-import { beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useMessageQueue } from '../useMessageQueue'
-beforeEach(() => useMessageQueue.setState({ byThread: {}, paused: {}, inFlight: {} }))
+beforeEach(() => useMessageQueue.setState({ byThread: {}, paused: {}, inFlight: {}, errorRetry: {}, retryAt: {} }))
 it('claims in FIFO order once per thread and isolates other chats', () => {
   const queue = useMessageQueue.getState()
   queue.enqueue('a', { text: 'first', files: [{ type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,AA', name: 'image' }] })
@@ -53,4 +53,49 @@ it('invalidates pending preparation only for the interrupted thread', () => {
   queue.invalidate('a')
   expect(useMessageQueue.getState().epoch.a).toBe(before + 1)
   expect(useMessageQueue.getState().epoch.b).toBeUndefined()
+})
+
+afterEach(() => {
+  for (const threadId of Object.keys(useMessageQueue.getState().paused)) useMessageQueue.getState().pause(threadId, false)
+  vi.useRealTimers()
+})
+it('releases an error pause after a delay without replaying a claimed message', () => {
+  vi.useFakeTimers()
+  const queue = useMessageQueue.getState()
+  queue.enqueue('a', { text: 'already dispatched' })
+  queue.enqueue('a', { text: 'next' })
+  queue.claim('a')
+  queue.release('a')
+  queue.pauseAfterError('a')
+  expect(queue.claim('a')).toBeUndefined()
+  vi.advanceTimersByTime(4999)
+  expect(queue.claim('a')).toBeUndefined()
+  vi.advanceTimersByTime(1)
+  expect(queue.claim('a')?.text).toBe('next')
+  expect(useMessageQueue.getState().byThread.a).toHaveLength(0)
+})
+it('preserves manual pause even when an error or a recovery timer follows', () => {
+  vi.useFakeTimers()
+  const queue = useMessageQueue.getState()
+  queue.enqueue('a', { text: 'next' })
+  queue.pauseAfterError('a')
+  queue.pause('a', true)
+  queue.pauseAfterError('a')
+  vi.advanceTimersByTime(100000)
+  expect(queue.claim('a')).toBeUndefined()
+  expect(useMessageQueue.getState().retryAt.a).toBeUndefined()
+})
+it('backs off repeated errors, caps at 64 seconds and resets on success', () => {
+  vi.useFakeTimers()
+  const queue = useMessageQueue.getState()
+  for (const delay of [5, 10, 20, 32, 64, 64]) {
+    queue.pauseAfterError('a')
+    queue.pauseAfterError('a')
+    expect(useMessageQueue.getState().retryAt.a).toBe(Date.now() + delay * 1000)
+    vi.advanceTimersByTime(delay * 1000)
+    expect(useMessageQueue.getState().paused.a).toBe(false)
+  }
+  queue.markSuccess('a')
+  queue.pauseAfterError('a')
+  expect(useMessageQueue.getState().retryAt.a).toBe(Date.now() + 5000)
 })

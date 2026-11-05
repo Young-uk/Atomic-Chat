@@ -14,15 +14,21 @@ type QueueState = {
   move: (threadId: string, id: string, direction: -1 | 1) => void
   prioritize: (threadId: string, id: string) => void
   pause: (threadId: string, paused: boolean) => void
+  pauseAfterError: (threadId: string) => void
+  markSuccess: (threadId: string) => void
+  retryAt: Record<string, number | undefined>
+  errorRetry: Record<string, number>
   claim: (threadId: string) => QueuedMessage | undefined
   release: (threadId: string) => void
 }
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const retryDelays = [5, 10, 20, 32, 64]
 const empty: QueuedMessage[] = []
 export const emptyMessageQueue = empty
 // Session memory only: queued attachments are not written into preferences.
 // A synchronous per-thread claim prevents duplicate sends across renders.
 export const useMessageQueue = create<QueueState>((set, get) => ({
-  byThread: {}, paused: {}, inFlight: {}, epoch: {},
+  byThread: {}, paused: {}, inFlight: {}, epoch: {}, errorRetry: {}, retryAt: {},
   invalidate: threadId => set(state => ({ epoch: { ...state.epoch, [threadId]: (state.epoch[threadId] ?? 0) + 1 } })),
   enqueue: (threadId, message) => set(state => ({ byThread: { ...state.byThread, [threadId]: [...(state.byThread[threadId] ?? []), { ...message, id: crypto.randomUUID() }] } })),
   update: (threadId, id, text) => set(state => ({ byThread: { ...state.byThread, [threadId]: (state.byThread[threadId] ?? []).map(item => item.id === id ? { ...item, text } : item) } })),
@@ -40,7 +46,26 @@ export const useMessageQueue = create<QueueState>((set, get) => ({
     const item = items.find(item => item.id === id)
     return item ? { byThread: { ...state.byThread, [threadId]: [item, ...items.filter(item => item.id !== id)] } } : state
   }),
-  pause: (threadId, paused) => set(state => ({ paused: { ...state.paused, [threadId]: paused } })),
+  pause: (threadId, paused) => {
+    // Explicit user controls always cancel automatic recovery, including Stop.
+    clearTimeout(retryTimers.get(threadId))
+    retryTimers.delete(threadId)
+    set(state => ({ paused: { ...state.paused, [threadId]: paused }, retryAt: { ...state.retryAt, [threadId]: undefined } }))
+  },
+  pauseAfterError: threadId => {
+    const state = get()
+    // Do not turn a manual pause into an automatic one, or restart its timer
+    // when multiple error callbacks report the same failed request.
+    if (state.paused[threadId]) return
+    const attempt = state.errorRetry[threadId] ?? 0
+    const delay = retryDelays[Math.min(attempt, retryDelays.length - 1)] * 1000
+    set({ retryAt: { ...state.retryAt, [threadId]: Date.now() + delay }, paused: { ...state.paused, [threadId]: true }, errorRetry: { ...state.errorRetry, [threadId]: attempt + 1 } })
+    retryTimers.set(threadId, setTimeout(() => {
+      retryTimers.delete(threadId)
+      set(current => ({ paused: { ...current.paused, [threadId]: false }, retryAt: { ...current.retryAt, [threadId]: undefined } }))
+    }, delay))
+  },
+  markSuccess: threadId => set(state => ({ errorRetry: { ...state.errorRetry, [threadId]: 0 } })),
   claim: threadId => {
     const state = get()
     const item = state.byThread[threadId]?.[0]

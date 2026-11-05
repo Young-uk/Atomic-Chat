@@ -536,7 +536,7 @@ function ThreadDetail() {
       if (!isAbort && finishReason === 'length') {
         let willContinue = false
         const selectedModelState = useModelProvider.getState().selectedModel
-        const usage = msgMeta?.usage as
+        const usage = (msgMeta?.contextUsage ?? msgMeta?.usage) as
           { inputTokens?: number; outputTokens?: number } | undefined
         const totalTokens =
           (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0)
@@ -595,6 +595,7 @@ function ThreadDetail() {
       if (!isAbort && message.parts.length) setPendingContinueMessage(null)
 
       if (stepEndsTurn({ message, isAbort, isError })) {
+        if (!isAbort && !isError) useMessageQueue.getState().markSuccess(threadId)
         setIsChatRequestActive(false)
         // Terminal when nothing in this message waits on a tool result, so no
         // automatic follow-up will run: with tools, onFinish fires once per
@@ -1910,9 +1911,17 @@ function ThreadDetail() {
     }
 
     setTimeout(() => {
-      handleRegenerate()
+      const partial = chatMessagesRef.current.at(-1)
+      if (partial?.role === 'assistant' && partial.parts.length) {
+        // Continue the existing SDK message, retaining its tool results and
+        // reasoning. Regenerate truncates the entire assistant turn first.
+        setContinueFromContentRef.current?.('')
+        void sendMessage(undefined, { body: { atomic_continue_existing: true } })
+      } else {
+        handleRegenerate()
+      }
     }, 1000)
-  }, [selectedModel, selectedProvider, serviceHub, handleRegenerate])
+  }, [selectedModel, selectedProvider, serviceHub, handleRegenerate, sendMessage])
 
   // Keep refs in sync so onFinish always calls the latest versions
   handleContextSizeIncreaseRef.current = handleContextSizeIncrease
@@ -2038,7 +2047,9 @@ function ThreadDetail() {
   const queueInFlight = useMessageQueue(state => state.inFlight[threadId])
   useEffect(() => {
     if (status === CHAT_STATUS.ERROR || agentRun?.status === 'failed') {
-      useMessageQueue.getState().pause(threadId, true)
+      useMessageQueue.getState().pauseAfterError(threadId)
+    } else if (agentRun?.status === 'finished') {
+      useMessageQueue.getState().markSuccess(threadId)
     }
   }, [status, threadId, agentRun?.status])
   useEffect(() => {
@@ -2046,7 +2057,7 @@ function ThreadDetail() {
     const item = useMessageQueue.getState().claim(threadId)
     if (!item) return
     void processAndSendMessage(item.text, item.files, item.documents ?? [], item.agentSkillName)
-      .catch(() => useMessageQueue.getState().pause(threadId, true))
+      .catch(() => useMessageQueue.getState().pauseAfterError(threadId))
       .finally(() => useMessageQueue.getState().release(threadId))
   }, [threadId, queuedMessages, queuePaused, queueInFlight, requestActive, isAutoIncreasingContext, status, processAndSendMessage])
   const handleQueuedSendNow = useCallback(async (id: string) => {
@@ -2163,7 +2174,7 @@ function ThreadDetail() {
                       </div>
                     </>
                   )}
-                  {pendingContinueMessage && status === 'submitted' && (
+                  {pendingContinueMessage && status === 'submitted' && !chatMessages.some(m => m.id === pendingContinueMessage.id) && (
                     <MessageItem
                       key={`continue-placeholder-${pendingContinueMessage.id}`}
                       message={pendingContinueMessage}

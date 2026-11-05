@@ -43,7 +43,14 @@ export function withDstarToolUpdates(messages: UIMessage[], originalHistory: UIM
     previous = (anchor.metadata as Record<string, unknown>)[DSTAR_TOOLS_METADATA] as string
     preambleSent = (anchor.metadata as Record<string, unknown>)[DSTAR_TOOL_PREAMBLE_METADATA] as typeof preambleSent
   }
+  let firstUser = true
+  const removedAnchor = anchor && !messages.some(message => message.id === anchor.id)
   for (const message of messages) {
+    // Configuration changes belong after the first retained user when the
+    // original anchor was compacted. Otherwise they join the leading system
+    // run ahead of the immutable effort anchor and invalidate retained KV.
+    const deferUpdates = message.role === 'user' && firstUser && removedAnchor
+    if (deferUpdates) result.push(message)
     const metadata = message.metadata as Record<string, unknown> | undefined
     const snapshot = metadata?.[DSTAR_TOOLS_METADATA]
     if (message.role === 'user' && isToolSnapshot(snapshot)) {
@@ -62,7 +69,8 @@ export function withDstarToolUpdates(messages: UIMessage[], originalHistory: UIM
         preambleSent = policy
       }
     }
-    result.push(message)
+    if (!deferUpdates) result.push(message)
+    if (message.role === 'user') firstUser = false
   }
   return result
 }

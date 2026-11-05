@@ -1,16 +1,24 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMessageQueue, emptyMessageQueue } from '@/hooks/useMessageQueue'
 import { Button } from '@/components/ui/button'
 
 export function MessageQueue({ threadId, onSendNow }: { threadId: string; onSendNow: (id: string) => void }) {
   const items = useMessageQueue(state => state.byThread[threadId] ?? emptyMessageQueue)
   const paused = useMessageQueue(state => state.paused[threadId])
+  const retryAt = useMessageQueue(state => state.retryAt[threadId])
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!retryAt) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [retryAt])
   const [editingId, setEditingId] = useState<string | null>(null)
   const queue = useMessageQueue.getState()
   if (!items.length) return null
   return <section aria-label="Message queue" className="mb-2 max-h-40 overflow-y-auto rounded-xl border px-2 py-1">
     <div className="flex items-center justify-between gap-2 text-xs">
-      <span>{paused ? 'Queue paused' : 'Queued messages'} · {items.length}</span>
+      <span>{paused ? (retryAt ? `Retrying in ${Math.max(0, Math.ceil((retryAt - now) / 1000))}s` : 'Queue paused') : 'Queued messages'} · {items.length}</span>
       <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => queue.pause(threadId, !paused)}>{paused ? 'Resume queue' : 'Pause queue'}</Button>
     </div>
     {items.map((item, index) => <div key={item.id} className="border-t py-1">

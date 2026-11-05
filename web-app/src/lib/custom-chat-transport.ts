@@ -1351,7 +1351,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               const coordinator = threadCompactions.get(compactionThread)
               if (coordinator) {
                 const view = coordinator.previewReady(history)
-                const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(view, history)))
+                // Use the same image/document projection as the actual request.
+                // Persisted screenshot base64 is not text context usage.
+                const preparedHistory = withStableToolResultOrder(prepareToolResultImagesForModel(
+                  stripUnsupportedFileParts(this.mapUserInlineAttachments(history)),
+                  { supportsVision: true }))
+                const projected = projectCompactedMessages(view, preparedHistory)
+                const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(projected, history), history))
                 publishContextUsage(compactionThread, { modelId, estimated: true,
                   tokens: estimatePromptTokensHeuristic({ system: systemWithSkills,
                     messages: convertToModelMessages(chatExecOutputsForModel(wire)),
@@ -1433,7 +1439,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         this.contextRecovery = () => coordinator.recover(original, compactionContext,
           summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow, view => {
             const retained = projectCompactedMessages(view, preparedMessages)
-            const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(retained, original)))
+            const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(retained, original), original))
             // Use the foreground envelope, including fixed instructions/tools
             // and output reserve; raw-history savings alone cannot prove fit.
             const projected = convertToModelMessages(chatExecOutputsForModel(wire))
@@ -1451,7 +1457,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)
               const wire = withToolCompletionReviews(withDstarEffortUpdates(
-                withDstarToolUpdates(retainedView, history)))
+                withDstarToolUpdates(retainedView, history), history))
               // Reserve room for historical memory and unresolved work. These
               // are added after the background summary finishes.
               return estimatePromptTokensHeuristic({ system: systemWithSkills,
@@ -1463,7 +1469,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       const catalogHistory = replayDstarToolSnapshots(options.messages,
         useMessages.getState().getMessages(snapshotThreadId))
       preparedMessages = withToolCompletionReviews(withDstarEffortUpdates(
-        withDstarToolUpdates(preparedMessages, catalogHistory)))
+        withDstarToolUpdates(preparedMessages, catalogHistory), catalogHistory))
     }
     const baseMessages = convertToModelMessages(
       chatExecOutputsForModel(preparedMessages)
@@ -1471,7 +1477,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
     // If continuing a truncated response, append the partial assistant content as a
     // prefill so the model resumes from where it left off rather than regenerating.
-    const continueContent = this.continueFromContent
+    const continuingExisting = (options.body as Record<string, unknown> | undefined)?.atomic_continue_existing === true &&
+      options.messages.at(-1)?.role === 'assistant'
+    const continueContent = continuingExisting ? null : this.continueFromContent
     this.continueFromContent = null
     const modelMessages = continueContent
       ? [
@@ -1635,10 +1643,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         }
       }
     const latestUser = options.messages.findLast(message => message.role === 'user')
-    const reviewEnabled = completionReviewSupported && shouldEnableTools && !continueContent && !!latestUser && !this.reviewedToolTurns.has(latestUser.id) && !toolReviewBlocked(options.messages)
+    const reviewEnabled = completionReviewSupported && shouldEnableTools && !continueContent && !continuingExisting && !!latestUser && !this.reviewedToolTurns.has(latestUser.id) && !toolReviewBlocked(options.messages)
     let primaryParts = 0
     let finalResponseMetadata: Record<string, unknown> | undefined
     const streamOptions: NonNullable<Parameters<typeof result.toUIMessageStream>[0]> = {
+      ...(continuingExisting ? { originalMessages: options.messages } : {}),
       messageMetadata: ({ part }) => {
         // Start the wall-clock timer on the first generated delta (text or
         // reasoning), NOT on `start` — the latter fires before prefill, so
