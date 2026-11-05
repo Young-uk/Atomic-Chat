@@ -75,19 +75,27 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
       { role: 'system', content: system }, { role: 'user', content },
       ...(task ? [{ role: 'user', content: task }] : []),
     ]
+    // Token counting renders identical prompts repeatedly during binary search
+    // and repair budgeting. Reuse counts only within this summary invocation.
+    const tokenCounts = new Map<string, number>()
     const fits = async (system: string, content: string, reserve = 0, task?: string): Promise<boolean> => {
       signal.throwIfAborted()
       if (!tokenCounting) return bytes(system) + bytes(content) + bytes(task ?? '') <= inputLimit - reserve
+      const renderedMessages = messages(system, content, task)
+      const countKey = JSON.stringify(renderedMessages)
+      const known = tokenCounts.get(countKey)
+      if (known !== undefined) return known <= inputLimit - reserve
       const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
         method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, atomic_summary: true, think: false, max_tokens: 2048,
-          messages: messages(system, content, task) }),
+          messages: renderedMessages }),
       })
       if (!response.ok) throw new Error(`Summary token counting failed (${response.status})`)
       const counted = await response.json()
       if (!Number.isSafeInteger(counted.input_tokens) || counted.input_tokens < 1 || counted.context_length !== 16384)
         throw new Error('Summary token counter returned an incompatible budget')
+      tokenCounts.set(countKey, counted.input_tokens)
       return counted.input_tokens <= inputLimit - reserve
     }
     const ledgerEnabled = !!checkpoints?.requestSources
@@ -217,9 +225,10 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
         signal.throwIfAborted()
         const retryInstructions = instructions
         let low = 0, high = Math.min(points.length - offset, fragmentCap)
-        const payload = (length: number) => JSON.stringify({ previousSummary: summary,
-          ...(ledgerEnabled ? { openRequests: ledger.open.map(({ id, request }) => ({ id, request })) } : {}), evidenceOffset: offset, evidenceTotal: points.length,
-          newEvidence: points.slice(offset, offset + length).join('') })
+        // Put immutable evidence first so repairs and shorter bounded retries
+        // retain its token prefix; changing memory belongs after that source.
+        const payload = (length: number) => JSON.stringify({ newEvidence: points.slice(offset, offset + length).join(''), previousSummary: summary,
+          ...(ledgerEnabled ? { openRequests: ledger.open.map(({ id, request }) => ({ id, request })) } : {}), evidenceOffset: offset, evidenceTotal: points.length })
         while (low < high) {
           const mid = Math.ceil((low + high) / 2)
           if (await mergeFits(payload(mid))) low = mid

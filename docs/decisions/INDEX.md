@@ -725,3 +725,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Strict JSON verification in Personal tools](2026-11-05-personal-json-verification.md)
 
 - [Reserve Dstar foreground output space](2026-11-06-dstar-output-reserve.md)
+
+- [Keep summary source before changing memory](2026-11-06-summary-source-prefix.md)

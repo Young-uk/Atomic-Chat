@@ -162,3 +162,20 @@ it('keeps the repack source prefix identical when retrying an output limit', asy
   expect(repacks[1].messages.slice(0, 2)).toEqual(repacks[0].messages.slice(0, 2))
   expect(repacks[1].messages[2].content).toContain('previous attempt was too large')
 })
+
+it('counts each identical rendered prompt once and places source before changing memory', async () => {
+  const counts: string[] = []
+  const generated: any[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (String(url).endsWith('/summary-token-count')) {
+      counts.push(JSON.stringify(body.messages))
+      return { ok: true, json: async () => ({ input_tokens: count(body), context_length: 16384 }) }
+    }
+    generated.push(body)
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'Verified handoff' } }] }) }
+  }))
+  await summarizeWithDstar('http://localhost/v1', 'm', { tokenCounting: true })('Prior memory', 'Immutable source', new AbortController().signal)
+  expect(new Set(counts).size).toBe(counts.length)
+  expect(generated[0].messages[1].content).toMatch(/^\{"newEvidence":"Immutable source","previousSummary":"Prior memory"/)
+})
