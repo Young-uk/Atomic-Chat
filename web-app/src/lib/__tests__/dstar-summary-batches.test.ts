@@ -336,13 +336,15 @@ it('starts a bounded batch under foreground pressure even below the raw-history 
   const summarize = vi.fn(async () => 'handoff') as unknown as Summarize
   const countRawTokens = vi.fn().mockResolvedValue(100)
   summarize.batches = { countRawTokens, selectCompletePrefix: vi.fn(async () => 2), consolidate: vi.fn() }
-  const c = new ContextCompaction('prompt-pressure', { save: async () => {}, load: async () => undefined })
+  const saved: ArchiveRecord[] = []
+  const c = new ContextCompaction('prompt-pressure', { save: async r => { saved.push(structuredClone(r)) }, load: async () => undefined })
   const messages = [...turn(1), ...turn(2)]
   const original = structuredClone(messages)
   const promptCost = vi.fn((view: UIMessage[]) => view.some(m => m.id.startsWith('atomic-context-')) ? 40000 : 62000)
   c.schedule(messages, 65536, 62000, summarize, undefined, promptCost)
   await settle()
   expect(summarize).toHaveBeenCalledTimes(1)
+  expect(saved.at(-1)?.trigger).toMatchObject({ reason: 'prompt-pressure', rawTokens: 100, rawThreshold: 39321.6, promptTokens: 62000, pressureThreshold: 55705.6, tokenizer: true })
   expect(countRawTokens).toHaveBeenCalled()
   expect(messages).toEqual(original)
   expect(c.error).toBeUndefined()

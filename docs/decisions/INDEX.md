@@ -711,3 +711,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Account for prompt pressure and retain image tool frontiers](2026-11-05-prompt-pressure-and-image-tool-cache.md)
 
 - [Scheduled occurrence timing and interruption diagnostics](2026-11-05-scheduled-occurrence-diagnostics.md)
+
+- [Preserve independent prefix state across summary adoption](2026-11-05-independent-summary-prefix.md)

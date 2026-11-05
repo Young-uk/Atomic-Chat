@@ -39,6 +39,17 @@ export type ArchiveRecord = {
   /** Preserve pre-consolidation summaries alongside the original source. */
   extractedBatches?: SummaryBatch[]
   batchStart?: number
+  /** Persist scheduling evidence without storing another copy of chat text. */
+  trigger?: {
+    reason: 'raw-history' | 'prompt-pressure' | 'recovery' | 'resume'
+    context: number
+    rawTokens: number
+    rawThreshold: number
+    promptTokens: number
+    pressureThreshold: number
+    tokenizer: boolean
+    measuredAt: number
+  }
 }
 
 export interface ContextArchiveStore {
@@ -377,10 +388,17 @@ export class ContextCompaction {
       const rawCost = (view: UIMessage[]) => summarize.batches?.countRawTokens
         ? summarize.batches.countRawTokens(view, controller.signal) : Promise.resolve(cost(view))
       try {
+        const rawTokens = await rawCost(snapshot.slice(archived))
+        const trigger: NonNullable<ArchiveRecord['trigger']> = {
+          reason: emergency ? 'recovery' : initial?.extractedBatches ? 'resume'
+            : rawTokens > context * 0.6 ? 'raw-history' : 'prompt-pressure',
+          context, rawTokens, rawThreshold: context * 0.6,
+          promptTokens: pressureCost(initial), pressureThreshold: context * PROMPT_PRESSURE_TRIGGER,
+          tokenizer: !!summarize.batches?.countRawTokens, measuredAt: Date.now(),
+        }
         // Count only unarchived dialogue, using the running tokenizer when
         // available. Fixed instructions and historical summaries do not trigger extraction.
         if (!emergency && !initial?.extractedBatches) {
-          const rawTokens = await rawCost(snapshot.slice(archived))
           console.info('[context-compaction] raw-history trigger', {
             threadId: this.threadId, rawTokens, threshold: context * 0.6,
             archivedMessages: archived, rawMessages: snapshot.length - archived,
@@ -411,7 +429,7 @@ export class ContextCompaction {
           const pending = this.resumable
           const resume = pending?.batchStart === start && pending.source.length === end && this.matches(pending, snapshot) && pending.previousSummary === (current?.summary ?? '') ? pending : undefined
           const record: ArchiveRecord = resume ?? { version: 1, id: crypto.randomUUID(), threadId: this.threadId,
-            source: snapshot.slice(0, end), previousSummary: current?.summary ?? '', batches, batchStart: start, createdAt: Date.now(),
+            source: snapshot.slice(0, end), previousSummary: current?.summary ?? '', batches, batchStart: start, createdAt: Date.now(), trigger,
             summaryAfterMessageId: snapshot.at(limit - 1)?.id,
             summaryFallbackAfterMessageId: snapshot.slice(0, limit).findLast(m => m.role === 'user')?.id }
           task.record = record
