@@ -176,6 +176,14 @@ describe('resolveTurnError', () => {
     ).toEqual({ error: undefined, failedMessageId: undefined })
   })
 
+  it('hides a retained live context error during recovery and restores terminal errors', () => {
+    const live = new Error('Context window full')
+    expect(resolveTurnError({ liveError: live, messages: [userMessage, failed],
+      requestActive: true })).toEqual({ error: undefined, failedMessageId: undefined })
+    expect(resolveTurnError({ liveError: live, messages: [userMessage, failed],
+      requestActive: false }).error).toBe(live)
+  })
+
   it('shows no stored error once the failed turn is not the last message', () => {
     expect(
       resolveTurnError({

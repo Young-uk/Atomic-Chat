@@ -727,3 +727,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Reserve Dstar foreground output space](2026-11-06-dstar-output-reserve.md)
 
 - [Keep summary source before changing memory](2026-11-06-summary-source-prefix.md)
+
+- [Browser screen input approval](2026-11-06-browser-screen-input.md)
+
+- [Local Personal app replacement](2026-11-06-personal-self-update.md)

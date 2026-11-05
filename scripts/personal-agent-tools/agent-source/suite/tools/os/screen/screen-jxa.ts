@@ -24,6 +24,8 @@ export const SCREEN_PAYLOAD_ENV = "ATOMIC_SCREEN_PAYLOAD";
 interface Pinned {
   /** The app the operator approved input for; the action refuses any other. */
   expectBundleId: string;
+  browserGuard?: boolean;
+  browserApproved?: string;
   /** Bundle ids the script never posts input into. */
   protectedIds: readonly string[];
 }
@@ -71,6 +73,57 @@ function bringToFront(id) {
   front = frontmost();
   return !!front && front.bundleId === id;
 }
+// Read metadata only. AXValue can contain the contents of a credential field.
+function axAttribute(element, name) {
+  var value = Ref();
+  return $.AXUIElementCopyAttributeValue(element, $(name), value) === 0 ? value[0] : null;
+}
+function axString(value) {
+  return value ? ObjC.unwrap(ObjC.castRefToObject(value)) : null;
+}
+function browserTarget(p, app) {
+  return safe(function () {
+    var root = $.AXUIElementCreateApplication(app.pid);
+    var hit = Ref();
+    var element = p.op === "click"
+      ? ($.AXUIElementCopyElementAtPosition(root, p.x, p.y, hit) === 0 ? hit[0] : null)
+      : axAttribute(root, "AXFocusedUIElement");
+    if (!element) return { approval: true, signature: JSON.stringify([app.pid, null]) };
+    var role = axString(axAttribute(element, "AXRole"));
+    var labels = [];
+    var urls = [];
+    for (var i = 0; element && i < 20; i++) {
+      for (var j = 0; j < 4; j++) {
+        var label = axAttribute(element, ["AXSubrole", "AXTitle", "AXDescription", "AXIdentifier"][j]);
+        if (label) labels.push(String(axString(label)));
+      }
+      var url = axAttribute(element, "AXURL");
+      if (url) urls.push(safe(function () { return ObjC.unwrap(ObjC.castRefToObject(url).absoluteString); }, null));
+      element = axAttribute(element, "AXParent");
+    }
+    var metadata = labels.join(" ");
+    var target = { approval: true, signature: JSON.stringify([app.pid, role, metadata, urls]) };
+    if (/secure|password|passcode|credential|checkout|payment|purchase|place.order|buy|card.number|cvv|cvc|비밀번호|암호|결제|구매|주문|카드번호/i.test(metadata)) return target;
+    // Only recognizable navigation and search controls can skip approval.
+    var search = role === "AXSearchField" ||
+      ((role === "AXTextField" || role === "AXComboBox") && /search|address|omnibox|검색|주소/i.test(metadata));
+    if (p.op === "type") target.approval = !search || /[\r\n\t]/.test(p.text);
+    else if (p.op === "click") target.approval = p.double || p.button !== "left" ||
+      !(role === "AXLink" || role === "AXTab" || search);
+    else target.approval = !(p.flags === 0x100000 && p.keyCode === 37) &&
+      !(search && p.flags === 0 && [36, 51, 53, 123, 124, 125, 126].indexOf(p.keyCode) >= 0);
+    return target;
+  }, { approval: true, signature: JSON.stringify([app.pid, null]) });
+}
+function guardBrowser(p, app, out) {
+  if (!p.browserGuard) return false;
+  var target = browserTarget(p, app);
+  if (p.browserApproved === target.signature || (!p.browserApproved && !target.approval)) return false;
+  out.error = p.browserApproved ? "browser-target-changed" : "browser-approval";
+  out.browserTarget = target.signature;
+  return true;
+}
+
 function post(e) { $.CGEventPost(0, e); }
 function click(p) {
   var pt = { x: p.x, y: p.y };
@@ -169,12 +222,16 @@ function run() {
   if (!bringToFront(p.expectBundleId)) { out.frontmost = safe(frontmost, null); out.error = "not-frontmost"; return JSON.stringify(out); }
   out.frontmost = safe(frontmost, null);
   if (!out.frontmost || isProtected(p, out.frontmost.bundleId)) { out.error = "protected"; return JSON.stringify(out); }
+  if (out.frontmost.bundleId !== p.expectBundleId) { out.error = "not-frontmost"; return JSON.stringify(out); }
   if (p.op === "click") {
     out.ownerAtPoint = safe(function () { return ownerAt(p.x, p.y); }, null);
     var owner = out.ownerAtPoint ? out.ownerAtPoint.bundleId : null;
     if (isProtected(p, owner)) { out.error = "protected"; return JSON.stringify(out); }
     if (owner !== p.expectBundleId) { out.error = "owner-mismatch"; return JSON.stringify(out); }
+    if (guardBrowser(p, out.ownerAtPoint, out)) return JSON.stringify(out);
     click(p);
+  } else if (guardBrowser(p, out.frontmost, out)) {
+    return JSON.stringify(out);
   } else if (p.op === "type") out.via = typeText(String(p.text), p.typeVia);
   else if (p.op === "key") pressKey(p.keyCode, p.flags);
   else { out.error = "unknown-op"; return JSON.stringify(out); }

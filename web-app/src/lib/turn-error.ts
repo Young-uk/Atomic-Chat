@@ -201,6 +201,10 @@ export function resolveTurnError({
   messages: readonly UIMessage[]
   requestActive: boolean
 }): { error: Error | undefined; failedMessageId: string | undefined } {
+  // The SDK can retain the preceding error while a recovered request is
+  // submitted or streaming. Neither that error nor the persisted failure
+  // describes the active attempt; terminal failures are shown once it ends.
+  if (requestActive) return { error: undefined, failedMessageId: undefined }
   const last = messages.at(-1)
   const stored = requestActive ? undefined : turnErrorOf(last)
   const failedMessageId = stored ? last?.id : undefined

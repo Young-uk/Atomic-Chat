@@ -133,7 +133,7 @@ function screenAppClass(bundleId, env) {
   return "open";
 }
 function protectedBundleIds(env, kind = "type") {
-  const ids = [...BLOCKED_BUNDLE_IDS, ...hostBundleIds(env), ...BROWSER_BUNDLE_IDS, ...kind === "click" ? [] : TERMINAL_BUNDLE_IDS];
+  const ids = [...BLOCKED_BUNDLE_IDS, ...hostBundleIds(env), ...kind === "click" ? [] : TERMINAL_BUNDLE_IDS];
   return [...new Set(ids)];
 }
 function protectedAppReason(bundleId, env, kind = "type") {
@@ -141,9 +141,6 @@ function protectedAppReason(bundleId, env, kind = "type") {
   if (cls === null) return "the target app could not be identified";
   if (cls === "blocked") {
     return `${bundleId} is protected (the agent's own terminal or app, system settings, credentials or a script runner)`;
-  }
-  if (cls === "browser") {
-    return `${bundleId} is a web browser, which screen control only looks at; use the browser tool for web pages`;
   }
   if (cls === "terminal" && kind !== "click") {
     return `${bundleId} is a terminal or code editor, where screen control may click but not type or press keys; use os.shell.run for commands`;

@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { localStorageKey } from '@/constants/localStorage'
+import i18n from '@/i18n/setup'
+import { notifyUnlessWatching } from '@/lib/notifications'
 import type { ToolPermissionTarget } from '@/lib/tool-permission-targets'
 
 export type ShowApprovalModalOptions = {
@@ -150,6 +152,13 @@ export const useToolApproval = create<ToolApprovalState>()(
               },
             },
           })
+          if (IS_TAURI) {
+            notifyUnlessWatching(
+              true,
+              i18n.t('toolApproval.title', { ns: 'tools' }),
+              i18n.t('toolApproval.notificationBody', { ns: 'tools' })
+            )
+          }
         })
       },
 

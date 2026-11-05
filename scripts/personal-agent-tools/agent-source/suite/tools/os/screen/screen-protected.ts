@@ -12,10 +12,8 @@ import type { KeyChord } from "./screen-keys.mjs";
  *   a click or "/mode bypass" + return there would raise its approval
  *   level), settings, credentials, the login and security prompts, and
  *   script runners that post input of their own.
- * - `browser`: read-only. Screenshots are fine; clicks, typing and keys
- *   are refused, because a web page is where a password, a payment or a
- *   submit happens, and the browser tool asks for those
- *   (`browser_secret`, `browser_commit`) where screen control cannot.
+ * - `browser`: inspect the live accessibility target before posting input.
+ *   Sensitive or unverified actions require approval.
  * - `terminal`: terminals and IDEs. Clicks are allowed (focus, a tab, a
  *   button); typing and keys are refused, because a keystroke there runs
  *   a command and the agent has `os.shell.run` for that, with its own
@@ -56,7 +54,7 @@ export const BLOCKED_BUNDLE_IDS: readonly string[] = [
   "at.obdev.LaunchBar",
 ];
 
-/** Web browsers: screenshots only. */
+/** Web browsers with additional checks on the live input target. */
 export const BROWSER_BUNDLE_IDS: readonly string[] = [
   "com.apple.Safari",
   "com.apple.SafariTechnologyPreview",
@@ -179,7 +177,7 @@ export function screenAppClass(bundleId: string | null | undefined, env: NodeJS.
  * classified here (`expectBundleId`), so a sub-id is covered by the pin.
  */
 export function protectedBundleIds(env: NodeJS.ProcessEnv, kind: ScreenInputKind = "type"): string[] {
-  const ids = [...BLOCKED_BUNDLE_IDS, ...hostBundleIds(env), ...BROWSER_BUNDLE_IDS, ...(kind === "click" ? [] : TERMINAL_BUNDLE_IDS)];
+  const ids = [...BLOCKED_BUNDLE_IDS, ...hostBundleIds(env), ...(kind === "click" ? [] : TERMINAL_BUNDLE_IDS)];
   return [...new Set(ids)];
 }
 
@@ -197,9 +195,6 @@ export function protectedAppReason(
   if (cls === null) return "the target app could not be identified";
   if (cls === "blocked") {
     return `${bundleId} is protected (the agent's own terminal or app, system settings, credentials or a script runner)`;
-  }
-  if (cls === "browser") {
-    return `${bundleId} is a web browser, which screen control only looks at; use the browser tool for web pages`;
   }
   if (cls === "terminal" && kind !== "click") {
     return `${bundleId} is a terminal or code editor, where screen control may click but not type or press keys; use os.shell.run for commands`;

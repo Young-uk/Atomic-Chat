@@ -80,6 +80,7 @@ export interface ScreenProbe {
   /** How `type` delivered the text: `keys`, `paste` or `keys+paste`. */
   via?: string;
   error?: string;
+  browserTarget?: string;
 }
 
 export const SCREEN_JXA_TIMEOUT_MS = 15_000;
@@ -128,6 +129,7 @@ export function parseScreenProbe(stdout: string): ScreenProbe {
     ...("ownerAtPoint" in obj ? { ownerAtPoint: parseApp(obj.ownerAtPoint) } : {}),
     screen: { width, height, scale: scale > 0 ? scale : 1 },
     done: obj.done === true,
+    ...(typeof obj.browserTarget === "string" ? { browserTarget: obj.browserTarget } : {}),
     ...(typeof obj.via === "string" ? { via: obj.via } : {}),
     ...(typeof obj.error === "string" ? { error: obj.error } : {}),
   };

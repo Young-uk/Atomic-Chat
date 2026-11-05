@@ -1,6 +1,7 @@
 {
   "toolApproval": {
     "title": "도구 승인 필요",
+    "notificationBody": "Atomic Chat으로 돌아가 대기 중인 작업을 확인해 주세요.",
     "description": "어시스턴트가 사용하려고 합니다",
     "securityNotice": "악의적인 도구나 대화 내용이 어시스턴트를 속여 해로운 작업을 시도하게 만들 수 있습니다. 승인하기 전에 각 도구 호출을 주의 깊게 검토하세요.",
     "deny": "거부",

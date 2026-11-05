@@ -1,6 +1,7 @@
 {
   "toolApproval": {
     "title": "Tool Approval Required",
+    "notificationBody": "Return to Atomic Chat to review the pending action.",
     "description": "The assistant wants to use",
     "securityNotice": "Malicious tools or conversation content could potentially trick the assistant into attempting harmful actions. Review each tool call carefully before approving.",
     "deny": "Deny",

@@ -59,7 +59,9 @@ export async function approveChatToolCall(
       const proposal = JSON.parse(text)
       if (proposal.id !== pendingId || typeof proposal.name !== 'string' ||
           !proposal.request || !proposal.args || proposal.expiresAt <= Date.now()) return false
-      storedTarget = await storedActionPermissionTarget(proposal.name, proposal.args, proposal.request)
+      if (!proposal.request.affectedResources?.some((resource: string) => resource.startsWith('screen-target:'))) {
+        storedTarget = await storedActionPermissionTarget(proposal.name, proposal.args, proposal.request)
+      }
       input = { action: 'confirm', pendingId, nativeTool: proposal.name,
         arguments: proposal.args, approval: proposal.request }
     } catch { return false }

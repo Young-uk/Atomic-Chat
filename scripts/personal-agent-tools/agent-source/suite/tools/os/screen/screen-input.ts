@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   compressToolResult,
   type CompressedToolResult,
@@ -40,7 +41,7 @@ export interface OsScreenInputOptions extends DangerousToolOptions {
   geometry: ScreenGeometryStore;
 }
 
-type Pin = { expectBundleId: string; protectedIds: readonly string[] };
+type Pin = { expectBundleId: string; protectedIds: readonly string[]; browserGuard?: boolean; browserApproved?: string };
 
 /** What one input tool contributes to the shared probe → refuse/approve → act flow. */
 interface PlannedAction {
@@ -109,25 +110,35 @@ function buildInputTool(
           { ...action.details, appClass: screenAppClass(target?.bundleId, deps.env) });
       }
       const app = describeApp(target);
-      await requireApproval(
-        options,
+      const browserGuard = screenAppClass(target.bundleId, deps.env) === "browser";
+      const ask = (signature?: string) => requireApproval(
+        browserGuard ? { ...options, approvalRequired: true } : options,
         {
           sessionId: ctx.sessionId,
           tool: name,
           category: "screen_control",
-          reason: `${action.summary} in ${app}`,
-          preview: [`${name}: ${action.summary}`, `receives the input: ${app}`, ...action.preview].join("\n"),
-          affectedResources: [`app:${target.bundleId}`],
+          reason: browserGuard ? `Confirm sensitive or unverified browser input in ${app}` : `${action.summary} in ${app}`,
+          preview: [browserGuard && kind === "type" ? name : `${name}: ${action.summary}`, `receives the input: ${app}`, ...(browserGuard && kind === "type" ? ["Typed text is hidden from this preview."] : action.preview)].join("\n"),
+          affectedResources: [`app:${target.bundleId}`, ...(signature ? [`screen-target:${createHash("sha256").update(signature).digest("hex")}`] : [])],
         },
         ctx.signal,
       );
-      // Pinned: the script posts only into this app, and refuses this kind's protected ids once more at that moment.
-      const pin: Pin = { expectBundleId: target.bundleId, protectedIds: protectedBundleIds(deps.env, kind) };
+      if (!browserGuard) await ask();
+      const pin = { expectBundleId: target.bundleId, protectedIds: protectedBundleIds(deps.env, kind), browserGuard };
+      const run = (browserApproved?: string) => runScreenOp(deps, action.operation({ ...pin, browserApproved }), ctx);
       let after: ScreenProbe;
       try {
-        after = await runScreenOp(deps, action.operation(pin), ctx);
+        after = await run();
       } catch (error) {
         return result(name, "error", `${name}: ${(error as Error).message}`);
+      }
+      if (after.error === "browser-approval" && after.browserTarget) {
+        await ask(after.browserTarget);
+        try {
+          after = await run(after.browserTarget);
+        } catch (error) {
+          return result(name, "error", `${name}: ${(error as Error).message}`);
+        }
       }
       return actionResult(name, kind, app, action, after, deps);
     },
@@ -158,14 +169,14 @@ function actionResult(
       return result(name, "error", `${name} did nothing: ${after.error}`, details);
   }
   if (!after.done) return result(name, "error", `${name} did nothing: the script reported no action`, details);
-  return result(name, "ok", `${action.summary} in ${app}. Take os.screen.capture to see the result.`, details);
+  return result(name, "ok", `${kind === "type" && screenAppClass(after.frontmost?.bundleId, deps.env) === "browser" ? "Typed text" : action.summary} in ${app}. Take os.screen.capture to see the result.`, details);
 }
 
 export function buildOsScreenClickTool(options: OsScreenInputOptions): ToolDefinition {
   return buildInputTool(
     OS_SCREEN_CLICK_TOOL,
     "click",
-    "Click on the primary display (macOS) at x,y in the pixels of the last os.screen.capture image. Asks the user first; never clicks into a web browser (use the browser tool for web pages), the agent itself, settings or a password manager.",
+    "Click on the primary display (macOS) at x,y in the pixels of the last os.screen.capture image. Browser actions ask for confirmation when sensitive or unverified. Never clicks the agent itself, settings or a password manager.",
     options,
     (args, ctx) => {
       const x = requireNumber(args.x, "x");
@@ -201,7 +212,7 @@ export function buildOsScreenTypeTool(options: OsScreenInputOptions): ToolDefini
   return buildInputTool(
     OS_SCREEN_TYPE_TOOL,
     "type",
-    "Type text into the focused field of the frontmost app (macOS), as keystrokes or (via: \"paste\") through the clipboard. Asks the user first, showing the whole text; never types into a web browser (use the browser tool), a terminal or code editor (use os.shell.run), the agent itself, settings or a password manager.",
+    "Type text into the focused field of the frontmost app (macOS), as keystrokes or (via: \"paste\") through the clipboard. Browser actions ask for confirmation when sensitive or unverified. Never types into a terminal, code editor, the agent itself, settings or a password manager.",
     options,
     (args) => {
       const text = args.text;
@@ -229,7 +240,7 @@ export function buildOsScreenKeyTool(options: OsScreenInputOptions): ToolDefinit
   return buildInputTool(
     OS_SCREEN_KEY_TOOL,
     "key",
-    'Press a key or shortcut in the frontmost app (macOS), e.g. "return", "escape", "down", "cmd+l". Asks the user first; refused in web browsers (use the browser tool), terminals and code editors (use os.shell.run), and for app and space switchers (cmd+tab, ctrl+arrows, cmd+space).',
+    'Press a key or shortcut in the frontmost app (macOS), e.g. "return", "escape", "down", "cmd+l". Browser actions ask for confirmation when sensitive or unverified. Refused in terminals and code editors (use os.shell.run), and for app and space switchers (cmd+tab, ctrl+arrows, cmd+space).',
     options,
     (args) => {
       if (typeof args.keys !== "string") {
@@ -288,7 +299,7 @@ function refusedResult(
   return result(
     tool,
     "error",
-    `${tool} refused (${what}): ${why}. Screen control never clicks or types into a web browser, Atomic Agent ` +
+    `${tool} refused (${what}): ${why}. Screen control never clicks or types into Atomic Agent ` +
       "itself, system settings, the keychain or a password manager, and never types or presses keys in a terminal " +
       "or code editor, at any approval level. Do not retry through screen control; use the tool named above, or " +
       "tell the user to do this step themselves.",

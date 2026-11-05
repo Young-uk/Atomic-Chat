@@ -59,6 +59,7 @@ function parseScreenProbe(stdout) {
     ..."ownerAtPoint" in obj ? { ownerAtPoint: parseApp(obj.ownerAtPoint) } : {},
     screen: { width, height, scale: scale > 0 ? scale : 1 },
     done: obj.done === true,
+    ...(typeof obj.browserTarget === "string" ? { browserTarget: obj.browserTarget } : {}),
     ...typeof obj.via === "string" ? { via: obj.via } : {},
     ...typeof obj.error === "string" ? { error: obj.error } : {}
   };
