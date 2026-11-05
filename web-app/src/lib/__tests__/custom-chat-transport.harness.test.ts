@@ -1554,6 +1554,29 @@ describe('Dstar summary scheduling after the final answer', () => {
 })
 
 describe('Dstar emergency full-context recovery', () => {
+  it('sends the current fitting envelope despite stale oversized prior request usage', async () => {
+    const { ContextCompaction } = await import('../dstar-context-compaction')
+    vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true'); vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat', context_length: 65536 }] }) }))
+    vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
+    vi.spyOn(ContextCompaction.prototype, 'schedule').mockImplementation(() => {})
+    const recover = vi.spyOn(ContextCompaction.prototype, 'recover').mockRejectedValue(new Error('Unexpected recovery'))
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never, messages: { modifyMessage: vi.fn(async m => m) } as never })
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: { id: 'qwen3.8-flash-next-chat', capabilities: [], settings: {} } as never,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [], settings: [] }] as never })
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'answer' }, { type: 'text-delta', id: 'answer', delta: 'FITS' }, { type: 'text-end', id: 'answer' },
+      { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 1, totalTokens: 101 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const messages: UIMessage[] = [{ id: 'prior-user', role: 'user', parts: [{ type: 'text', text: 'Earlier question' }] },
+      { id: 'prior-answer', role: 'assistant', parts: [{ type: 'text', text: 'Earlier answer' }], metadata: { usage: { inputTokens: 64000, outputTokens: 4000 } } }, userMessage]
+    try {
+      const chunks = await readChunks(await new CustomChatTransport(undefined, 'stale-budget').sendMessages({ chatId: 'stale-budget', messages, abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+      expect(JSON.stringify(chunks)).toContain('FITS')
+      expect(recover).not.toHaveBeenCalled()
+      expect((model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream).toHaveBeenCalledTimes(1)
+    } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+
   it.each([[true, false, false], [false, false, false], [true, true, false], [true, false, true], [true, true, true]])('summarizes before inference and retries at most once: recovery=%s provider=%s continuation=%s', async (succeeds, providerReject, continuation) => {
     const { ContextCompaction } = await import('../dstar-context-compaction')
     const { runIdleSummaryRequest } = await import('../dstar-summary-idle')

@@ -3,6 +3,14 @@ import { personalTaskInput } from './personal-task-context'
 import type { UIMessage } from '@ai-sdk/react'
 import { lastAssistantMessageIsCompleteWithToolCalls } from 'ai'
 
+/** Preserve non-enumerable Error.message instead of serializing errors as {}. */
+export function toolErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message || error.name
+  if (typeof error === 'string') return error
+  try { return JSON.stringify(error) || 'Unknown tool error' }
+  catch { return 'Tool failed with an unreadable error' }
+}
+
 export type ChatToolCall = {
   toolCallId: string
   toolName: string
@@ -200,7 +208,7 @@ export async function executeChatToolCalls({
           state: 'output-error',
           tool: toolCall.toolName,
           toolCallId: toolCall.toolCallId,
-          errorText: `Error: ${result.error}`,
+          errorText: `Error: ${toolErrorMessage(result.error)}`,
         })
       } else {
         addToolOutput({
@@ -216,7 +224,7 @@ export async function executeChatToolCalls({
           state: 'output-error',
           tool: toolCall.toolName,
           toolCallId: toolCall.toolCallId,
-          errorText: `Error: ${JSON.stringify(error)}`,
+          errorText: `Error: ${toolErrorMessage(error)}`,
         })
       }
     }

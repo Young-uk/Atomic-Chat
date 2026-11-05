@@ -411,6 +411,16 @@ describe('Tauri IPC contract', () => {
       const match = command.match(/^plugin:([a-z0-9-]+)\|([a-z0-9_]+)$/)
       if (!match) continue
       const [, pluginId, commandName] = match
+      // The official log plugin is registered dynamically in setup via split;
+      // it is not one of the repository-owned plugins parsed above.
+      if (pluginId === 'log' && commandName === 'log') {
+        const shell = read(join(TAURI_ROOT, 'src/lib.rs'))
+        expect(shell).toContain('tauri_plugin_log::Builder::default()')
+        expect(shell).toContain('log_builder.split(app.handle())?')
+        expect(shell).toContain('app.handle().plugin(plugin)?')
+        expect(grantedPlugins.has('log')).toBe(true)
+        continue
+      }
       const plugin = pluginById.get(pluginId)
       if (!plugin) {
         errors.push(`${command}: plugin is not registered`)

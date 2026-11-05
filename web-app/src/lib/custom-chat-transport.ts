@@ -5,7 +5,7 @@ import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOO
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
 import { publishSummaryProgress } from './context-summary-progress'
 import { TEMPORARY_CHAT_ID } from '@/constants/chat'
-import { ContextCompaction, estimateConversationUsage, projectCompactedMessages } from './dstar-context-compaction'
+import { ContextCompaction, estimateConversationUsage, logCompactionBudget, projectCompactedMessages } from './dstar-context-compaction'
 import { archiveStore, fetchDstarContext, searchConversationArchive } from './dstar-context-archive'
 import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA, isToolSnapshot, replayDstarToolSnapshots, stableToolJson, withDstarToolUpdates } from './dstar-tools'
 import { useMessages } from '@/hooks/useMessages'
@@ -1444,8 +1444,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             // and output reserve; raw-history savings alone cannot prove fit.
             const projected = convertToModelMessages(chatExecOutputsForModel(wire))
             if (continueContent) projected.push({ role: 'assistant', content: continueContent })
-            return estimatePromptTokensHeuristic({ system: systemWithSkills,
-              messages: projected, tools: activeTools }) +
+            return estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
+              messages: dropSystemForTools && systemWithSkills
+                ? foldSystemIntoFirstUserMessage(projected, systemWithSkills) : projected,
+              tools: activeTools }) +
               Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
           })
         summaryAfterTurn = response => {
@@ -1567,9 +1569,16 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     }
 
     if (compaction && compactionContext > 0) {
-      const input = estimateConversationUsage(preparedMessages,
-        estimatePromptTokensHeuristic({ system: effectiveSystemMessage, messages: finalModelMessages, tools: activeTools }))
+      // Historical usage describes a different request (and can aggregate tool
+      // steps). Never let it override the current compacted wire envelope.
+      const input = estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
+        messages: finalModelMessages, tools: activeTools })
       const reserve = Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
+      logCompactionBudget('foreground budget', {
+        threadId: compactionThread, inputTokens: input, reserveTokens: reserve,
+        context: compactionContext, fits: input + reserve <= compactionContext,
+        summaryStatus: compaction.status,
+      })
       if (input + reserve > compactionContext) {
         recoveryOverflow = input + reserve - compactionContext
         throw new Error(`${OUT_OF_CONTEXT_SIZE} This conversation needs more space than the current context window. ${compaction.status === 'summarizing' ? 'A background summary is still being prepared; wait for it before retrying.' : 'No verified summary is ready. Start a new conversation or increase the context size.'}`)

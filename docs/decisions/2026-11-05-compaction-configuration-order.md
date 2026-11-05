@@ -41,3 +41,22 @@ current GPU quantum cannot be preempted. Approximate history retains earlier
 recurrent-state influence; it is not an exact recomputation and is not persisted
 as an exact disk checkpoint. Image and unsupported backend paths retain their
 exact-rebuild guards. DS4_ATOMIC_HISTORY_CACHE=0 disables the approximation.
+
+
+## Recovery budget consistency
+
+Foreground preflight counts only the current serialized prompt envelope, including
+system folding, tools, continuation and output reserve. Prior assistant usage
+belongs to a different request and must not reject a now-fitting prompt. Recovery
+previews use the same system-folding rules. Diagnostic records contain counts,
+archive boundaries and resume/wait decisions without transcript content. Recovery
+still waits for another durable batch if the first batch does not free enough space.
+
+## Pre-output recovery adopts its verified snapshot
+
+A tool continuation normally freezes its active summary. Emergency recovery
+must commit the fitting verified snapshot before retrying that continuation;
+otherwise preview accepts the newer summary while the retry sends the older
+oversized context. This exception applies before output starts and preserves
+completed tool results. A regression checks that normal tool steps remain frozen
+and that a recovered tool step uses exactly the accepted preview.

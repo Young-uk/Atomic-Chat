@@ -96,7 +96,7 @@ inventory.
 | Memory | Legacy explicit memories; source-backed FTS5 notes, profile history, note links, lessons and procedures; immutable per-turn keyword recall for Personal Dstar | Optional local hybrid embeddings, query rewriting, idle link generation and consolidation are connected but default off; voting remains absent |
 | Tasks | One-shot ISO times, intervals, cron/timezone previews, local text results and opt-in macOS background service | Webhook triggers, durable tool turns and external delivery |
 | Workspace events | Bounded file events and opt-in same-id persistent watch definitions | Event-triggered tool workflows; events themselves are not persisted |
-| Desktop | Window controls; task-result notifications | Source clipboard tools are connected; optional screen control remains disabled until explicitly configured |
+| Desktop | Window controls, task-result notifications, and macOS screen capture/click/type/key through native inspected approvals | macOS Accessibility and Screen Recording permissions must be granted separately; browser actions use the dedicated browser tools |
 | Files/Git/documents/verification | Ported document extraction and syntax checks; existing Chat commands/scripts, attachments and skills remain available | Source filesystem/Git/GitHub and throwaway-workspace verification tools are connected; detached shell jobs still need authenticated session lifecycle wiring |
 | Collaboration | Existing Chat inference path | Fusion orchestrator/worker delegation and result contracts |
 | Remote services | Existing Chat MCP connectors | Agent Telegram/Discord/Swarm channels, Composio setup and Agent-specific integrations |

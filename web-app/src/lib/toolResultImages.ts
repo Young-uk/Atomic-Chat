@@ -1,3 +1,4 @@
+import { boundedWebResult } from './bounded-web-result'
 import { type UIMessage } from '@ai-sdk/react'
 
 import { downscaleImageDataUrl } from './imageDownscale'
@@ -183,11 +184,12 @@ export function prepareToolResultImagesForModel(
             : null
       if (!outKey) return part
 
-      const output = p[outKey]
+      const output = boundedWebResult(type.slice('tool-'.length), p[outKey])
+      if (output !== p[outKey]) changed = true
       if (!Array.isArray(output)) return part
 
       const toolName = type.slice('tool-'.length)
-      let blockChanged = false
+      let blockChanged = output !== p[outKey]
 
       const newOutput = output.map((block) => {
         if (!isImageBlock(block)) return block

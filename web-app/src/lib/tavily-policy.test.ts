@@ -39,3 +39,27 @@ it('does not rate-limit ordinary result text and uses a bounded fallback for mis
  vi.advanceTimersByTime(60000)
  await policy.call('tavily_search', {}, async () => ({}))
 })
+
+it('retains structured thrown status and Retry-After across endpoints', async () => {
+ vi.useFakeTimers()
+ const policy = new TavilyPolicy()
+ const failure = Object.assign(new Error('Too many requests'), { status: 429, headers: { 'Retry-After': '32' } })
+ await expect(policy.call('tavily_search', {}, async () => { throw failure })).rejects.toBe(failure)
+ await expect(policy.call('tavily_extract', {}, async () => ({}))).rejects.toThrow('32 seconds')
+ vi.advanceTimersByTime(32000)
+ await policy.call('tavily_search', {}, async () => ({}))
+})
+it('recognizes explicit nested error messages without treating article text as failures', async () => {
+ const policy = new TavilyPolicy()
+ await policy.call('tavily_search', {}, async () => ({ content: [{ text: 'HTTP 429: an article' }] }))
+ await policy.call('tavily_extract', {}, async () => ({ error: 'HTTP 429: Too many requests' }))
+ await expect(policy.call('tavily_map', {}, async () => ({}))).rejects.toThrow('rate limited')
+})
+it('reads a non-enumerable Error cause and handles circular transport metadata', async () => {
+ const policy = new TavilyPolicy()
+ const cause: { status: number; response?: unknown } = { status: 429 }
+ cause.response = cause
+ const failure = new Error('MCP transport failed', { cause })
+ await expect(policy.call('tavily_extract', {}, async () => { throw failure })).rejects.toBe(failure)
+ await expect(policy.call('tavily_search', {}, async () => ({}))).rejects.toThrow('rate limited')
+})

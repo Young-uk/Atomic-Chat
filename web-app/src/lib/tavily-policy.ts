@@ -20,9 +20,17 @@ export class TavilyPolicy {
     const observe = (value: unknown) => {
       let limited = typeof value === 'string' && /(?:HTTP|status|error)[ :"=]*429\b/i.test(value)
       let seconds = 60
+      const seen = new Set<object>()
       const visit = (item: unknown) => {
         if (typeof item === 'string') { try { visit(JSON.parse(item)) } catch { /* Plain text is not metadata. */ } }
         else if (item && typeof item === 'object') {
+          if (seen.has(item)) return
+          seen.add(item)
+          // Error.message and cause are non-enumerable in native exceptions.
+          if (item instanceof Error) {
+            if (/^(?:Error: )?(?:HTTP|status|error)[ :"=]*429\b/i.test(item.message)) limited = true
+            visit(item.cause)
+          }
           for (const [key, value] of Object.entries(item)) {
             if (key.toLowerCase() === 'retry-after') {
               const delay = Number(value)
@@ -31,6 +39,9 @@ export class TavilyPolicy {
               else if (Number.isFinite(date)) seconds = Math.max(0, (date - Date.now()) / 1000)
             }
             if ((key === 'status' || key === 'statusCode') && Number(value) === 429) limited = true
+            // Only error fields carry plain-text failures; ordinary search
+            // article text mentioning 429 must never trigger a cooldown.
+            if ((key === 'error' || key === 'message') && typeof value === 'string' && /^(?:Error: )?(?:HTTP|status|error)[ :"=]*429\b/i.test(value)) limited = true
             visit(value)
           }
         }
@@ -44,7 +55,7 @@ export class TavilyPolicy {
       observe(result)
       return result
     } catch (error) {
-      observe(String(error))
+      observe(error)
       throw error
     } finally { this.pending.delete(key) }
   }

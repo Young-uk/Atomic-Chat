@@ -717,3 +717,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Bound the message queue and disclose editors on demand](2026-11-05-compact-message-queue.md)
 
 - [Preserve configuration order across compaction](2026-11-05-compaction-configuration-order.md)
+
+- [Model-authored Personal tools](2026-11-05-custom-personal-tools.md) — Persistent custom code definitions and inspected execution approvals.
+
+- [Desktop controls and bounded crawl envelopes](2026-11-05-desktop-controls-crawl-envelope.md)

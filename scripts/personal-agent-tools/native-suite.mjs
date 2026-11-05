@@ -1,5 +1,8 @@
+import { CustomTools } from './custom-tools.mjs'
+import { PersonalStore } from './store.mjs'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { NativeApprovalBridge } from './native-approval.mjs'
 import { ToolRegistry } from './agent-source/suite/tools/tool-registry.mjs'
 import { registerOsTools, ShellJobRegistry } from './agent-source/suite/tools/os/index.mjs'
@@ -18,8 +21,10 @@ import { AtomicMailService } from './agent-source/suite/atomic-mail/index.mjs'
 /** Direct source adapter only. No Agent bootstrap, model loop, private config
  * or database is loaded. The host owns scheduling and human approval. */
 export class PersonalNativeSuite {
-  constructor({ workspace, directory, trustConfigPaths = [], screenEnabled = false, mailConfig, githubOptions }) {
+  constructor({ workspace, directory, trustConfigPaths = [], screenEnabled = false, screenDeps, store, mailConfig, githubOptions }) {
     this.workspace = resolve(workspace)
+    this.screenSessionId = randomUUID()
+    this.custom = new CustomTools(store ?? new PersonalStore(directory), this.workspace)
     this.approvals = new NativeApprovalBridge()
     this.approvals.readScopeGrants = new ReadScopeGrants()
     // Fan-out grants must never be fabricated by the embedding host.
@@ -36,7 +41,7 @@ export class PersonalNativeSuite {
     const dangerous = { approvals: this.approvals, approvalRequired: true }
     registerGithubTools(this.registry, { ...dangerous, ...githubOptions })
     registerVerifyTools(this.registry, { ...dangerous, config })
-    registerOsScreenTools(this.registry, { ...dangerous, enabled: screenEnabled })
+    registerOsScreenTools(this.registry, { ...dangerous, enabled: screenEnabled, deps: screenDeps })
     // Override the original factories' private-Agent-config fallback. Credentials
     // and cached mail state belong only to the Personal worker supplied here.
     const atomicMail = new AtomicMailService({ stateDir: resolve(directory, 'native-state'),
@@ -65,6 +70,7 @@ export class PersonalNativeSuite {
   }
   inspect(pendingId) { return this.approvals.inspect(pendingId) }
   async run(name, args, pendingId) {
+    if (name.startsWith('custom.')) return this.custom.run(name, pendingId ? args.input : args, this.approvals, pendingId)
     this.describe(name)
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Native arguments must be an object')
     const unknown = findUnknownArguments(name, args)
@@ -83,12 +89,18 @@ export class PersonalNativeSuite {
     }
     // Until Chat supplies an authenticated conversation identity, grants and
     // detached jobs live for this invocation only, never across other chats.
-    const sessionId = randomUUID()
+    const sessionId = name.startsWith('os.screen.') ? this.screenSessionId : randomUUID()
     try {
-      return await this.approvals.run(name, args, () => this.registry.invoke(name, args, {
+      const result = await this.approvals.run(name, args, () => this.registry.invoke(name, args, {
         workingDir: this.workspace, sessionId, stepIndex: 0,
         signal: AbortSignal.timeout(120000), readRoots: [],
       }), pendingId)
+      // The source tool owns this generated path. Deliver actual image bytes
+      // alongside geometry, rather than asking the model to read a local path.
+      if (name === 'os.screen.capture' && result?.status === 'ok' && result.details?.path) {
+        return { ...result, image: await readFile(result.details.path) }
+      }
+      return result
     } finally {
       this.approvals.readScopeGrants.clear(sessionId)
       this.jobs.endSession(sessionId)

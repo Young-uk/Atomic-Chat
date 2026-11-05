@@ -26,6 +26,16 @@ const baseOptions = () => ({
 })
 
 describe('executeChatToolCalls', () => {
+  it('delivers thrown Error messages to the model instead of an empty object', async () => {
+    const outputs: ChatToolOutput[] = []
+    await executeChatToolCalls({
+      ...baseOptions(), toolCalls: [calls[0]], signal: new AbortController().signal,
+      callMcpTool: vi.fn().mockRejectedValue(new Error('Tavily rate limited. Retry in 32 seconds')),
+      addToolOutput: output => outputs.push(output),
+    })
+    expect(outputs[0]).toMatchObject({ state: 'output-error', errorText: 'Error: Tavily rate limited. Retry in 32 seconds' })
+  })
+
   it('refuses a historical tool after it is disabled during approval', async () => {
     const options = baseOptions()
     const callMcpTool = vi.fn()

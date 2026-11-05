@@ -1,9 +1,20 @@
+import { invoke } from '@tauri-apps/api/core'
 import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
 import type { SummaryProgress } from './context-summary-progress'
 import type { UIMessage } from 'ai'
 import { estimateTokens } from './prompt-size'
 import { prepareToolResultImagesForModel } from './toolResultImages'
 import { messageClockLabel } from './messageClock'
+
+/** Persist count-only diagnostics in the existing application log on desktop. */
+export function logCompactionBudget(event: string, fields: Record<string, unknown>): void {
+  console.info(`[context-compaction] ${event}`, fields)
+  if (IS_TAURI) {
+    void invoke('plugin:log|log', { level: 3,
+      message: `[context-compaction] ${event} ${JSON.stringify(fields)}`,
+      location: 'context-compaction' }).catch(() => {})
+  }
+}
 
 export const COMPACTION_TRIGGER = 0.7
 export const RECENT_CONTEXT_FRACTION = 0.2
@@ -494,9 +505,31 @@ export class ContextCompaction {
    * Reuse an existing job, preserve raw archives, and never discard the newest turn. */
   async recover(messages: UIMessage[], context: number, summarize: Summarize, signal?: AbortSignal, overflowTokens = 0, promptCost?: (view: UIMessage[]) => number): Promise<void> {
     signal?.throwIfAborted()
-    const fits = () => !!this.ready && this.matches(this.ready.record, messages) &&
-      (!promptCost || promptCost(this.preview(this.ready.record, messages)) <= context)
-    if (fits()) return
+    let lastBudget = ''
+    const fits = () => {
+      const record = this.ready?.record
+      const matches = !!record && this.matches(record, messages)
+      const inputTokens = matches && promptCost ? promptCost(this.preview(record!, messages)) : undefined
+      const fits = matches && (inputTokens === undefined || inputTokens <= context)
+      const budget = JSON.stringify([record?.id, matches, inputTokens, context, fits])
+      if (budget !== lastBudget) {
+        lastBudget = budget
+        // Counts only: do not log transcript text or tool arguments.
+        logCompactionBudget('recovery budget', {
+          threadId: this.threadId, archivedMessages: record?.source.length ?? 0,
+          summaryBatches: record?.batches?.length ?? 0, sourceMatches: matches,
+          inputWithReserve: inputTokens, context, decision: fits ? 'resume' : 'wait',
+        })
+      }
+      return fits
+    }
+    if (fits()) {
+      // Recovery runs only before output begins. Commit the exact verified
+      // view here, including for a tool continuation which normally freezes
+      // its active summary. Otherwise the retry sends the old oversized view.
+      this.apply(messages, true)
+      return
+    }
     if (this.ready && !this.pending && this.matches(this.ready.record, messages)) {
       this.active = this.ready.record
       this.ready = undefined
@@ -538,6 +571,7 @@ export class ContextCompaction {
     })
     signal?.throwIfAborted()
     if (!fits()) return this.recover(messages, context, summarize, signal, overflowTokens, promptCost)
+    this.apply(messages, true)
   }
 
   cancel(): void {

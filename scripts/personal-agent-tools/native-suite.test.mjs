@@ -62,3 +62,28 @@ test('GitHub identity uses supplied credentials and verification changes only it
     assert.equal(await readFile(join(workspace, 'original.txt'), 'utf8'), 'preserve')
   } finally { suite.close() }
 })
+
+test('enabled desktop controls expose schemas and report missing OS permission without input', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'atomic-screen-boundary-'))
+  let probes = 0
+  const suite = new PersonalNativeSuite({ workspace, directory: workspace, screenEnabled: true,
+    screenDeps: { platform: 'darwin', run: async () => {
+      probes++
+      return { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        screen: { width: 1440, height: 900, scale: 2 },
+        accessibility: false, screenRecording: false,
+        frontmost: { name: 'Synthetic app', bundleId: 'com.example.synthetic' },
+      }) }
+    } } })
+  try {
+    for (const action of ['capture', 'click', 'type', 'key']) {
+      assert.ok(suite.describe(`os.screen.${action}`).inputSchema)
+    }
+    const capture = await suite.run('os.screen.capture', {})
+    assert.equal(capture.status, 'error')
+    const type = await suite.run('os.screen.type', { text: 'synthetic' })
+    assert.equal(type.status, 'error')
+    assert.equal(probes, 2)
+    assert.match(JSON.stringify(type), /permission/i)
+  } finally { suite.close() }
+})

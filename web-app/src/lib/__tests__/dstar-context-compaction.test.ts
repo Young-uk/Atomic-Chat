@@ -370,3 +370,18 @@ it('excludes screenshot bytes from summary evidence and usage estimates without 
    expect(projectCompactedMessages([owner], [owner, image])).toEqual([owner, image])
    expect(projectCompactedMessages([], [owner, image])).toEqual([])
  })
+
+ it('commits a fitting recovery snapshot before a frozen tool continuation retries', async () => {
+  const c = new ContextCompaction('thread', storage())
+  const messages = history()
+  c.schedule(messages, 2000, 2000, async () => 'Verified recovery facts')
+  await settle()
+  // Ordinary tool steps must not adopt a newly finished background summary.
+  expect(c.apply(messages, false)).toEqual(messages)
+  const verified = c.previewReady(messages)
+  expect(verified.length).toBeLessThan(messages.length)
+  await c.recover(messages, 2000, async () => { throw new Error('duplicate summary') },
+    undefined, 0, view => view.length < messages.length ? 1000 : 3000)
+  // The retry must send the view that passed recovery, even with adoption off.
+  expect(c.apply(messages, false)).toEqual(verified)
+})
