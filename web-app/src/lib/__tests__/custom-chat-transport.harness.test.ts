@@ -1601,7 +1601,7 @@ describe('Dstar emergency full-context recovery', () => {
     const doStream = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream
     const successfulStream = doStream.getMockImplementation()!
     if (providerReject) doStream.mockImplementation(async (...args) => {
-      if (!recovered) throw new Error('the request exceeds the available context size.')
+      if (!recovered) throw new Error('Prompt has 8100 tokens plus 1024 reserved output tokens, but the configured context size is 8192 tokens')
       return successfulStream(...args)
     })
     vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
@@ -1632,6 +1632,10 @@ describe('Dstar emergency full-context recovery', () => {
       const promptCost = recover.mock.calls[0][5]
       expect(promptCost).toBeTypeOf('function')
       expect(promptCost!([userMessage])).toBeGreaterThanOrEqual(1024)
+      if (providerReject) {
+        expect(recover.mock.calls[0][4]).toBeGreaterThanOrEqual(932)
+        expect(promptCost!([userMessage])).toBeGreaterThan(8000)
+      }
       expect(promptCost!(messages)).toBeGreaterThan(promptCost!([userMessage]))
     } finally { abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })

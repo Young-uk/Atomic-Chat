@@ -900,8 +900,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     this.lastPromptSize = { ...this.lastPromptSize, ctxLen: result.to }
   }
 
-  private contextRecovery?: () => Promise<void>
-  private takeContextRecovery(): (() => Promise<void>) | undefined {
+  private contextRecovery?: (error?: unknown) => Promise<void>
+  private takeContextRecovery(): ((error?: unknown) => Promise<void>) | undefined {
     const recovery = this.contextRecovery
     this.contextRecovery = undefined
     return recovery
@@ -976,7 +976,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // A full prompt cannot produce the successful answer that normally
         // triggers background summarization. Yield the foreground lane first
         // so the bounded summary request cannot deadlock behind this request.
-        await recover()
+        await recover(error)
         options.abortSignal?.throwIfAborted()
         this.continueFromContent = continuationForRecovery
         return this.sendWithContextRecovery(options, true)
@@ -1170,6 +1170,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           providerSettings,
           reasoningOverride
         )
+        // Reserve answer space against the server's actual rendered prompt,
+        // including tool-result continuations whose heuristic can undercount.
+        if (import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' &&
+          usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+          effectiveReasoningOverride.atomic_output_reserve = Math.min(
+            (getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
+        }
         const hasOverride = Object.keys(effectiveReasoningOverride).length > 0
 
         // Audio attachments (omni/audio-capable models, MLX backend) are
@@ -1436,8 +1443,15 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const coordinator = compaction
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
-        this.contextRecovery = () => coordinator.recover(original, compactionContext,
-          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, recoveryOverflow, view => {
+        this.contextRecovery = (error) => {
+          // An exact server rejection carries the tokenizer evidence. Preserve
+          // that undercount through every projected recovery view.
+          const exact = /Prompt has (\d+) tokens plus (\d+) reserved output tokens/.exec(String(error))
+          const baseline = estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
+            messages: finalModelMessages, tools: activeTools })
+          const correction = exact ? Math.max(0, Number(exact[1]) - baseline) : 0
+          return coordinator.recover(original, compactionContext,
+          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
             const retained = projectCompactedMessages(view, preparedMessages)
             const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(retained, original), original))
             // Use the foreground envelope, including fixed instructions/tools
@@ -1448,8 +1462,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               messages: dropSystemForTools && systemWithSkills
                 ? foldSystemIntoFirstUserMessage(projected, systemWithSkills) : projected,
               tools: activeTools }) +
-              Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
+              Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048) + correction
           })
+        }
         summaryAfterTurn = response => {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]

@@ -723,3 +723,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Desktop controls and bounded crawl envelopes](2026-11-05-desktop-controls-crawl-envelope.md)
 
 - [Strict JSON verification in Personal tools](2026-11-05-personal-json-verification.md)
+
+- [Reserve Dstar foreground output space](2026-11-06-dstar-output-reserve.md)
