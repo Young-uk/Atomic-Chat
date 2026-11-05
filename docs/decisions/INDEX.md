@@ -713,3 +713,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Scheduled occurrence timing and interruption diagnostics](2026-11-05-scheduled-occurrence-diagnostics.md)
 
 - [Preserve independent prefix state across summary adoption](2026-11-05-independent-summary-prefix.md)
+
+- [Bound the message queue and disclose editors on demand](2026-11-05-compact-message-queue.md)

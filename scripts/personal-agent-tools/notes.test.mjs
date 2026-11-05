@@ -141,3 +141,14 @@ test('lesson and procedure history reports retained lifecycle without inventing 
   assert.equal(n.knowledge({ area: 'lessons', action: 'history', id: lesson.id }).events.length, 2)
   n.close()
 })
+
+
+test('knowledge rejects a missing area with actionable guidance and no write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-knowledge-area-'))
+  const notes = new PersonalNotes(directory, directory)
+  const args = { action: 'save', key: 'drink', text: 'Synthetic preference', sourceReference: 'qa/area' }
+  assert.throws(() => notes.knowledge(args), /requires area:.*No changes were saved/)
+  assert.equal(notes.knowledge({ area: 'profile', action: 'list' }).total, 0)
+  assert.ok(notes.knowledge({ ...args, area: 'profile' }).fact.id)
+  notes.close()
+})

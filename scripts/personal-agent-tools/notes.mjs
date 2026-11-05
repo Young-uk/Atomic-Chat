@@ -112,6 +112,11 @@ export class PersonalNotes {
     return { indexed, limit: 100 }
   }
   knowledge(args) {
+    // Reject incomplete model calls before opening storage; never infer a
+    // namespace for a write from its other arguments.
+    if (!['profile', 'links', 'lessons', 'procedures'].includes(args.area)) {
+      throw new Error('personal_knowledge requires area: "profile", "links", "lessons" or "procedures". For a profile fact, retry with area: "profile" and the original arguments. No changes were saved.')
+    }
     const store = this.database()
     const options = { dbFile: join(this.directory, 'agent-notes.sqlite'), maxEntries: 2000 }
     if (args.area === 'profile') {
