@@ -401,12 +401,26 @@ describe('Dstar context usage', () => {
   it('uses last-step context rather than cumulative multi-tool billing usage after reload', () => {
     setSelectedModel('custom-dstar')
     dstarState.isDstar = true
-    const messages = [{ role: 'assistant', metadata: { modelId: 'qwen-test',
+    const messages = [
+      { role: 'assistant', metadata: { modelId: 'qwen-test',
+        usage: { inputTokens: 1000, outputTokens: 10, cachedInputTokens: 0 },
+      } },
+      { role: 'assistant', metadata: { modelId: 'qwen-test',
+        usage: { inputTokens: 1000, outputTokens: 10 },
+      } },
+      { role: 'assistant', metadata: { modelId: 'another-model',
+        usage: { inputTokens: 1000, outputTokens: 10, cachedInputTokens: 1000 },
+      } },
+      { role: 'assistant', metadata: { modelId: 'qwen-test',
       usage: { inputTokens: 120000, outputTokens: 512, totalTokens: 120512 },
-      contextUsage: { inputTokens: 32256, outputTokens: 512, totalTokens: 32768 },
+      contextUsage: { inputTokens: 32256, outputTokens: 512, totalTokens: 32768, cachedInputTokens: 16128 },
     } }] as ThreadMessage[]
     render(<ContextSizeControl messages={messages} />)
-    expect(screen.getByRole('button', { name: 'Context usage: 50.0%' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Context usage: 50.0%' }))
+    expect(screen.getByText('Average cache hit rate in this chat')).toBeInTheDocument()
+    expect(screen.getByText('25.0%')).toBeInTheDocument()
+    expect(screen.getByText('Last request cache hit rate')).toBeInTheDocument()
+    expect(screen.getByText(/^50\.0% \(16\.1K \/ 32\.3K\)$/)).toBeInTheDocument()
   })
 
 })

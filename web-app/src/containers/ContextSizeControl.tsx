@@ -43,12 +43,17 @@ type LatestTokenUsage = {
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  cachedInputTokens?: number
+  averageCacheHitRate?: number
 }
 
 function getLatestTokenUsage(
   messages: ThreadMessage[],
   modelId?: string
 ): LatestTokenUsage {
+  let latest: LatestTokenUsage | undefined
+  let cacheHitRateSum = 0
+  let measuredRequests = 0
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message.role !== 'assistant') continue
@@ -60,6 +65,7 @@ function getLatestTokenUsage(
           inputTokens?: unknown
           outputTokens?: unknown
           totalTokens?: unknown
+          cachedInputTokens?: unknown
         }
       | undefined
     const tokenSpeed = metadata?.tokenSpeed as
@@ -81,13 +87,25 @@ function getLatestTokenUsage(
         ? Math.max(0, usage.inputTokens)
         : Math.max(0, totalTokens - outputTokens)
 
-    return {
+    const cached = usage?.cachedInputTokens
+    const cachedInputTokens = typeof cached === 'number' && Number.isSafeInteger(cached)
+      && cached >= 0 && cached <= inputTokens ? cached : undefined
+    latest ??= {
+      cachedInputTokens,
       inputTokens,
       outputTokens,
       totalTokens: Math.max(totalTokens, inputTokens + outputTokens),
     }
+    if (!modelId) break
+    if (cachedInputTokens !== undefined && inputTokens > 0) {
+      cacheHitRateSum += cachedInputTokens / inputTokens
+      measuredRequests++
+    }
   }
-  return { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+  return {
+    ...(latest ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 }),
+    averageCacheHitRate: measuredRequests ? (cacheHitRateSum / measuredRequests) * 100 : undefined,
+  }
 }
 
 export function ContextSizeControl({
@@ -113,6 +131,12 @@ export function ContextSizeControl({
   const usageLabel = currentTokens !== undefined
     ? currentEstimate ? 'Estimated next request' : current?.outputTokens && activeTokens === undefined ? 'Latest request including output' : 'Current request input'
     : 'Last reported request'
+  // A summary estimate can replace occupancy while the last request's cache
+  // measurement still describes that completed request.
+  const cachedInput = dstar.isDstar ? latestUsage.cachedInputTokens : undefined
+  const cacheHitRate = cachedInput !== undefined && latestUsage.inputTokens > 0
+    ? (cachedInput / latestUsage.inputTokens) * 100
+    : undefined
   const measuredTokens = tokenData.tokenCount + additionalTokens
   const totalTokens =
     !dstar.isDstar && measuredTokens > 0
@@ -244,6 +268,22 @@ export function ContextSizeControl({
             </span>
           </div>
         </div>
+        {dstar.isDstar && latestUsage.averageCacheHitRate !== undefined && (
+          <div className="flex items-center justify-between gap-2 text-sm">
+            <span className="text-muted-foreground">Average cache hit rate in this chat</span>
+            <span className="shrink-0 font-mono text-foreground">
+              {latestUsage.averageCacheHitRate.toFixed(1)}%
+            </span>
+          </div>
+        )}
+        {cacheHitRate !== undefined && (
+          <div className="flex items-center justify-between gap-2 text-sm">
+            <span className="text-muted-foreground">Last request cache hit rate</span>
+            <span className="shrink-0 font-mono text-foreground">
+              {cacheHitRate.toFixed(1)}% ({formatTokenCount(cachedInput ?? 0)} / {formatTokenCount(latestUsage.inputTokens)})
+            </span>
+          </div>
+        )}
         {dstar.isDstar && (
           <p className="text-sm text-muted-foreground">
             {currentTokens !== undefined
