@@ -86,7 +86,12 @@ describe('Audios studio geometry', () => {
 
       expectNoHorizontalOverflow(screen.getByTestId('audio-form-scroller'))
       expectNoHorizontalOverflow(screen.getByTestId('audio-viewer-section'))
-      expectNoHorizontalOverflow(screen.getByTestId('audio-gallery-grid'))
+      const gallery = screen.getByTestId('audio-gallery-grid')
+      expectNoHorizontalOverflow(gallery)
+      const firstCard = gallery.querySelector('button')!
+      const scroller = gallery.parentElement!
+      expect(firstCard.getBoundingClientRect().top - scroller.getBoundingClientRect().top)
+        .toBeGreaterThanOrEqual(2)
     }
   )
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { UIMessage } from 'ai'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
 import { getServiceHub } from '@/hooks/useServiceHub'
 import {
@@ -11,7 +12,7 @@ import {
 } from '@/lib/audio/models'
 import { toAudioError } from '@/lib/audio/errors'
 import { readFileBytes } from '@/lib/readFileBytes'
-import { MAX_BLOB_CLIP_BYTES } from '@/lib/video/webview-playback'
+import { MAX_BLOB_CLIP_BYTES, webviewReadsAssetMedia } from '@/lib/video/webview-playback'
 import { fetchAudioCatalog, findAudioModel } from '@/services/audio-catalog-registry'
 
 type SpeechSentence = { text: string; instruct?: string }
@@ -22,7 +23,7 @@ function createSpeechQueue(
 ) {
   const audio = getServiceHub().audio()
   const pending: SpeechSentence[] = []
-  const clips: Awaited<ReturnType<typeof readFileBytes>>[] = []
+  const clips: { id: string; path: string }[] = []
   const controller = new AbortController()
   const { signal } = controller
   let generating = false
@@ -67,6 +68,7 @@ function createSpeechQueue(
     const id = job.id
     let cancellation: Promise<unknown> | undefined
     cancelActive = () => cancellation ??= audio.cancelJob(id).catch(() => {})
+    let handedToPlayer = false
     try {
       while (!signal.aborted && (job.state === 'queued' || job.state === 'generating')) {
         await new Promise((resolve) => setTimeout(resolve, 250))
@@ -77,15 +79,32 @@ function createSpeechQueue(
       signal.throwIfAborted()
       cancelActive = undefined
       if (!job.output) throw job.error ?? new Error('Speech generation produced no audio.')
-      return await readFileBytes(job.output.path, { maxBytes: MAX_BLOB_CLIP_BYTES })
+      handedToPlayer = true
+      return { id, path: job.output.path }
     } finally {
       if (signal.aborted && !job.output) {
         await cancelActive?.()
         job = (await audio.getJob(job.id).catch(() => null)) ?? job
       }
       cancelActive = undefined
-      if (job.output) await audio.deleteGalleryItem(job.id).catch(console.warn)
+      if (job.output && !handedToPlayer) await discardClip(id)
     }
+  }
+
+  async function synthesizeWithRecovery(sentence: SpeechSentence) {
+    try {
+      return await synthesize(sentence)
+    } catch (error) {
+      if (signal.aborted || toAudioError(error).code !== 'ENGINE_CRASHED') throw error
+      // The failed job produced no playable clip. Let the core reopen its
+      // engine once before giving up on the sentence.
+      setReady(false)
+      return await synthesize(sentence)
+    }
+  }
+
+  function discardClip(id: string) {
+    return audio.deleteGalleryItem(id).catch(console.warn)
   }
 
   function stop() {
@@ -95,7 +114,7 @@ function createSpeechQueue(
     setSpeaking(false)
     setReady(false)
     pending.length = 0
-    clips.length = 0
+    for (const clip of clips.splice(0)) void discardClip(clip.id)
     void cancelActive?.()
   }
 
@@ -113,8 +132,11 @@ function createSpeechQueue(
     generating = true
     try {
       while (pending.length && !signal.aborted) {
-        const clip = await synthesize(pending.shift()!)
-        if (signal.aborted) return
+        const clip = await synthesizeWithRecovery(pending.shift()!)
+        if (signal.aborted) {
+          await discardClip(clip.id)
+          return
+        }
         clips.push(clip)
         void playClips()
       }
@@ -130,25 +152,76 @@ function createSpeechQueue(
     playing = true
     try {
       while (clips.length && !signal.aborted) {
-        const { bytes } = clips.shift()!
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
-        const player = new Audio(url)
+        const clip = clips.shift()!
+        const player = document.createElement('audio')
+        let objectUrl: string | undefined
         let finishPlayback: (() => void) | undefined
         try {
-          await new Promise<void>((resolve, reject) => {
+          // Use the same mounted media element and native asset URL as Audios.
+          // Keep the transient WAV until the player has finished reading it.
+          if (webviewReadsAssetMedia()) {
+            player.src = convertFileSrc(clip.path)
+          } else {
+            const { bytes } = await readFileBytes(clip.path, { maxBytes: MAX_BLOB_CLIP_BYTES })
+            objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
+            player.src = objectUrl
+          }
+          if (signal.aborted) return
+          player.hidden = true
+          document.body.append(player)
+          const play = () => new Promise<void>((resolve, reject) => {
+            let settled = false
+            let lastTime = player.currentTime
+            let lastAdvance = Date.now()
+            const watchdog = window.setInterval(() => {
+              if (player.currentTime > lastTime) {
+                lastTime = player.currentTime
+                lastAdvance = Date.now()
+              } else if (Date.now() - lastAdvance >= 5000) {
+                finish(new Error('Speech playback stopped advancing.'))
+              }
+            }, 500)
+            const finish = (error?: unknown) => {
+              if (settled) return
+              settled = true
+              window.clearInterval(watchdog)
+              player.onplaying = player.onwaiting = player.onended = player.onerror = null
+              if (finishPlayback) signal.removeEventListener('abort', finishPlayback)
+              if (error) reject(error)
+              else resolve()
+            }
             player.onplaying = () => { if (!signal.aborted) setSpeaking(true) }
             player.onwaiting = () => { if (!signal.aborted) setSpeaking(false) }
-            player.onended = () => resolve()
-            player.onerror = () => reject(new Error('Could not play the generated speech.'))
-            finishPlayback = () => resolve()
+            player.onended = () => finish()
+            player.onerror = () => finish(new Error('Could not play the generated speech.'))
+            finishPlayback = () => finish()
             signal.addEventListener('abort', finishPlayback, { once: true })
-            void player.play().catch(reject)
+            void player.play().catch(finish)
           })
+          try {
+            await play()
+          } catch (error) {
+            if (signal.aborted) return
+            // Retry only a clip that never started advancing, so a sentence
+            // already heard does not play twice.
+            if (objectUrl || player.currentTime > 0) throw error
+            setSpeaking(false)
+            player.pause()
+            const { bytes } = await readFileBytes(clip.path, { maxBytes: MAX_BLOB_CLIP_BYTES })
+            if (signal.aborted) return
+            objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
+            player.src = objectUrl
+            await play()
+          }
         } finally {
           if (finishPlayback) signal.removeEventListener('abort', finishPlayback)
           if (!signal.aborted) setSpeaking(false)
           player.pause()
-          URL.revokeObjectURL(url)
+          player.removeAttribute('src')
+          player.load()
+          player.remove()
+          if (objectUrl) URL.revokeObjectURL(objectUrl)
+          await discardClip(clip.id)
         }
       }
     } catch (error) {

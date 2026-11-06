@@ -260,7 +260,7 @@ export const AudioResultsPane = memo(function AudioResultsPane() {
             </Button>
           )}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-1 pb-4">
           <div
             className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2"
             data-testid="audio-gallery-grid"
