@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { UIMessage } from 'ai'
 import { toast } from 'sonner'
 import { getServiceHub } from '@/hooks/useServiceHub'
@@ -16,7 +16,10 @@ import { fetchAudioCatalog, findAudioModel } from '@/services/audio-catalog-regi
 
 type SpeechSentence = { text: string; instruct?: string }
 
-function createSpeechQueue() {
+function createSpeechQueue(
+  setReady: (ready: boolean) => void,
+  setSpeaking: (speaking: boolean) => void
+) {
   const audio = getServiceHub().audio()
   const pending: SpeechSentence[] = []
   const clips: Awaited<ReturnType<typeof readFileBytes>>[] = []
@@ -26,7 +29,15 @@ function createSpeechQueue() {
   let playing = false
   let cancelActive: (() => Promise<unknown>) | undefined
 
-  async function synthesize(sentence: SpeechSentence) {
+  let modelId: string | undefined
+  let preparing: Promise<void> | undefined
+  const unsubscribe = audio.subscribe((event) => {
+    if (event.type === 'state' && modelId && !signal.aborted) {
+      setReady(event.status.model.state === 'loaded' && event.status.model.loaded?.modelId === modelId)
+    }
+  })
+
+  async function prepareModel() {
     const { catalog } = await fetchAudioCatalog()
     const model = findAudioModel(catalog, QWEN_CHAT_TTS_MODEL)
     const files = await audio.listModelFiles()
@@ -36,10 +47,21 @@ function createSpeechQueue() {
     if (!model || !quant) throw new Error('Install Qwen3-TTS in Audios to read replies aloud.')
     const status = await audio.getStatus()
     signal.throwIfAborted()
+    modelId = audioWireId(model, quant)
     if (status.activeJob) throw new Error('Audio generation is already in progress.')
-    if (status.model.loaded?.modelId !== audioWireId(model, quant)) {
+    if (status.model.loaded?.modelId !== modelId) {
       await audio.loadModel(buildAudioLoadRequest(model, quant))
     }
+    signal.throwIfAborted()
+    setReady(true)
+  }
+
+  function prepare() {
+    return preparing ??= prepareModel().finally(() => { preparing = undefined })
+  }
+
+  async function synthesize(sentence: SpeechSentence) {
+    await prepare()
     signal.throwIfAborted()
     let job = await audio.generate('speech', { ...sentence, voice: QWEN_CHAT_TTS_VOICE, transient: true })
     const id = job.id
@@ -67,7 +89,11 @@ function createSpeechQueue() {
   }
 
   function stop() {
+    if (signal.aborted) return
     controller.abort()
+    unsubscribe()
+    setSpeaking(false)
+    setReady(false)
     pending.length = 0
     clips.length = 0
     void cancelActive?.()
@@ -110,6 +136,8 @@ function createSpeechQueue() {
         let finishPlayback: (() => void) | undefined
         try {
           await new Promise<void>((resolve, reject) => {
+            player.onplaying = () => { if (!signal.aborted) setSpeaking(true) }
+            player.onwaiting = () => { if (!signal.aborted) setSpeaking(false) }
             player.onended = () => resolve()
             player.onerror = () => reject(new Error('Could not play the generated speech.'))
             finishPlayback = () => resolve()
@@ -118,6 +146,7 @@ function createSpeechQueue() {
           })
         } finally {
           if (finishPlayback) signal.removeEventListener('abort', finishPlayback)
+          if (!signal.aborted) setSpeaking(false)
           player.pause()
           URL.revokeObjectURL(url)
         }
@@ -134,6 +163,7 @@ function createSpeechQueue() {
       pending.push(...sentences.filter(({ text }) => /[\p{L}\p{N}]/u.test(text)))
       void generateClips()
     },
+    prepare,
     stop,
     get stopped() { return signal.aborted },
   }
@@ -147,14 +177,17 @@ export function useChatSpeech(
   status: string,
   enabled: boolean
 ) {
+  const [ready, setReady] = useState(false)
+  const [speaking, setSpeaking] = useState(false)
   const queue = useRef<ReturnType<typeof createSpeechQueue> | null>(null)
   const cursor = useRef({ user: '', message: '', text: '', offset: 0, instruct: undefined as string | undefined })
 
   useEffect(() => {
     if (!enabled) return
     cursor.current = { user: '', message: '', text: '', offset: 0, instruct: undefined as string | undefined }
-    const speech = createSpeechQueue()
+    const speech = createSpeechQueue(setReady, setSpeaking)
     queue.current = speech
+    void speech.prepare().catch(() => {})
     return () => {
       queue.current?.stop()
       queue.current = null
@@ -170,7 +203,7 @@ export function useChatSpeech(
     if (!user || !last) return
     if (status === 'submitted' || status === 'streaming') {
       if (position.user !== user.id) {
-        if (speech.stopped) speech = queue.current = createSpeechQueue()
+        if (speech.stopped) speech = queue.current = createSpeechQueue(setReady, setSpeaking)
         Object.assign(position, { user: user.id, message: '', text: '', offset: 0, instruct: undefined as string | undefined })
       }
     }
@@ -210,4 +243,6 @@ export function useChatSpeech(
     speech.enqueue(sentences)
 
   }, [enabled, messages, status, threadId])
+
+  return enabled && speaking ? 'speaking' : enabled && ready ? 'ready' : 'idle'
 }

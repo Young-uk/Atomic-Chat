@@ -71,6 +71,20 @@ describe('AudioPlayer switching clips (QA 2.3.2)', () => {
     expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled()
   })
 
+  it('returns to Play when metadata-only preload stops before canplay', () => {
+    const { container } = render(
+      <AudioPlayer src={SRC} mediaType="audio/wav" durationHint={5} />
+    )
+
+    act(() => vi.advanceTimersByTime(300))
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+    fireEvent.loadedMetadata(container.querySelector('audio')!)
+
+    const play = screen.getByRole('button', { name: 'Play' })
+    expect(play).toHaveAttribute('aria-busy', 'false')
+    expect(container.querySelector('.animate-spin')).toBeNull()
+  })
+
   it('reloads when the same player is given another clip', () => {
     const { rerender } = render(<AudioPlayer src={SRC} mediaType="audio/wav" />)
     rerender(<AudioPlayer src={`${SRC}?next`} mediaType="audio/wav" />)

@@ -216,6 +216,7 @@ type ChatInputProps = {
   onStop?: () => void
   chatStatus?: ChatStatus
   autoSpeech?: boolean
+  autoSpeechStatus?: 'idle' | 'ready' | 'speaking'
   onToggleAutoSpeech?: () => void
 }
 
@@ -231,6 +232,7 @@ const ChatInput = memo(function ChatInput({
   onStop,
   chatStatus,
   autoSpeech,
+  autoSpeechStatus,
   onToggleAutoSpeech,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -3683,7 +3685,12 @@ const ChatInput = memo(function ChatInput({
                         aria-pressed={autoSpeech}
                         onClick={onToggleAutoSpeech}
                       >
-                        {autoSpeech ? <Volume2 /> : <VolumeX />}
+                        {autoSpeech ? (
+                          <Volume2 className={cn(
+                            autoSpeechStatus === 'ready' && 'text-emerald-600 dark:text-emerald-400',
+                            autoSpeechStatus === 'speaking' && 'text-blue-600 dark:text-blue-400'
+                          )} />
+                        ) : <VolumeX />}
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>{t('common:autoSpeech', { defaultValue: 'Read replies aloud' })}</TooltipContent>

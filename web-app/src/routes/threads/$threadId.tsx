@@ -713,7 +713,7 @@ function ThreadDetail() {
     sendAutomaticallyWhen: followUpMessage,
   })
   useDesktopControlOverlay(threadId, chatMessages, status)
-  useChatSpeech(threadId, chatMessages, status, autoSpeech)
+  const autoSpeechStatus = useChatSpeech(threadId, chatMessages, status, autoSpeech)
 
   chatMessagesRef.current = chatMessages
 
@@ -2348,6 +2348,7 @@ function ThreadDetail() {
                 onStop={handleStop}
                 chatStatus={inputStatus}
                 autoSpeech={autoSpeech}
+                autoSpeechStatus={autoSpeechStatus}
                 onToggleAutoSpeech={() => setSpeechThread(autoSpeech ? null : threadId)}
               />
             </div>
