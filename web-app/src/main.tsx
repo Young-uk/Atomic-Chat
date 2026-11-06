@@ -1,3 +1,4 @@
+import { isDstarEndpoint, preloadDstar } from '@/services/dstar'
 // Dev-only fresh-install mode (`make dev-fresh`). MUST be the first import:
 // it wipes/restores localStorage before any zustand store module rehydrates.
 import './lib/freshInstallBoot'
@@ -203,6 +204,14 @@ if (!useGeneralSetting.getState().preloadModelOnStartup) {
   const { selectedProvider } = useModelProvider.getState()
   if (!selectedProvider || isLocalProvider(selectedProvider)) {
     useModelProvider.setState({ selectedProvider: '', selectedModel: null })
+  }
+}
+
+// Dstar is listed as a custom endpoint, so the native model preload skips it.
+if (IS_TAURI && !IS_IOS && !IS_ANDROID && useGeneralSetting.getState().preloadModelOnStartup) {
+  const { providers, selectedProvider } = useModelProvider.getState()
+  if (providers.some(provider => provider.provider === selectedProvider && isDstarEndpoint(provider.base_url))) {
+    void preloadDstar().catch(error => console.warn('Dstar startup preload failed', error))
   }
 }
 

@@ -45,6 +45,18 @@ export function isDstarEndpoint(url?: string): boolean {
   }
 }
 
+/** Restore the saved engine selection without replacing a running server. */
+export async function preloadDstar(): Promise<void> {
+  const snapshot = await controlDstar('status')
+  if (
+    snapshot.available &&
+    snapshot.status === 'stopped' &&
+    snapshot.models.some(model => model.id === snapshot.selection.model && model.available)
+  ) {
+    await controlDstar('start')
+  }
+}
+
 /** Wait for our owned child to exit before starting another model. */
 export async function restartDstar(
   selection: DstarSelection
