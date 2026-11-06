@@ -180,17 +180,33 @@ pub async fn start_dictation<R: Runtime>(
     state: State<'_, AudioState>,
     options: DictationOptions,
 ) -> AudioResult<DictationSession> {
-    {
-        let guard = state
+    let retired = {
+        let mut guard = state
             .session
             .lock()
             .map_err(|_| AudioError::internal("Audio state is poisoned."))?;
-        if guard.is_some() {
-            return Err(AudioError::new(
-                AudioErrorCode::AlreadyActive,
-                "Voice input is already running.",
-            ));
+        match guard.as_ref() {
+            // A device error can end capture without a stop command from the UI.
+            Some(session)
+                if session
+                    .capture_join
+                    .as_ref()
+                    .is_some_and(|thread| thread.is_finished()) =>
+            {
+                guard.take()
+            }
+            Some(_) => {
+                return Err(AudioError::new(
+                    AudioErrorCode::AlreadyActive,
+                    "Voice input is already running.",
+                ));
+            }
+            None => None,
         }
+    };
+    if let Some(mut retired) = retired {
+        retired.signal_stop(true);
+        retired.join();
     }
 
     // Refuse up front rather than recording silence: on macOS a denied

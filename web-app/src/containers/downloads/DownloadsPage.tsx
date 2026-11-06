@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  AudioLines,
   Box,
   Clapperboard,
   Copy,
@@ -58,6 +59,7 @@ const KIND_ICONS: Record<InventoryKind, typeof Box> = {
   decision: Box,
   image: Image,
   video: Clapperboard,
+  audio: AudioLines,
   voice: Mic,
   engine: Cpu,
   partial: FileClock,

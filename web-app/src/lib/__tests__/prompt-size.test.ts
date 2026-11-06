@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { jsonSchema, type Tool } from 'ai'
+import { jsonSchema, type ModelMessage, type Tool } from 'ai'
 import {
   DEFAULT_OUTPUT_RESERVE_TOKENS,
   MESSAGE_TEMPLATE_OVERHEAD_TOKENS,
@@ -31,6 +31,18 @@ describe('tool and prompt estimates', () => {
       required: ['query'],
     }),
   }
+
+  it('does not count encoded media as text in the summary preview', () => {
+    const messages: ModelMessage[] = [{
+      role: 'user',
+      content: `Screenshot: data:image/png;base64,${'A'.repeat(400_000)}`,
+    }]
+    expect(estimatePromptTokensHeuristic({ messages })).toBeGreaterThan(100_000)
+    expect(estimatePromptTokensHeuristic({
+      messages,
+      omitInlineMediaFromTextEstimate: true,
+    })).toBeLessThan(30)
+  })
 
   it('unwraps jsonSchema() and adds the per-tool template overhead', () => {
     const rendered = JSON.stringify({

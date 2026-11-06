@@ -1368,7 +1368,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
                 publishContextUsage(compactionThread, { modelId, estimated: true,
                   tokens: estimatePromptTokensHeuristic({ system: systemWithSkills,
                     messages: convertToModelMessages(chatExecOutputsForModel(wire)),
-                    tools: activeTools }) })
+                    tools: activeTools, omitInlineMediaFromTextEstimate: true }) })
               }
             } catch {
               // A display estimate must never fail a durably saved summary.

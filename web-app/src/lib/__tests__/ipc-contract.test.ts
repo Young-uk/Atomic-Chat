@@ -36,6 +36,7 @@ const EXPECTED_DESKTOP_ONLY = new Set([
   'check_for_app_updates',
   // The personal Dstar lifecycle owns a native process group on desktop only.
   'dstar_control',
+  'update_desktop_control_overlay',
   // Writes the logs through the crash-report scrubber, which lives in the
   // desktop-only telemetry module; the mobile targets have no Logs window.
   'export_logs',

@@ -334,6 +334,9 @@ describe('useVoiceInput', () => {
     const state = useVoiceInput.getState()
     expect(state.phase).toBe('error')
     expect(state.error?.code).toBe('deviceDisconnected')
+    expect(cancelSession).toHaveBeenCalledWith('session-1')
+    await useVoiceInput.getState().begin('thread-1', ANCHOR)
+    expect(useVoiceInput.getState().phase).toBe('listening')
   })
 
   describe('while the voice model is still starting', () => {

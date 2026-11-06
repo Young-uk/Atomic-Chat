@@ -86,11 +86,19 @@ export function estimatePromptTokensHeuristic(args: {
   system?: string
   messages: readonly ModelMessage[]
   tools?: Record<string, Tool>
+  omitInlineMediaFromTextEstimate?: boolean
 }): number {
   const system = args.system ? estimateTokens(args.system) : 0
   const messages = args.messages.reduce(
-    (sum, message) =>
-      sum + estimateTokens(messageText(message)) + MESSAGE_TEMPLATE_OVERHEAD_TOKENS,
+    (sum, message) => {
+      const text = messageText(message)
+      // Binary data URLs can survive inside tool JSON. Their encoded bytes
+      // are not a useful measure of the media's context cost.
+      const estimatedText = args.omitInlineMediaFromTextEstimate
+        ? text.replace(/data:(?:image|audio|video)\/[\w.+-]+;base64,[A-Za-z0-9+/]+=*/gi, '[media]')
+        : text
+      return sum + estimateTokens(estimatedText) + MESSAGE_TEMPLATE_OVERHEAD_TOKENS
+    },
     0
   )
   return system + messages + estimateToolsTokens(args.tools)

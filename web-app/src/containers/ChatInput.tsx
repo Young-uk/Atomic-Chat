@@ -34,7 +34,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Volume2, VolumeX } from 'lucide-react'
 import {
   IconCodeCircle2,
   IconPlayerStopFilled,
@@ -215,6 +215,8 @@ type ChatInputProps = {
   ) => void
   onStop?: () => void
   chatStatus?: ChatStatus
+  autoSpeech?: boolean
+  onToggleAutoSpeech?: () => void
 }
 
 const ChatInput = memo(function ChatInput({
@@ -228,6 +230,8 @@ const ChatInput = memo(function ChatInput({
   onSubmit,
   onStop,
   chatStatus,
+  autoSpeech,
+  onToggleAutoSpeech,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pendingAgentSkillCaretRef = useRef<number | null>(null)
@@ -3666,6 +3670,25 @@ const ChatInput = memo(function ChatInput({
                     compact={compactModelPill}
                   />
                 </div>
+
+                {onToggleAutoSpeech && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="mb-1 shrink-0"
+                        aria-label={t('common:autoSpeech', { defaultValue: 'Read replies aloud' })}
+                        aria-pressed={autoSpeech}
+                        onClick={onToggleAutoSpeech}
+                      >
+                        {autoSpeech ? <Volume2 /> : <VolumeX />}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('common:autoSpeech', { defaultValue: 'Read replies aloud' })}</TooltipContent>
+                  </Tooltip>
+                )}
 
                 {/* Beside Send, which is where users expect a microphone.
                     Note this cluster has no streaming guard of its own (the

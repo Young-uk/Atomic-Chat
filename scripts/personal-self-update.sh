@@ -21,10 +21,12 @@ team="$(printf '%s\n' "$signing_info" | /usr/bin/sed -n 's/^TeamIdentifier=//p')
 requirement="=identifier \"chat.atomic.app\" and anchor apple generic and certificate leaf[subject.OU] = \"$team\""
 
 confirm() {
-  /usr/bin/osascript - "$1" <<'APPLESCRIPT'
+  /usr/bin/osascript - "$1" "${2:-120}" "${3:-cancel}" <<'APPLESCRIPT'
+use scripting additions
 on run argv
-  display dialog (item 1 of argv) with title "Atomic Chat Personal update" buttons {"Cancel", "Continue"} default button "Cancel" cancel button "Cancel" giving up after 120
-  if gave up of result then error number -128
+  set timeoutSeconds to (item 2 of argv) as integer
+  display dialog (item 1 of argv) with title "Atomic Chat Personal update" buttons {"Cancel", "Continue"} default button "Cancel" cancel button "Cancel" giving up after timeoutSeconds
+  if (gave up of result) and (item 3 of argv is not "continue") then error number -128
 end run
 APPLESCRIPT
 }
@@ -64,7 +66,7 @@ if [[ "${1:-}" == --check ]]; then
   app_processes status
   exit
 fi
-confirm "Run tests and build Personal from $checkout? This runs the checkout's build scripts with your account."
+confirm "Run tests and build Personal from $checkout? This runs the checkout's build scripts with your account. The build starts in 5 seconds unless you cancel." 5 continue
 
 cd "$checkout"
 make verify
@@ -87,7 +89,7 @@ fi
 /usr/bin/codesign "${sign_options[@]}" "$candidate"
 /usr/bin/codesign --verify --deep --strict -R "$requirement" "$candidate"
 
-confirm "Install the tested build? Finish any active chat or summary first. The updater will quit and reopen Personal. The current app will be backed up."
+confirm "Install the tested build? Finish any active chat or summary first. The updater will quit and reopen Personal. The current app will be backed up. Installation starts in 5 seconds unless you cancel." 5 continue
 app_processes quit >/dev/null
 wait_for_exit
 current_hash="$(/usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | /usr/bin/sed -n 's/^CDHash=//p')"

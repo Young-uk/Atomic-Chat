@@ -415,6 +415,84 @@ pub async fn read_logs<R: Runtime>(app: AppHandle<R>) -> Result<String, String> 
     }
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn update_desktop_control_overlay<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    detail: String,
+) -> Result<(), String> {
+    use tauri::{Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let update = || -> tauri::Result<()> {
+            let existing = handle.get_webview_window("desktop-control-overlay");
+            if title.is_empty() {
+                if let Some(window) = existing {
+                    window.hide()?;
+                }
+                return Ok(());
+            }
+
+            // Serialize data before injecting it and render it only as text.
+            let payload = serde_json::json!([title, detail]);
+            let script = format!(
+                "window.atomicDesktopActivity = {payload}; window.renderActivity?.();"
+            );
+            let needs_position = existing.is_none();
+            let window = match existing {
+                Some(window) => {
+                    window.eval(&script)?;
+                    window
+                }
+                None => {
+                    WebviewWindowBuilder::new(
+                        &handle,
+                        "desktop-control-overlay",
+                        WebviewUrl::App("desktop-control-overlay.html".into()),
+                    )
+                    .initialization_script(&script)
+                    .inner_size(320.0, 100.0)
+                    .transparent(true)
+                    .decorations(false)
+                    .resizable(false)
+                    .always_on_top(true)
+                    .focusable(false)
+                    .focused(false)
+                    .visible(false)
+                    .skip_taskbar(true)
+                    .build()?
+                }
+            };
+
+            if needs_position {
+                if let Some(monitor) = handle
+                    .get_webview_window("main")
+                    .and_then(|main| main.current_monitor().ok().flatten())
+                    .or(handle.primary_monitor()?)
+                {
+                    let area = monitor.work_area();
+                    let inset = (16.0 * monitor.scale_factor()).round() as i32;
+                    let width = window.outer_size()?.width as i32;
+                    window.set_position(PhysicalPosition::new(
+                        area.position.x + (area.size.width as i32 - width - inset).max(0),
+                        area.position.y + inset,
+                    ))?;
+                }
+            }
+            if !window.is_visible()? {
+                window.show()?;
+            }
+            Ok(())
+        };
+        if let Err(error) = update() {
+            log::warn!("Desktop control overlay: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
 /// Best-effort detection of how this build was installed (ATO-111 telemetry).
 /// Returns one of: "appimage" | "msi" | "setup_exe" | "dmg" | "unknown".
 /// No PII: only the install-channel enum is returned.

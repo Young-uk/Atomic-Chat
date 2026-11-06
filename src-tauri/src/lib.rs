@@ -155,6 +155,8 @@ pub fn run() {
         core::logs::commands::read_unified_logs,
         core::logs::commands::export_logs,
         core::system::commands::reveal_in_file_manager,
+        #[cfg(target_os = "macos")]
+        core::system::commands::update_desktop_control_overlay,
         core::system::commands::show_desktop_notification,
         core::system::commands::get_installer_type,
         core::system::commands::is_library_available,

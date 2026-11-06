@@ -1,3 +1,5 @@
+import { useChatSpeech } from '@/hooks/useChatSpeech'
+import { useDesktopControlOverlay } from '@/hooks/useDesktopControlOverlay'
 import { ContextSummaryProgress } from '@/components/ContextSummaryProgress'
 import { InferenceProgress } from '@/components/InferenceProgress'
 import { useInferenceProgress } from '@/lib/inference-progress'
@@ -355,6 +357,8 @@ function ThreadDetail() {
   const effectiveInstructions =
     liveAssistant?.instructions ?? threadAssistant?.instructions
   // Keep legacy templates raw until the request; toggle clocks live in saved message metadata.
+  const [speechThread, setSpeechThread] = useState<string | null>(null)
+  const autoSpeech = speechThread === threadId
   const systemMessage = effectiveInstructions
 
   // Holds the partial assistant message while the model reloads after a
@@ -708,6 +712,9 @@ function ThreadDetail() {
     },
     sendAutomaticallyWhen: followUpMessage,
   })
+  useDesktopControlOverlay(threadId, chatMessages, status)
+  useChatSpeech(threadId, chatMessages, status, autoSpeech)
+
   chatMessagesRef.current = chatMessages
 
   // Get disabled tools for this thread to trigger re-render when they change
@@ -1891,6 +1898,10 @@ function ThreadDetail() {
       providerId: selectedProvider,
       modelId: selectedModel.id,
       serviceHub,
+    }).then(async (result) => {
+      // Keep the recovery state through the reload settling delay.
+      if (result.ok) await new Promise<void>(resolve => setTimeout(resolve, 1000))
+      return result
     }).finally(() => setIsAutoIncreasingContext(false))
     if (!result.ok) {
       // No reload will follow. Release the request here because the chat
@@ -1910,17 +1921,15 @@ function ThreadDetail() {
       return
     }
 
-    setTimeout(() => {
-      const partial = chatMessagesRef.current.at(-1)
-      if (partial?.role === 'assistant' && partial.parts.length) {
-        // Continue the existing SDK message, retaining its tool results and
-        // reasoning. Regenerate truncates the entire assistant turn first.
-        setContinueFromContentRef.current?.('')
-        void sendMessage(undefined, { body: { atomic_continue_existing: true } })
-      } else {
-        handleRegenerate()
-      }
-    }, 1000)
+    const partial = chatMessagesRef.current.at(-1)
+    if (partial?.role === 'assistant' && partial.parts.length) {
+      // Continue the existing SDK message, retaining its tool results and
+      // reasoning. Regenerate truncates the entire assistant turn first.
+      setContinueFromContentRef.current?.('')
+      void sendMessage(undefined, { body: { atomic_continue_existing: true } })
+    } else {
+      handleRegenerate()
+    }
   }, [selectedModel, selectedProvider, serviceHub, handleRegenerate, sendMessage])
 
   // Keep refs in sync so onFinish always calls the latest versions
@@ -2338,6 +2347,8 @@ function ThreadDetail() {
                 onSubmit={handleSubmit}
                 onStop={handleStop}
                 chatStatus={inputStatus}
+                autoSpeech={autoSpeech}
+                onToggleAutoSpeech={() => setSpeechThread(autoSpeech ? null : threadId)}
               />
             </div>
           </div>

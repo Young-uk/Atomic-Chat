@@ -1,3 +1,4 @@
+import { stripChatSpeechStyles } from '@/lib/audio/chatSpeechStyle'
 import { InferenceProgress } from '@/components/InferenceProgress'
 import { useInferenceProgress } from '@/lib/inference-progress'
 import {
@@ -334,9 +335,9 @@ export const MessageItem = memo(
           (part): part is { type: 'text'; text: string } =>
             part.type === CONTENT_TYPE.TEXT
         )
-        .map((part) => part.text)
+        .map((part) => message.role === 'assistant' ? stripChatSpeechStyles(part.text) : part.text)
         .join('\n')
-    }, [message.parts])
+    }, [message.parts, message.role])
 
     const renderEditor = (key: string) => {
       const editor = (
@@ -402,7 +403,7 @@ export const MessageItem = memo(
         message.role === 'assistant'
           ? linkAgentFileReferences(
               linkDocCitations(
-                block.text,
+                stripChatSpeechStyles(block.text),
                 docCitations,
                 t('docCitation.document')
               ),

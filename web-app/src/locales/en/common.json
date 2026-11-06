@@ -227,7 +227,7 @@
     "errors": {
       "permission": "Atomic Chat can't use the microphone",
       "noDevice": "No microphone was found",
-      "deviceBusy": "The microphone is in use by another app",
+      "deviceBusy": "The microphone could not be opened",
       "deviceDisconnected": "The microphone was disconnected",
       "modelMissing": "The voice model isn't installed yet",
       "engineFailed": "The voice model couldn't be started",

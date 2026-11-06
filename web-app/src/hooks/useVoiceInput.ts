@@ -15,6 +15,7 @@ import {
   voiceErrorFromNative,
   type VoiceErrorCode,
 } from '@/lib/voice/errors'
+import { extractModelErrorMessage } from '@/lib/modelErrorMessage'
 import { transcriptionPrompt } from '@/lib/voice/language'
 import { appendSegment, type DictationAnchor } from '@/lib/voice/promptMerge'
 import { PlatformFeatures } from '@/lib/platform/const'
@@ -180,6 +181,7 @@ function detach() {
  * and the recording ran with no one watching it.
  */
 let startAttempt = 0
+let failedSessionCleanup: Promise<void> | undefined
 
 function abandonStart() {
   startAttempt += 1
@@ -206,11 +208,14 @@ export const useVoiceInput = create<VoiceInputState>()((set, get) => ({
       lastOutcome: null,
     })
 
+    let openingMicrophone = false
     try {
       const settings = useVoiceSetting.getState()
       const target = await ensureVoiceEngine({
         keepChatModelLoaded: !settings.unloadChatModelWhileDictating,
       })
+      // A terminal error resets the composer before native capture has closed.
+      await failedSessionCleanup
       // Stopped while the model was loading. It stays loaded (and unloads on
       // its own when idle), so the next press starts at once.
       if (abandoned()) return
@@ -220,6 +225,7 @@ export const useVoiceInput = create<VoiceInputState>()((set, get) => ({
         .voice()
         .subscribe((event) => handleEvent(set, get, event))
 
+      openingMicrophone = true
       const session = await getServiceHub().voice().startSession({
         baseUrl: target.baseUrl,
         apiKey: target.apiKey,
@@ -254,18 +260,20 @@ export const useVoiceInput = create<VoiceInputState>()((set, get) => ({
       if (abandoned()) return
       detach()
       const code = errorCodeOf(error)
+      const message = extractModelErrorMessage(error)
+      if (openingMicrophone) {
+        get().fail(voiceErrorFromNative(code), message)
+        return
+      }
       if (code === VOICE_ENGINE_ERRORS.modelMissing) {
         set({ phase: 'model-missing', setupOpen: true, setupStep: 2 })
         return
       }
       if (code === VOICE_ENGINE_ERRORS.unsupported) {
-        get().fail('transcriptionUnsupported', String(error))
+        get().fail('transcriptionUnsupported', message)
         return
       }
-      get().fail(
-        'engineFailed',
-        error instanceof Error ? error.message : String(error)
-      )
+      get().fail('engineFailed', message)
     }
   },
 
@@ -302,7 +310,7 @@ export const useVoiceInput = create<VoiceInputState>()((set, get) => ({
       settle()
       get().fail(
         'internal',
-        error instanceof Error ? error.message : String(error)
+        extractModelErrorMessage(error)
       )
       return
     }
@@ -334,8 +342,12 @@ export const useVoiceInput = create<VoiceInputState>()((set, get) => ({
   noteInserted: (length) => set({ insertedLength: length }),
 
   fail: (code, message) => {
+    const { sessionId } = get()
     settle()
     detach()
+    if (sessionId) {
+      failedSessionCleanup = getServiceHub().voice().cancelSession(sessionId).catch(() => {})
+    }
     set({
       ...IDLE,
       phase: 'error',
@@ -484,7 +496,7 @@ export async function ensureVoiceReady(
     useVoiceInput.setState({ ownerKey })
     store.fail(
       'internal',
-      error instanceof Error ? error.message : String(error)
+      extractModelErrorMessage(error)
     )
     return
   }
