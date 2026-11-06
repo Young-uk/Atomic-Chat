@@ -144,7 +144,8 @@ export default defineConfig(({ mode }) => {
           'https://raw.githubusercontent.com/AtomicBot-ai/atomic-chat-model-catalog/main/dist/catalog.json'
       ),
       AUTO_UPDATER_DISABLED: JSON.stringify(
-        env.AUTO_UPDATER_DISABLED === 'true'
+        env.VITE_PERSONAL_BUILD === 'true' ||
+          env.AUTO_UPDATER_DISABLED === 'true'
       ),
       FORCE_ONBOARDING: JSON.stringify(
         process.env.FORCE_ONBOARDING === 'true' ||
