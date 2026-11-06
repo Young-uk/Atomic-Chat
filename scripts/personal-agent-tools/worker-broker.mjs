@@ -17,20 +17,57 @@ const connect = path => new Promise((resolve, reject) => {
   socket.once('error', reject)
 })
 
+// A draining owner can accept a socket and close it without serving MCP.
+function probeWorker(socket, timeout) {
+  return new Promise(resolve => {
+    let buffer = ''
+    const finish = ready => {
+      clearTimeout(timer)
+      socket.pause()
+      socket.off('data', read)
+      socket.off('close', failed)
+      socket.off('error', failed)
+      resolve(ready)
+    }
+    const failed = () => finish(false)
+    const read = chunk => {
+      buffer += chunk.toString()
+      const end = buffer.indexOf('\n')
+      if (end < 0 && buffer.length <= 4096) return
+      try {
+        const reply = JSON.parse(buffer.slice(0, end))
+        finish(reply.id === 'worker-ready' && reply.result != null)
+      } catch { failed() }
+    }
+    const timer = setTimeout(failed, timeout)
+    socket.on('data', read)
+    socket.once('close', failed)
+    socket.once('error', failed)
+    socket.write('{"jsonrpc":"2.0","id":"worker-ready","method":"ping"}\n')
+  })
+}
+
 export async function connectWorker(directory, { entry = fileURLToPath(new URL('./server.mjs', import.meta.url)), timeout = 10000 } = {}) {
   const path = brokerPath(directory)
-  try { return await connect(path) } catch (error) { if (!['ENOENT', 'ECONNREFUSED'].includes(error.code)) throw error }
-  const child = spawn(process.execPath, [entry, '--broker'], { detached: true, stdio: 'ignore', env: { ...process.env, ATOMIC_PERSONAL_TOOLS_DIR: directory } })
-  let spawnError
-  child.once('error', error => { spawnError = error })
-  child.unref()
   const deadline = Date.now() + timeout
+  let child, spawnError
   while (Date.now() < deadline) {
     if (spawnError) throw spawnError
-    try { return await connect(path) } catch (error) { if (!['ENOENT', 'ECONNREFUSED'].includes(error.code)) throw error }
+    try {
+      const socket = await connect(path)
+      if (await probeWorker(socket, Math.min(1000, deadline - Date.now()))) return socket
+      socket.destroy()
+    } catch (error) {
+      if (!['ENOENT', 'ECONNREFUSED'].includes(error.code)) throw error
+      if (!child || child.exitCode !== null || child.signalCode !== null) {
+        child = spawn(process.execPath, [entry, '--broker'], { detached: true, stdio: 'ignore', env: { ...process.env, ATOMIC_PERSONAL_TOOLS_DIR: directory } })
+        child.once('error', error => { spawnError = error })
+        child.unref()
+      }
+    }
     await new Promise(resolve => setTimeout(resolve, 50))
   }
-  throw new Error('Personal worker did not become ready')
+  throw new Error('Personal worker did not respond to its readiness check')
 }
 
 // Bind before constructing stores: concurrent app/service connections elect one
@@ -77,7 +114,10 @@ export async function runBroker(directory, { create, serve, idleMs = 1000 } = {}
     await new Promise(resolve => server.close(resolve))
     finish()
   }
-  const scheduleIdle = () => { clearTimeout(idle); if (!sockets.size) idle = setTimeout(() => { void shutdown() }, idleMs) }
+  const scheduleIdle = () => { clearTimeout(idle); if (!closing && !sockets.size) idle = setTimeout(() => {
+    if (work.size || tools?.ticking) scheduleIdle()
+    else void shutdown()
+  }, idleMs) }
   const server = createServer(socket => {
     if (closing) { socket.destroy(); return }
     clearTimeout(idle)
@@ -113,9 +153,11 @@ export async function bridgeWorker(directory, { hold = false } = {}) {
   const stop = () => socket.end()
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
+  if (hold) socket.resume()
   if (!hold) {
     process.stdin.pipe(socket)
     socket.pipe(process.stdout)
+    socket.resume()
   }
   await new Promise(resolve => socket.once('close', resolve))
   process.removeListener('SIGTERM', stop)
