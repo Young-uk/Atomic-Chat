@@ -417,12 +417,97 @@ pub async fn read_logs<R: Runtime>(app: AppHandle<R>) -> Result<String, String> 
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
+pub fn desktop_overlay_decision<R: Runtime>(
+    window: tauri::WebviewWindow<R>,
+    app: AppHandle<R>,
+    id: String,
+    decision: String,
+) -> Result<(), String> {
+    if window.label() != "desktop-control-overlay" || !matches!(decision.as_str(), "approve" | "deny") {
+        return Err("Invalid desktop overlay decision".into());
+    }
+    app.emit("desktop-overlay-decision", serde_json::json!({ "id": id, "decision": decision }))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn desktop_overlay_drag<R: Runtime>(window: tauri::WebviewWindow<R>) -> Result<(), String> {
+    if window.label() != "desktop-control-overlay" {
+        return Err("Invalid desktop overlay window".into());
+    }
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+mod desktop_overlay_native {
+    use std::ffi::{c_char, c_void};
+    type Id = *mut c_void;
+    #[link(name = "objc")]
+    extern "C" {
+        fn sel_registerName(name: *const c_char) -> Id;
+        fn objc_msgSend();
+    }
+    #[cfg(test)]
+    #[test]
+    fn appkit_supports_overlay_activation_prevention() {
+        #[link(name = "objc")]
+        extern "C" {
+            fn objc_getClass(name: *const c_char) -> Id;
+            fn class_getInstanceMethod(class: Id, selector: Id) -> Id;
+        }
+        // Runtime metadata only: this test creates no application or windows.
+        unsafe {
+            let class = objc_getClass(b"NSWindow\0".as_ptr().cast());
+            assert!(!class.is_null());
+            let selector = sel_registerName(b"_setPreventsActivation:\0".as_ptr().cast());
+            assert!(!class_getInstanceMethod(class, selector).is_null());
+        }
+    }
+
+    // All calls stay on the AppKit main thread, with the Tauri-owned NSWindow
+    // alive. Preserve Tao's class/ivars; only configure this auxiliary window.
+    pub fn configure<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, show: bool) -> tauri::Result<()> {
+        let native = window.ns_window()?;
+        unsafe {
+            let get: unsafe extern "C" fn(Id, Id) -> Id = std::mem::transmute(objc_msgSend as *const ());
+            let flag: unsafe extern "C" fn(Id, Id, i8) = std::mem::transmute(objc_msgSend as *const ());
+            let supports: unsafe extern "C" fn(Id, Id, Id) -> i8 = std::mem::transmute(objc_msgSend as *const ());
+            let number: unsafe extern "C" fn(Id, Id, f64) = std::mem::transmute(objc_msgSend as *const ());
+            let action: unsafe extern "C" fn(Id, Id) = std::mem::transmute(objc_msgSend as *const ());
+            let sel = |name: &'static [u8]| sel_registerName(name.as_ptr().cast());
+            let prevent = sel(b"_setPreventsActivation:\0");
+            if supports(native, sel(b"respondsToSelector:\0"), prevent) != 0 {
+                flag(native, prevent, 1);
+            } else {
+                log::warn!("Desktop overlay: AppKit activation prevention is unavailable");
+            }
+            let view = get(native, sel(b"contentView\0"));
+            if !view.is_null() {
+                flag(view, sel(b"setWantsLayer:\0"), 1);
+                let layer = get(view, sel(b"layer\0"));
+                if !layer.is_null() {
+                    number(layer, sel(b"setCornerRadius:\0"), 18.0);
+                    flag(layer, sel(b"setMasksToBounds:\0"), 1);
+                }
+            }
+            // Tauri's normal show path can activate the application. An overlay
+            // must order forward without making any chat window key or main.
+            if show { action(native, sel(b"orderFrontRegardless\0")); }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
 pub async fn update_desktop_control_overlay<R: Runtime>(
     app: AppHandle<R>,
     title: String,
     detail: String,
+    approval_id: Option<String>,
 ) -> Result<(), String> {
-    use tauri::{Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+    use tauri::{LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 
     let handle = app.clone();
     app.run_on_main_thread(move || {
@@ -436,7 +521,7 @@ pub async fn update_desktop_control_overlay<R: Runtime>(
             }
 
             // Serialize data before injecting it and render it only as text.
-            let payload = serde_json::json!([title, detail]);
+            let payload = serde_json::json!([title, detail, approval_id]);
             let script = format!(
                 "window.atomicDesktopActivity = {payload}; window.renderActivity?.();"
             );
@@ -459,6 +544,7 @@ pub async fn update_desktop_control_overlay<R: Runtime>(
                     .resizable(false)
                     .always_on_top(true)
                     .focusable(false)
+                    .accept_first_mouse(true)
                     .focused(false)
                     .visible(false)
                     .skip_taskbar(true)
@@ -466,24 +552,27 @@ pub async fn update_desktop_control_overlay<R: Runtime>(
                 }
             };
 
-            if needs_position {
-                if let Some(monitor) = handle
-                    .get_webview_window("main")
-                    .and_then(|main| main.current_monitor().ok().flatten())
-                    .or(handle.primary_monitor()?)
-                {
-                    let area = monitor.work_area();
-                    let inset = (16.0 * monitor.scale_factor()).round() as i32;
-                    let width = window.outer_size()?.width as i32;
-                    window.set_position(PhysicalPosition::new(
-                        area.position.x + (area.size.width as i32 - width - inset).max(0),
-                        area.position.y + inset,
-                    ))?;
-                }
+            let logical_height = if approval_id.is_some() { 300.0 } else { 120.0 };
+            window.set_size(LogicalSize::new(360.0, logical_height))?;
+            // set_size is asynchronous on macOS: use the requested dimensions,
+            // not the old outer_size, when positioning the newly grown window.
+            let monitor = if needs_position { None } else { window.current_monitor()? }
+                .or_else(|| handle.get_webview_window("main").and_then(|main| main.current_monitor().ok().flatten()))
+                .or(handle.primary_monitor()?);
+            if let Some(monitor) = monitor {
+                let area = monitor.work_area();
+                let scale = monitor.scale_factor();
+                let inset = (24.0 * scale).round() as i32;
+                let width = (360.0 * scale).ceil() as i32;
+                let height = (logical_height * scale).ceil() as i32;
+                let min_x = area.position.x.saturating_add(inset);
+                let min_y = area.position.y.saturating_add(inset);
+                let max_x = area.position.x.saturating_add(area.size.width as i32).saturating_sub(width + inset).max(min_x);
+                let max_y = area.position.y.saturating_add(area.size.height as i32).saturating_sub(height + inset).max(min_y);
+                let current = if needs_position { PhysicalPosition::new(max_x, min_y) } else { window.outer_position()? };
+                window.set_position(PhysicalPosition::new(current.x.clamp(min_x, max_x), current.y.clamp(min_y, max_y)))?;
             }
-            if !window.is_visible()? {
-                window.show()?;
-            }
+            desktop_overlay_native::configure(&window, !window.is_visible()?)?;
             Ok(())
         };
         if let Err(error) = update() {

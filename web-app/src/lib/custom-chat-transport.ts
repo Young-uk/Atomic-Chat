@@ -923,6 +923,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     return recovery
   }
   private readonly reviewedToolTurns = new Set<string>()
+  private completionReviewEpoch = 0
   private summaryForeground?: { key: string; release: () => void; cleanups: (() => void)[] }
 
   private managedForeground?: {
@@ -967,10 +968,24 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       if (options.abortSignal.aborted) foreground.release()
     }
     const release = () => foreground?.release()
+    // A change is sticky for this request, even when the picker or preference
+    // is changed back before the asynchronous review returns.
+    const reviewAbort = new AbortController()
+    const unsubscribePreference = useGeneralSetting.subscribe((state, previous) => {
+      if (state.completionReviewEnabled !== previous.completionReviewEnabled) reviewAbort.abort()
+    })
+    const unsubscribeSelection = useModelProvider.subscribe((state, previous) => {
+      if (state.selectedProvider !== previous.selectedProvider || state.selectedModel?.id !== previous.selectedModel?.id) reviewAbort.abort()
+    })
+    const cleanupReview = () => {
+      reviewAbort.abort()
+      unsubscribePreference()
+      unsubscribeSelection()
+    }
     let continuingTools = false
     try {
       options.abortSignal?.throwIfAborted()
-      const stream = await this.sendWithContextRecovery(options, false, selection, reason => {
+      const stream = await this.sendWithContextRecovery({ ...options, completionReviewSignal: reviewAbort.signal }, false, selection, reason => {
         continuingTools = reason === 'tool-calls'
       })
       const reader = stream.getReader()
@@ -978,13 +993,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         async pull(controller) {
           try {
             const next = await reader.read()
-            if (next.done) { if (!continuingTools) release(); controller.close() }
+            if (next.done) { cleanupReview(); if (!continuingTools) release(); controller.close() }
             else controller.enqueue(next.value)
-          } catch (error) { release(); controller.error(error) }
+          } catch (error) { cleanupReview(); release(); controller.error(error) }
         },
-        async cancel(reason) { release(); await reader.cancel(reason) },
+        async cancel(reason) { cleanupReview(); release(); await reader.cancel(reason) },
       })
-    } catch (error) { release(); throw error }
+    } catch (error) { cleanupReview(); release(); throw error }
   }
 
   private async sendWithContextRecovery(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0], recovered: boolean, selection: { provider?: ModelProvider; model: Model | null }, completed: (reason: string | undefined) => void): Promise<ReadableStream<UIMessageChunk>> {
@@ -1063,6 +1078,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       chatId: string
       messages: UIMessage[]
       abortSignal: AbortSignal | undefined
+      completionReviewSignal?: AbortSignal
     } & {
       trigger: 'submit-message' | 'regenerate-message'
       messageId: string | undefined
@@ -1070,6 +1086,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     completed: (reason: string | undefined) => void = () => {},
     selection?: { provider?: ModelProvider; model: Model | null }
   ): Promise<ReadableStream<UIMessageChunk>> {
+    const reviewEpoch = ++this.completionReviewEpoch
+    const completionReviewOptedIn = useGeneralSetting.getState().completionReviewEnabled === true
     const requestStartedAt = Date.now()
     const foregroundObservationId = crypto.randomUUID()
     ttftMark('gammaStart')
@@ -1088,7 +1106,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const effectiveProviderName = providerId
     const provider = selection ? selection.provider : useModelProvider.getState().getProviderByName(providerId)
     const runtime = provider && selectedModel
-      ? await probeLocalModelCapabilities(provider, selectedModel, { signal: options.abortSignal })
+      ? await probeLocalModelCapabilities(provider, selectedModel, {
+          signal: options.abortSignal, completionReviewEnabled: completionReviewOptedIn,
+        })
       : null
     const usageScope = runtime?.usageScope
     const runtimeScope = runtime?.runtimeScope
@@ -1262,6 +1282,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           effectiveReasoningOverride.atomic_output_reserve = Math.min(
             (getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
         }
+        // Only the identity-checked managed Strata route gets this extension.
+        // Its progress stays on this request's SSE stream, never global metrics.
+        if (runtime?.engine === 'strata') effectiveReasoningOverride.return_progress = true
         const hasOverride = Object.keys(effectiveReasoningOverride).length > 0
 
         // Audio attachments (omni/audio-capable models, MLX backend) are
@@ -1389,7 +1412,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         supportsVision,
       })
     }
-    if (usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+    // Rust persistence sorts object keys. Keep live and restored tool outputs
+    // byte-identical for both managed engines, including every tool continuation.
+    if (usesAppendOnlyDstarEffort(provider.base_url, modelId) || localEngineTarget(provider, selectedModel)?.engine === 'strata') {
       preparedMessages = withStableToolResultOrder(preparedMessages)
     }
     const hasTools = Object.keys(this.tools).length > 0 || (import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && runtime?.summarySlot === true)
@@ -1410,7 +1435,22 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     let compaction: ContextCompaction | undefined
     let summaryAfterTurn: ((response: UIMessage) => void) | undefined
     let toolPreambleVersion: 'v3' | 'v4' = runtime?.toolPreamble === 4 ? 'v4' : 'v3'
-    const completionReviewSupported = runtime?.completionReview === true
+    const completionReviewSupported = completionReviewOptedIn && runtime?.completionReview === true
+    // Re-check opt-out and identity at each asynchronous boundary. A newer
+    // request on this transport must not inherit an older review continuation.
+    const reviewStillAllowed = () => this.completionReviewEpoch === reviewEpoch &&
+      completionReviewOptedIn && useGeneralSetting.getState().completionReviewEnabled === true &&
+      !options.abortSignal?.aborted && !options.completionReviewSignal?.aborted &&
+      useModelProvider.getState().selectedProvider === providerId &&
+      useModelProvider.getState().selectedModel?.id === modelId
+    const reviewRuntimeStillCurrent = async () => {
+      if (!reviewStillAllowed() || !selectedModel) return false
+      const observed = await probeLocalModelCapabilities(provider, selectedModel, {
+        signal: options.abortSignal, completionReviewEnabled: true,
+      })
+      return reviewStillAllowed() && observed?.completionReview === true &&
+        observed.runtimeScope === runtime?.runtimeScope && observed.usageScope === runtime?.usageScope
+    }
     let summaryTokenCounting = false
     let compactionContext = 0
     let schedulingContext = 0
@@ -1926,7 +1966,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const calls = await result.toolCalls
         const answer = await result.text
         let finalReason = reason
-        if (!requestFailed && reason === 'stop' && calls.length === 0 && answer.trim() && !options.abortSignal?.aborted) {
+        if (!requestFailed && reason === 'stop' && calls.length === 0 && answer.trim() && await reviewRuntimeStillCurrent()) {
           this.reviewedToolTurns.add(latestUser!.id)
           if (this.reviewedToolTurns.size > 100) this.reviewedToolTurns.delete(this.reviewedToolTurns.values().next().value!)
           let decision: string = 'unavailable'
@@ -1934,7 +1974,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           try {
             decision = await reviewToolCompletion({ baseUrl: provider.base_url!, model: modelId,
               user: latestUser!.parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text).join('\n'),
-              answer, toolNames: Object.keys(activeTools ?? {}), signal: options.abortSignal,
+              answer, toolNames: Object.keys(activeTools ?? {}),
+              signal: options.completionReviewSignal
+                ? AbortSignal.any([options.completionReviewSignal, ...(options.abortSignal ? [options.abortSignal] : [])])
+                : options.abortSignal,
               fetch: fetchDstarContext })
           } catch (error) {
             if (options.abortSignal?.aborted) throw error
@@ -1942,7 +1985,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           } finally { endReviewProgress() }
           console.info('[tool-completion-review]', { decision, turn: latestUser!.id, toolCount: Object.keys(activeTools ?? {}).length })
           options.abortSignal?.throwIfAborted()
-          if (decision === 'needs_tool') {
+          if (decision === 'needs_tool' && await reviewRuntimeStillCurrent()) {
             writer.write({ type: 'message-metadata', messageMetadata: { [TOOL_REVIEW_METADATA]: { prefixParts: primaryParts } } })
             const continuation = streamText({ model: requestModel, system: effectiveSystemMessage,
               messages: [...finalModelMessages, ...(await result.response).messages,

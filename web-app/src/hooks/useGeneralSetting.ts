@@ -44,6 +44,9 @@ type GeneralSettingState = {
    * default; planned for removal after two stable releases.
    */
   legacyChatEngine: boolean
+  /** Explicit opt-in, sampled only when a new request starts. */
+  completionReviewEnabled: boolean
+  setCompletionReviewEnabled: (value: boolean) => void
   maxImageSizePx: number
   huggingfaceToken?: string
   scanLocalModels: boolean
@@ -91,6 +94,9 @@ export const useGeneralSetting = create<GeneralSettingState>()(
       reasoningBudget: 'medium',
       preloadModelOnStartup: false,
       legacyChatEngine: false,
+      completionReviewEnabled: false,
+      setCompletionReviewEnabled: (value) =>
+        set({ completionReviewEnabled: value === true }),
       maxImageSizePx: DEFAULT_MAX_IMAGE_SIZE_PX,
       huggingfaceToken: undefined,
       scanLocalModels: true,
@@ -159,6 +165,16 @@ export const useGeneralSetting = create<GeneralSettingState>()(
       name: localStorageKey.settingGeneral,
       storage: createJSONStorage(() => localStorage),
       version: 5,
+      // Additive preference: no version bump or reset of existing choices.
+      // Only literal true opts in, including on same-version rehydration.
+      merge: (persistedState, currentState) => {
+        const persisted = (persistedState ?? {}) as Partial<GeneralSettingState>
+        return {
+          ...currentState,
+          ...persisted,
+          completionReviewEnabled: persisted.completionReviewEnabled === true,
+        }
+      },
       migrate: (persistedState: unknown, version: number) => {
         const state = (persistedState ?? {}) as Partial<GeneralSettingState> &
           Record<string, unknown>

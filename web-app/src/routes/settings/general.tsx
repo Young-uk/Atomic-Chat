@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart'
 import { route } from '@/constants/routes'
 import HeaderPage from '@/containers/HeaderPage'
+import CompletionReviewSetting from '@/containers/CompletionReviewSetting'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Card, CardItem } from '@/containers/Card'
@@ -462,6 +463,7 @@ function General() {
             {permissionsOpen && <ToolPermissionsDialog open onOpenChange={setPermissionsOpen} />}
             {/* Chat behavior */}
             <Card title={t('settings:chatBehavior.title')}>
+              <CompletionReviewSetting />
               <CardItem title={t('tools:permissions.title')} description={t('tools:permissions.settingsDescription')}
                 actions={<Button variant="outline" onClick={() => setPermissionsOpen(true)}>{t('tools:permissions.manage')}</Button>} />
               <CardItem

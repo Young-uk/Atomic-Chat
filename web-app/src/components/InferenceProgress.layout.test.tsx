@@ -7,10 +7,10 @@ afterEach(() => { cleanup(); document.documentElement.classList.remove('dark'); 
 it.each([['16px', false], ['20px', false], ['16px', true], ['20px', true]] as const)('fits a narrow row at %s (dark: %s)', async (fontSize, dark) => {
   document.documentElement.classList.toggle('dark', dark)
   setFontSize(fontSize)
-  useInferenceProgress.setState({ byThread: { a: { requestId: '1', startedAt: Date.now() - 3700000, phase: 'reading', processed: 999, total: 1000 } } })
+  useInferenceProgress.setState({ byThread: { a: { requestId: '1', startedAt: Date.now() - 3700000, phase: 'reading', processed: 999, total: 1000, cache: 64000 } } })
   render(withTranslations(<div style={{ width: 320 }} data-testid="column"><InferenceProgress threadId="a" /></div>))
   const column = screen.getByTestId('column')
   await settle(column)
   expectNoHorizontalOverflow(column)
-  expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '99')
+  expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '99.9')
 })

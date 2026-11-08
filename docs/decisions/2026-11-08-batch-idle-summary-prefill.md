@@ -1,0 +1,9 @@
+# Batch idle Strata summary inputs with a bounded foreground handoff
+
+The weighted summary continuation previously committed one prompt input per quantum even with no foreground demand. A live user summary was observed reading 11,219 inputs at about ten tokens per second, while ordinary foreground input processing used batched kernels.
+
+Protocol 2 advertises ASYNC_CAPS 2 512 128 text and accepts ANEXT identity [1..128]. Legacy ANEXT identity remains a single-input summary quantum. The paired client negotiates the exact capability before using the extension. While holding the serialized compute permit, it requests 128 summary inputs when no foreground owner or waiter exists and one when foreground demand exists. An arrival after selection waits at most the already-selected bounded quantum; scheduling remains weighted 8:1. Metal idle input processing uses the existing prompt_run/GEMM path and synchronizes before acknowledging a quantum, rather than looping through small speculative verification windows. Non-Metal builds retain protocol 1. Native decoding always consumes a single input, and the existing commit, state-bank switch, cancellation and error boundaries are retained.
+
+The isolated v14 native binary and runtime are pinned together. Dstar was not changed: its installed startup log already reports summary_prefill_quantum=128. No new model prompts or throughput claims are part of this validation. CPU native parser/quantum tests and fake-protocol scheduler tests cover idle batching, foreground arrival/removal, legacy compatibility, decode limits and invalid budgets. Actual throughput and model output comparison remain user-run checks.
+
+Normal restart persistence remains enabled. This native/server upgrade changes the strict checkpoint identity, so an old-version checkpoint is preserved but not automatically restored into the new engine.

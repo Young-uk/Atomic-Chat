@@ -144,7 +144,7 @@ function summaryStateBank(
 export async function probeLocalModelCapabilities(
   provider: Provider,
   model: Pick<Model, 'id'>,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; completionReviewEnabled?: boolean } = {}
 ): Promise<LocalModelCapabilities | null> {
   const target = localCapabilityTarget(provider, model)
   if (!target) return null
@@ -205,10 +205,15 @@ export async function probeLocalModelCapabilities(
       summaryStateBank: stateBank,
       summaryMaxMainTokens: summarySlot ? summaryQualifiedEnvelope?.maxMainTokens : undefined,
       toolPreamble: body.atomic_tool_preamble === 4 ? 4 : body.atomic_tool_preamble === 3 ? 3 : null,
-      // Release safety gate: IQ3 review misclassified a conditional offer as
-      // unfinished tool work. Backend advertisement is not semantic qualification.
-      // Keep both engines disabled independently of summaries and public preambles.
-      completionReview: false,
+      // Explicit opt-in is not semantic qualification: the experimental
+      // classifier can mistake a conditional offer for unfinished work.
+      // Strata's new capability names transport support separately from the
+      // legacy qualification flag. Never infer it from summary support alone.
+      completionReview: options.completionReviewEnabled === true && (
+        target.engine === 'dstar'
+          ? body.atomic_completion_review === true
+          : summarySlot && Boolean(stateBank) && body.atomic_completion_review_experimental === true
+      ),
       toolPolicy: target.engine === 'dstar'
         ? (body.atomic_tool_preamble === 3 || body.atomic_tool_preamble === 4 ? 'dstar-markers' : null)
         : body.atomic_tool_policy === 'plain-system-v1' ? 'plain-system-v1' : null,

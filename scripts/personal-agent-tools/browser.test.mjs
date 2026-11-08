@@ -66,3 +66,36 @@ test('scroll reports movement, clamped boundaries and a nested target', async ()
     globalThis.getComputedStyle = previousStyle
   }
 })
+
+test('rereading never reassigns a stale ref to a different target', async () => {
+  const { browser } = fixture()
+  await browser.call('open', { url: 'https://93.184.216.34/' })
+  const first = await browser.call('read', { tab: '1' })
+  const second = await browser.call('read', { tab: '1' })
+  assert.notEqual(first.elements[0].ref, second.elements[0].ref)
+  await assert.rejects(browser.call('click', { tab: '1', ref: first.elements[0].ref }), /Read this page first/)
+})
+
+test('hidden prefixes cannot crowd out visible targets and later targets are paginated', async () => {
+  const { browser } = fixture()
+  await browser.call('open', { url: 'https://93.184.216.34/' })
+  let disposed = 0
+  const handles = Array.from({ length: 405 }, (_, index) => ({
+    evaluate: async () => ({ tag: 'button', label: `Target ${index}`, visible: index >= 200 }),
+    dispose: async () => { disposed++ },
+  }))
+  browser.tabs.get('1').locator = selector => selector === 'body'
+    ? { innerText: async () => 'Fixture' }
+    : { elementHandles: async () => handles }
+  const first = await browser.call('read', { tab: '1' })
+  assert.equal(first.elements.length, 200)
+  assert.equal(first.elements[0].label, 'Target 200')
+  assert.equal(first.totalElements, 205)
+  assert.equal(first.nextOffset, 200)
+  assert.equal(disposed, 205)
+  const next = await browser.call('read', { tab: '1', offset: first.nextOffset })
+  assert.equal(next.elements.length, 5)
+  assert.equal(next.elements[0].label, 'Target 400')
+  assert.equal(next.nextOffset, null)
+  await assert.rejects(browser.call('read', { tab: '1', offset: -1 }), /offset/)
+})

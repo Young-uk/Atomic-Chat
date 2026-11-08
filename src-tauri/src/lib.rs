@@ -158,6 +158,10 @@ pub fn run() {
         core::system::commands::reveal_in_file_manager,
         #[cfg(target_os = "macos")]
         core::system::commands::update_desktop_control_overlay,
+        #[cfg(target_os = "macos")]
+        core::system::commands::desktop_overlay_decision,
+        #[cfg(target_os = "macos")]
+        core::system::commands::desktop_overlay_drag,
         core::system::commands::show_desktop_notification,
         core::system::commands::get_installer_type,
         core::system::commands::is_library_available,

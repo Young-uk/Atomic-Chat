@@ -147,3 +147,17 @@ it('offers an exact-action persistent choice while keeping thread-wide approval 
   screen.getByRole('button', { name: 'tools:toolApproval.allowAlways' }).click()
   expect(always).toHaveBeenCalledOnce()
 })
+
+it('does not move DOM focus into an approval opened while the chat is in the background', () => {
+  const previous = document.createElement('button')
+  document.body.append(previous)
+  previous.focus()
+  const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+  try {
+    open('personal_native', { action: 'run', name: 'os.screen.click' })
+    expect(document.activeElement).toBe(previous)
+  } finally {
+    focus.mockRestore()
+    previous.remove()
+  }
+})

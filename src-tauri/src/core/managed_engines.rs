@@ -58,7 +58,7 @@ const CONTEXT_PIN_SCRIPT: &str = r#"
 import hashlib, json, pathlib, sys
 cfg = json.load(sys.stdin)
 root = pathlib.Path(cfg['cwd']) / 'serve'
-names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py')
+names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py')
 hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
 backend = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 if backend != cfg['atomic_summary_expected_backend_sha256']:
@@ -256,8 +256,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-priority-v7/serve/server.py",
-            "feature-integration/engine-priority-v7/strata",
+            "feature-integration/runtime-summary-v14/serve/server.py",
+            "feature-integration/engine-summary-v14/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -282,7 +282,7 @@ impl Environment {
             .dstar_root
             .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf");
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-priority-v7/strata"),
+            "exe": root.join("feature-integration/engine-summary-v14/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -292,10 +292,11 @@ impl Environment {
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
-            "cwd": root.join("feature-integration/runtime-priority-v7"),
+            "cwd": root.join("feature-integration/runtime-summary-v14"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "log": root.join("strata-atomic.log"),
+            "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
@@ -304,9 +305,9 @@ impl Environment {
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "57bd336563aa00a7dac0f2512fea6f09b6af2f0a843444c8b41743b38bbc230b",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v1:849e69af0b9d152a1806212c0dd6ca0d6f58b0f5debc6d6e64504105c9079e5e",
-            "atomic_summary_expected_backend_sha256": "bcdaeeb5922acb36804119737b66abe45a93b6bc3669f13923963e2a6f23e396",
+            "atomic_summary_expected_native_sha256": "7dbb9302ddf47f711fef966e1da99283e54e570c19612e6c7f391e8ecf077a9e",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v1:ba11975168139daff67329897b0968e3919971b6b557f992342773b254658f63",
+            "atomic_summary_expected_backend_sha256": "e697c807be8db6e5ca22399acebc1f52e86b6c010708e7b5672574ddc6b8d285",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -329,7 +330,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-priority-v7"),
+                    .join("feature-integration/runtime-summary-v14"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -482,7 +483,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-priority-v7"),
+                        .join("feature-integration/runtime-summary-v14"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -621,6 +622,34 @@ pub(super) fn family_alive(family: &[ProcessIdentity]) -> Result<bool, String> {
     }))
 }
 
+// These queries inspect TCP/Unix socket descriptors, not files on a mount.
+// macOS lsof can still emit this unrelated SMB mount-table diagnostic while
+// successfully returning socket PIDs. Accept only its exact three-line form;
+// permission errors, truncated warnings and every other diagnostic fail closed.
+fn socket_inspection_diagnostics_ok(stderr: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(stderr) else {
+        return false;
+    };
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let Some(path) = line.strip_prefix("lsof: WARNING: can't stat() smbfs file system /Volumes/") else {
+            return false;
+        };
+        if path.is_empty() || lines.next() != Some("      Output information may be incomplete.") {
+            return false;
+        }
+        let Some(device) = lines.next()
+            .and_then(|line| line.strip_prefix("      assuming \"dev="))
+            .and_then(|line| line.strip_suffix("\" from mount table")) else {
+                return false;
+            };
+        if device.is_empty() || !device.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
+    true
+}
+
 async fn lsof(args: &[String]) -> Result<String, String> {
     let output = tokio::time::timeout(
         Duration::from_secs(3),
@@ -633,7 +662,9 @@ async fn lsof(args: &[String]) -> Result<String, String> {
     .map_err(|_| "processInspectionFailed".to_string())?
     .map_err(|_| "processInspectionFailed".to_string())?;
     // lsof's exit 1 with no diagnostics means the filter matched no files.
-    if (!output.status.success() && output.status.code() != Some(1)) || !output.stderr.is_empty() {
+    if (!output.status.success() && output.status.code() != Some(1))
+        || !socket_inspection_diagnostics_ok(&output.stderr)
+    {
         return Err("processInspectionFailed".into());
     }
     String::from_utf8(output.stdout).map_err(|_| "processInspectionFailed".into())
@@ -1143,6 +1174,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn socket_diagnostics_accept_only_complete_unrelated_smb_mount_warnings() {
+        let warning = b"lsof: WARNING: can't stat() smbfs file system /Volumes/[C] Windows 11\n      Output information may be incomplete.\n      assuming \"dev=36000005\" from mount table\n";
+        assert!(socket_inspection_diagnostics_ok(b""));
+        assert!(socket_inspection_diagnostics_ok(warning));
+        let repeated = [warning.as_slice(), warning.as_slice()].concat();
+        assert!(socket_inspection_diagnostics_ok(&repeated));
+        for invalid in [
+            b"lsof: permission denied\n".as_slice(),
+            b"lsof: WARNING: can't stat() smbfs file system /Volumes/test\n",
+            b"lsof: WARNING: can't stat() apfs file system /Volumes/test\n",
+            b"\xff",
+        ] {
+            assert!(!socket_inspection_diagnostics_ok(invalid));
+        }
+        let with_error = [warning.as_slice(), b"lsof: can't inspect process: permission denied\n"].concat();
+        assert!(!socket_inspection_diagnostics_ok(&with_error));
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn live_listener_must_belong_to_owned_process_tree() {
@@ -1170,14 +1220,14 @@ mod tests {
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-priority-v7/strata")
+                .join("feature-integration/engine-summary-v14/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-priority-v7")
+                .join("feature-integration/runtime-summary-v14")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1213,15 +1263,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "57bd336563aa00a7dac0f2512fea6f09b6af2f0a843444c8b41743b38bbc230b"
+            "7dbb9302ddf47f711fef966e1da99283e54e570c19612e6c7f391e8ecf077a9e"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v1:849e69af0b9d152a1806212c0dd6ca0d6f58b0f5debc6d6e64504105c9079e5e"
+            "strata-stat-v1:ba11975168139daff67329897b0968e3919971b6b557f992342773b254658f63"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "bcdaeeb5922acb36804119737b66abe45a93b6bc3669f13923963e2a6f23e396"
+            "e697c807be8db6e5ca22399acebc1f52e86b6c010708e7b5672574ddc6b8d285"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

@@ -97,6 +97,8 @@ function actionResult(name, kind, app, action, after, deps) {
       return permissionResult(name, deps);
     case "protected":
       return refusedResult(name, action.summary, `the input would reach ${describeApp(after.ownerAtPoint ?? after.frontmost)}, which screen control may not ${kind === "click" ? "click" : "type"} into`, details);
+    case "dock-target":
+      return result(name, "error", `${name} did nothing: the screenshot coordinates hit the Dock, not the page. Take a new capture and choose a point inside the visible target window.`, { ...details, reason: "dock-target" });
     case "not-frontmost":
       return result(name, "error", `${name} did nothing: ${app} could not be brought back to the front (now: ${describeApp(after.frontmost)}). Take a new os.screen.capture.`, { ...details, reason: "not-frontmost" });
     case "owner-mismatch":

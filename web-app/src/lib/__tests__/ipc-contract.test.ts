@@ -38,6 +38,8 @@ const EXPECTED_DESKTOP_ONLY = new Set([
   'dstar_control',
   'managed_engine_control',
   'update_desktop_control_overlay',
+  'desktop_overlay_decision',
+  'desktop_overlay_drag',
   // Writes the logs through the crash-report scrubber, which lives in the
   // desktop-only telemetry module; the mobile targets have no Logs window.
   'export_logs',

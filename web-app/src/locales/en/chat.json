@@ -321,6 +321,8 @@
     "videoModelNote": "The model can't watch videos: it only sees the file name."
   },
   "inferenceProgress": {
+    "tokens": "New input: {{processed}} / {{total}} tokens",
+    "cached": "Reused: {{tokens}} tokens",
     "checking": "Checking completion",
     "waiting": "Waiting for the model",
     "reading": "Reading input",

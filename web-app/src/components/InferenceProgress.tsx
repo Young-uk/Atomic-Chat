@@ -4,7 +4,7 @@ import { useInferenceProgress } from '@/lib/inference-progress'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 
 /** Request-scoped status stays visible through prefill, reasoning and decoding. */
-export function InferenceProgress({ threadId }: { threadId: string }) {
+export function InferenceProgress({ threadId, hasAssistantIndicator = false }: { threadId: string; hasAssistantIndicator?: boolean }) {
   const progress = useInferenceProgress((state) => state.byThread[threadId])
   const { t } = useTranslation('chat')
   const [now, setNow] = useState(Date.now)
@@ -14,15 +14,18 @@ export function InferenceProgress({ threadId }: { threadId: string }) {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [progress?.requestId])
-  if (!progress) return null
+  if (!progress || (hasAssistantIndicator && (progress.phase === 'thinking' || progress.phase === 'generating'))) return null
   const seconds = Math.max(0, Math.floor((now - progress.startedAt) / 1000))
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
-  const percentage = progress.phase === 'reading' && progress.total
-    ? Math.min(100, Math.max(0, Math.floor((progress.processed ?? 0) / progress.total * 100)))
+  const hasCounts = progress.phase === 'reading' && Number.isSafeInteger(progress.processed) &&
+    Number.isSafeInteger(progress.total) && progress.total! > 0 && progress.processed! >= 0 &&
+    progress.processed! <= progress.total!
+  const percentage = hasCounts
+    ? Math.floor(progress.processed! / progress.total! * 1000) / 10
     : undefined
   return (
     <div role="status" aria-live="polite" className="my-2 min-w-0 max-w-full text-sm text-muted-foreground">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <span className="flex size-4 shrink-0 items-center justify-center overflow-hidden" aria-hidden="true">
           <Loader2 className="size-3.5 animate-spin" />
         </span>
@@ -30,6 +33,12 @@ export function InferenceProgress({ threadId }: { threadId: string }) {
         {percentage !== undefined && <span className="shrink-0 tabular-nums">{percentage}%</span>}
         <span className="shrink-0 tabular-nums">{elapsed}</span>
       </div>
+      {hasCounts && <div className="mt-1 min-w-0 break-words tabular-nums">
+        {t('inferenceProgress.tokens', { processed: progress.processed!.toLocaleString(), total: progress.total!.toLocaleString() })}
+        {Number.isSafeInteger(progress.cache) && progress.cache! > 0 && <span className="ml-2">
+          {t('inferenceProgress.cached', { tokens: progress.cache!.toLocaleString() })}
+        </span>}
+      </div>}
       {percentage !== undefined && (
         <div role="progressbar" aria-label={t('inferenceProgress.reading')}
           aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage}

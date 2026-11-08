@@ -119,6 +119,7 @@ async function readChunks(
 // Shared by every describe below: a seeded service hub plus a default MLX
 // provider/model, so each test only has to state what it changes.
 beforeEach(() => {
+  useGeneralSetting.setState({ completionReviewEnabled: false })
   useMCPServers.setState({ mcpServers: {} })
   seedServiceHub({
     rag: { getTools: vi.fn().mockResolvedValue([]) } as never,
@@ -1677,6 +1678,7 @@ describe('Personal source-backed recall persistence', () => {
 })
 
 describe('Personal Dstar completion review isolated transport fixtures', () => {
+  beforeEach(() => useGeneralSetting.setState({ completionReviewEnabled: true }))
   it.each(['complete', 'needs_tool'] as const)('preserves the interim text and follows a %s decision once', async decision => {
     // Exercise the dormant transport path explicitly, not release discovery.
     const discovery = await import('@/services/local-model-capabilities')
@@ -2000,6 +2002,7 @@ it('enables Strata extraction only for the advertised isolated runtime and cance
 })
 
 describe('independent Strata completion review isolated transport fixtures', () => {
+  beforeEach(() => useGeneralSetting.setState({ completionReviewEnabled: true }))
   it.each(['unadvertised', 'complete', 'needs_tool'] as const)('keeps summaries disabled and handles %s review', async decision => {
     // Exercise the dormant transport path explicitly, not release discovery.
     const discovery = await import('@/services/local-model-capabilities')
@@ -2074,15 +2077,170 @@ describe('release completion-review gate through real transport discovery', () =
     const primary = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'offer' },
       { type: 'text-delta', id: 'offer', delta: 'If you want, I can check it for you.' }, { type: 'text-end', id: 'offer' },
       { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 12, totalTokens: 112 } }])
-    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(primary)
+    const create = vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(primary)
     const chat = new Chat<UIMessage>({ transport: new CustomChatTransport(undefined, `release-gate-${engine}`) })
     try {
       await chat.sendMessage({ text: 'What can you help with?' })
       expect(chat.error).toBeUndefined()
+      expect((create.mock.calls[0]?.[3] as Record<string, unknown> | undefined)?.return_progress).toBe(engine === 'strata' ? true : undefined)
       expect(chat.messages.at(-1)?.parts.filter(p => p.type === 'text').map(p => p.text).join('')).toBe('If you want, I can check it for you.')
       expect((primary as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream).toHaveBeenCalledTimes(1)
       expect(chat.messages.at(-1)?.parts.some(p => p.type === 'tool-search' || p.type === 'dynamic-tool')).toBe(false)
       expect(fetcher.mock.calls.filter(call => String(call[0]).endsWith('/chat/completions'))).toHaveLength(0)
     } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
+})
+
+describe('opt-in completion review through real capability discovery', () => {
+  it.each(['dstar', 'strata'].flatMap(engine =>
+    ['continue', 'opt-out', 'off-on', 'switch-model', 'switch-back', 'restart'].map(change => [engine, change] as const)
+  ))('bounds review on %s when state changes: %s', async (engine, change) => {
+    useGeneralSetting.setState({ completionReviewEnabled: true })
+    vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'false')
+    const modelId = engine === 'strata' ? STRATA_MODEL : 'qwen3.8-flash-next-chat'
+    const providerName = engine === 'strata' ? STRATA_PROVIDER : 'dstar'
+    const modelInfo = { id: modelId, capabilities: ['tools'], settings: {} } as Model
+    useModelProvider.setState({ selectedProvider: providerName, selectedModel: modelInfo,
+      providers: [{ provider: providerName, active: true, api_key: '',
+        base_url: `http://127.0.0.1:${engine === 'strata' ? 18080 : 8010}/v1`, models: [modelInfo], settings: [] }] })
+    let reviewed = false
+    const fetcher = vi.fn().mockImplementation(async (url: string) => {
+      if (!url.endsWith('/models')) {
+        reviewed = true
+        if (change === 'opt-out' || change === 'off-on') useGeneralSetting.setState({ completionReviewEnabled: false })
+        if (change === 'off-on') useGeneralSetting.setState({ completionReviewEnabled: true })
+        if (change === 'switch-model' || change === 'switch-back') useModelProvider.setState({ selectedModel: { ...modelInfo, id: 'replacement' } })
+        if (change === 'switch-back') useModelProvider.setState({ selectedModel: modelInfo })
+      }
+      return { ok: true, json: async () => url.endsWith('/models') ? {
+      runtime_id: reviewed && change === 'restart' ? 'replacement' : 'opt-in', atomic_model_fingerprint: 'fixture', atomic_completion_review: engine === 'dstar',
+      atomic_completion_review_experimental: engine === 'strata',
+      atomic_summary_slot: true, atomic_summary_context: 16384, atomic_summary_token_count: true,
+      atomic_summary_protocol: 5, atomic_summary_cold_start: false, atomic_summary_requires_foreground_warmup: true,
+      atomic_summary_shared_weights: true, atomic_summary_serialized_compute: true, atomic_summary_experimental: true,
+      atomic_summary_state_bank_provenance: 'experimental-user-validation', atomic_summary_state_bank_max_bytes: 1073741824,
+      atomic_summary_qualified_envelope: null, atomic_summary_isolation: 'shared-weights-priority-v1',
+      atomic_summary_scheduler: { policy: 'weighted-quanta-v1', foreground_weight: 8, summary_weight: 1,
+        compute_serialized: true, active_lane: null, foreground_turns: 0, summary_turns: 0, recovery_required: false },
+      atomic_summary_continuation_text_only: false, atomic_summary_foreground_preparation: 'legacy-first-token-v1',
+      atomic_summary_foreground_prefill_exclusive: true, atomic_tool_policy: 'plain-system-v1',
+      data: [{ id: modelId, context_length: 65536 }],
+    } : { choices: [{ finish_reason: 'stop', message: { content: '{"decision":"needs_tool"}' } }] } }
+    })
+    vi.stubGlobal('fetch', fetcher)
+    useAppState.setState({ tools: [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: {} } }], mcpToolNames: new Set(['search']) })
+    const primary = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'update' },
+      { type: 'text-delta', id: 'update', delta: 'I will check the forecast.' }, { type: 'text-end', id: 'update' },
+      { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 12, totalTokens: 112 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(primary)
+    const chat = new Chat<UIMessage>({ transport: new CustomChatTransport(undefined, `opt-in-${engine}`) })
+    try {
+      await chat.sendMessage({ text: 'Check the forecast.' })
+      expect(chat.error).toBeUndefined()
+      const doStream = (primary as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream
+      expect(doStream).toHaveBeenCalledTimes(change === 'continue' ? 2 : 1)
+      expect(fetcher.mock.calls.filter(call => String(call[0]).endsWith('/chat/completions'))).toHaveLength(1)
+      if (change === 'continue') expect(JSON.stringify(doStream.mock.calls[1][0].prompt)).toContain('Existing permissions and approval requirements still apply')
+    } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+})
+
+describe('pending completion review lifecycle', () => {
+  it.each(['reader-cancel', 'abort', 'new-request'] as const)('never follows the old answer after %s', async change => {
+    useGeneralSetting.setState({ completionReviewEnabled: true })
+    vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'false')
+    const modelInfo = { id: 'qwen3.8-flash-next-chat', capabilities: ['tools'], settings: {} } as Model
+    useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: modelInfo,
+      providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [modelInfo], settings: [] }] })
+    let startReview!: () => void
+    const reviewStarted = new Promise<void>(resolve => { startReview = resolve })
+    let finishReview!: () => void
+    const reviewPending = new Promise<void>(resolve => { finishReview = resolve })
+    let reviewSignal: AbortSignal | undefined
+    let reviewCalls = 0
+    const fetcher = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/models')) return { ok: true, json: async () => ({
+        runtime_id: 'pending', atomic_completion_review: true, data: [{ id: modelInfo.id, context_length: 65536 }],
+      }) }
+      reviewCalls++
+      if (reviewCalls === 1) {
+        reviewSignal = init?.signal as AbortSignal
+        startReview()
+        await reviewPending
+        return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '{"decision":"needs_tool"}' } }] }) }
+      }
+      return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '{"decision":"complete"}' } }] }) }
+    })
+    vi.stubGlobal('fetch', fetcher)
+    useAppState.setState({ tools: [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: {} } }], mcpToolNames: new Set(['search']) })
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'update' },
+      { type: 'text-delta', id: 'update', delta: 'I will check the forecast.' }, { type: 'text-end', id: 'update' },
+      { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 12, totalTokens: 112 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const transport = new CustomChatTransport(undefined, 'pending-review')
+    const abort = new AbortController()
+    const options = { chatId: 'pending-review', messages: [userMessage], abortSignal: abort.signal,
+      trigger: 'submit-message' as const, messageId: undefined }
+    try {
+      const stream = await transport.sendMessages(options)
+      const reader = stream.getReader()
+      await reviewStarted
+      if (change === 'reader-cancel') {
+        await reader.cancel()
+        expect(reviewSignal?.aborted).toBe(true)
+      } else if (change === 'abort') {
+        abort.abort()
+        expect(reviewSignal?.aborted).toBe(true)
+      } else {
+        const next = await transport.sendMessages({ ...options, messages: [{ ...userMessage, id: 'new-user-turn' }] })
+        await readChunks(next as ReadableStream<Record<string, unknown>>)
+      }
+      finishReview()
+      if (change !== 'reader-cancel') {
+        for (;;) { const next = await reader.read(); if (next.done) break }
+      }
+      // The canceled writer may settle after reader.cancel returns; allow its
+      // already-resolved continuation to run, then check no model call escaped.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect((model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream).toHaveBeenCalledTimes(change === 'new-request' ? 2 : 1)
+      expect(reviewCalls).toBe(change === 'new-request' ? 2 : 1)
+    } finally { finishReview(); abort.abort(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+})
+
+it.each((['strata', 'dstar'] as const).flatMap(engine => [true, false].map(probe => ({ engine, probe }))))('keeps $engine tool result bytes identical after Rust persistence (probe: $probe)', async ({ engine, probe }) => {
+  vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'false')
+  const modelId = engine === 'strata' ? STRATA_MODEL : 'qwen3.8-flash-next-chat'
+  const providerName = engine === 'strata' ? STRATA_PROVIDER : 'dstar'
+  const modelInfo = { id: modelId, capabilities: ['tools'], settings: {} } as Model
+  useModelProvider.setState({ selectedProvider: providerName, selectedModel: modelInfo,
+    providers: [{ provider: providerName, active: true, api_key: '', base_url: `http://127.0.0.1:${engine === 'strata' ? 18080 : 8010}/v1`, models: [modelInfo], settings: [] }] })
+  vi.stubGlobal('fetch', probe ? vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+    runtime_id: 'cache-restart-fixture', data: [{ id: modelId, context_length: 65536 }],
+  }) }) : vi.fn().mockRejectedValue(new Error('Capability probe unavailable')))
+  const model = fakeStreamingModel([
+    { type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'answer' },
+    { type: 'text-delta', id: 'answer', delta: 'ok' }, { type: 'text-end', id: 'answer' },
+    { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 1, totalTokens: 101 } },
+  ])
+  vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+  // Actual first differing output from a disk-cache miss: type/text became text/type.
+  const assistant = { id: 'cache-tool', role: 'assistant', parts: [
+    { type: 'step-start' }, { type: 'tool-personal_browser', toolCallId: 'cache-call',
+      state: 'output-available', input: { action: 'read' }, output: [{ type: 'text', text: '[]' }] },
+  ] } as UIMessage
+  const rustOrder = (value: unknown): unknown => Array.isArray(value) ? value.map(rustOrder) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, rustOrder(item)])) : value
+  try {
+    for (const history of [assistant, rustOrder(assistant) as UIMessage]) {
+      await readChunks(await new CustomChatTransport(undefined, `cache-order-${engine}`).sendMessages({
+        chatId: `cache-order-${engine}`, messages: [userMessage, history], abortSignal: undefined,
+        trigger: 'submit-message', messageId: undefined,
+      }) as ReadableStream<Record<string, unknown>>)
+    }
+    const calls = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls
+    expect(calls).toHaveLength(2)
+    expect(JSON.stringify(calls[0][0].prompt)).toBe(JSON.stringify(calls[1][0].prompt))
+    expect(JSON.stringify(calls[0][0].prompt)).toContain('[]')
+  } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
 })

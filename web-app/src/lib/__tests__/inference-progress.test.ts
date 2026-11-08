@@ -52,3 +52,15 @@ it('carries the runtime scope through live and completed foreground observations
   observer.finish()
   expect(useInferenceProgress.getState().contextByThread?.scoped.usageScope).toBe('runtime-a')
 })
+
+it('normalizes fragmented Strata progress while keeping full context usage', () => {
+  const observer = observeInferenceProgress('a')
+  observer.push('data: {"prompt_pro')
+  observer.push('gress":{"processed":32020,"total":32080,"cache":32000},"choices":[{"delta":{}}]}\n\n')
+  expect(useInferenceProgress.getState().byThread.a).toMatchObject({ phase: 'reading', processed: 20, total: 80, cache: 32000 })
+  expect(useInferenceProgress.getState().contextByThread?.a.tokens).toBe(32080)
+  observer.push('data: {"prompt_progress":{"processed":31999,"total":32080,"cache":32000}}\n')
+  expect(useInferenceProgress.getState().byThread.a.processed).toBe(20)
+  observer.push('data: {"choices":[{"delta":{"content":"answer"}}]}\n')
+  expect(useInferenceProgress.getState().byThread.a.phase).toBe('generating')
+})

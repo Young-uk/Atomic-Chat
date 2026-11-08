@@ -40,6 +40,8 @@
     "chipLabel": "출처: {{name}}, 구절 {{passage}}"
   },
   "inferenceProgress": {
+    "tokens": "새 입력: {{processed}} / {{total}}토큰",
+    "cached": "캐시 재사용: {{tokens}}토큰",
     "checking": "작업 완료 여부 확인 중",
     "waiting": "모델 응답 대기 중",
     "reading": "입력 읽는 중",

@@ -61,6 +61,17 @@ export function observeInferenceProgress(threadId: string, modelId?: string, usa
               publishContextUsage(threadId, { tokens: total + cache, estimated: false, modelId, usageScope, runtimeScope })
           } else if (line.startsWith('data: ') && !line.includes('[DONE]')) {
             const value = JSON.parse(line.slice(6))
+            // Strata/llama.cpp counts the cached prefix in processed/total;
+            // Dstar's atomic comment already counts only the unread suffix.
+            const pp = value.prompt_progress
+            if (pp && [pp.processed, pp.total, pp.cache].every(Number.isSafeInteger) &&
+                pp.cache >= 0 && pp.processed >= pp.cache && pp.total > 0 && pp.processed <= pp.total) {
+              const processed = pp.processed - pp.cache
+              const total = pp.total - pp.cache
+              update({ phase: processed === total ? 'preparing' : 'reading', processed, total, cache: pp.cache })
+              if (useInferenceProgress.getState().byThread[threadId]?.requestId === requestId)
+                publishContextUsage(threadId, { tokens: pp.total, estimated: false, modelId, usageScope, runtimeScope })
+            }
             const delta = value.choices?.[0]?.delta
             if (delta?.content || delta?.tool_calls?.length) update({ phase: 'generating' })
             else if (delta?.reasoning_content || delta?.reasoning) update({ phase: 'thinking' })

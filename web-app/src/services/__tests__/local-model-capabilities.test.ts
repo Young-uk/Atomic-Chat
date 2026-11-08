@@ -315,3 +315,46 @@ describe('experimental weighted Strata summary scheduling', () => {
       summaryTokenCounting: false, summaryQualifiedEnvelope: undefined, completionReview: false })
   })
 })
+
+describe('explicit completion review opt-in', () => {
+  const priority = (extra = {}) => capabilities({
+    atomic_completion_review: false, atomic_completion_review_experimental: true,
+    atomic_summary_protocol: 5, atomic_summary_isolation: 'shared-weights-priority-v1',
+    atomic_summary_cold_start: false, atomic_summary_requires_foreground_warmup: true,
+    atomic_summary_shared_weights: true, atomic_summary_serialized_compute: true,
+    atomic_summary_experimental: true, atomic_summary_state_bank_provenance: 'experimental-user-validation',
+    atomic_summary_state_bank_max_bytes: 1073741824, atomic_summary_qualified_envelope: null,
+    atomic_summary_scheduler: { policy: 'weighted-quanta-v1', foreground_weight: 8, summary_weight: 1,
+      compute_serialized: true, active_lane: null, foreground_turns: 0, summary_turns: 0, recovery_required: false },
+    atomic_summary_continuation_text_only: false, atomic_summary_foreground_preparation: 'legacy-first-token-v1',
+    atomic_summary_foreground_prefill_exclusive: true, ...extra,
+  })
+  it.each([undefined, false, 'true', 1, null])('never enables review without strict opt-in: %j', async enabled => {
+    respond(priority())
+    expect((await probeLocalModelCapabilities(provider, model, { completionReviewEnabled: enabled as boolean }))?.completionReview).toBe(false)
+  })
+  it('accepts opted-in experimental transport without claiming semantic qualification', async () => {
+    respond(priority())
+    expect(await probeLocalModelCapabilities(provider, model, { completionReviewEnabled: true })).toMatchObject({
+      completionReview: true, summarySlot: true, summaryStateBank: { protocol: 5, experimental: true },
+    })
+  })
+  it.each([
+    { atomic_completion_review_experimental: undefined }, { atomic_completion_review_experimental: false },
+    { atomic_completion_review_experimental: 'true' }, { atomic_summary_slot: false },
+    { runtime_id: undefined }, { atomic_model_fingerprint: undefined }, { atomic_summary_scheduler: null },
+    { atomic_summary_token_count: false }, { atomic_summary_foreground_prefill_exclusive: false },
+  ])('skips unsupported or unhealthy Strata even when opted in: %j', async extra => {
+    respond(priority(extra))
+    expect((await probeLocalModelCapabilities(provider, model, { completionReviewEnabled: true }))?.completionReview).toBe(false)
+  })
+  it('does not re-enable legacy Strata qualification flags as experimental support', async () => {
+    respond(capabilities({ atomic_completion_review: true, atomic_completion_review_experimental: true }))
+    expect((await probeLocalModelCapabilities(provider, model, { completionReviewEnabled: true }))?.completionReview).toBe(false)
+  })
+  it.each([true, false, undefined, 'true'])('requires the actual Dstar advertisement: %j', async advertisement => {
+    respond({ data: [{ id: 'dstar-model', context_length: 65536 }], atomic_completion_review: advertisement })
+    expect((await probeLocalModelCapabilities({ provider: 'dstar', base_url: 'http://localhost:8010/v1', models: [] },
+      { id: 'dstar-model' }, { completionReviewEnabled: true }))?.completionReview).toBe(advertisement === true)
+  })
+})

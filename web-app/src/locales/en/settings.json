@@ -81,7 +81,9 @@
     "desktopNotifications": "Desktop notifications",
     "desktopNotificationsDesc": "Send a system notification when a download finishes, and when a reply, images or a video is ready while you're looking elsewhere.",
     "legacyChatEngine": "Use legacy chat engine",
-    "legacyChatEngineDesc": "Force the previous chat pipeline for every message and disable Agent mode entirely. Temporary escape hatch."
+    "legacyChatEngineDesc": "Force the previous chat pipeline for every message and disable Agent mode entirely. Temporary escape hatch.",
+    "completionReview": "Completion review (experimental)",
+    "completionReviewDesc": "Off by default. For supported Dstar and Strata runtimes only. Adds local inference and latency to check whether the requested work appears complete, with at most one follow-up. Conditional offers can be misclassified. This is not fact checking and does not change tool permissions. Applies to new requests; unsupported runtimes skip review."
   },
   "threadNotifications": {
     "notificationTitle": "Reply ready",

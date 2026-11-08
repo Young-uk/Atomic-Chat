@@ -133,6 +133,8 @@ export default function ToolApproval() {
   return (
     <Dialog open={isModalOpen} onOpenChange={handleDialogOpen}>
       <DialogContent
+        onOpenAutoFocus={(event) => { if (!document.hasFocus()) event.preventDefault() }}
+        onCloseAutoFocus={(event) => { if (!document.hasFocus()) event.preventDefault() }}
         className="sm:max-w-lg lg:max-w-lg xl:max-w-lg max-h-[90vh] overflow-y-auto"
         showCloseButton={false}
       >
@@ -227,7 +229,7 @@ export default function ToolApproval() {
               variant="default"
               size="sm"
               onClick={handleAllow}
-              autoFocus
+              autoFocus={document.hasFocus()}
               className="capitalize"
             >
               {t('tools:toolApproval.alwaysAllow')}

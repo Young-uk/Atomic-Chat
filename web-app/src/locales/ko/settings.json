@@ -67,7 +67,9 @@
     "desktopNotifications": "데스크톱 알림",
     "desktopNotificationsDesc": "응답, 이미지, 동영상 또는 다운로드가 완료되면 시스템 알림을 보냅니다.",
     "legacyChatEngine": "기존 채팅 엔진 사용",
-    "legacyChatEngineDesc": "모든 메시지를 이전 채팅 파이프라인으로 처리하고 에이전트 모드를 완전히 비활성화합니다. 임시 우회 수단입니다."
+    "legacyChatEngineDesc": "모든 메시지를 이전 채팅 파이프라인으로 처리하고 에이전트 모드를 완전히 비활성화합니다. 임시 우회 수단입니다.",
+    "completionReview": "완료 검토 (실험적)",
+    "completionReviewDesc": "기본값은 꺼짐입니다. 지원되는 Dstar 및 Strata 런타임에서만 사용합니다. 요청한 작업이 완료되었는지 판단하기 위해 추가 로컬 추론과 지연이 발생하며, 후속 진행은 최대 한 번입니다. 조건부 제안을 잘못 판단할 수 있습니다. 사실 확인 기능이 아니며 도구 권한은 변경되지 않습니다. 새 요청부터 적용되며, 지원하지 않는 런타임에서는 검토를 건너뜁니다."
   },
   "threadNotifications": {
     "notificationTitle": "응답 준비됨",

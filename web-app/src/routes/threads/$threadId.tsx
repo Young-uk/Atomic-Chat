@@ -2219,7 +2219,7 @@ function ThreadDetail() {
                       )}
                     </div>
                   )}
-                  {!isAutoIncreasingContext && (!hasActiveAssistantMessage || !!pendingContinueMessage) && <InferenceProgress threadId={threadId} />}
+                  {!isAutoIncreasingContext && <InferenceProgress threadId={threadId} hasAssistantIndicator={hasActiveAssistantMessage && !pendingContinueMessage} />}
                   <ContextSummaryProgress threadId={threadId} />
                   {shownError &&
                     !isAutoIncreasingContext &&

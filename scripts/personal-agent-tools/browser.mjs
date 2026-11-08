@@ -52,6 +52,7 @@ export class PersonalBrowser {
     this.loadChromium = chromiumLoader
     this.tabs = new Map()
     this.nextTab = 1
+    this.nextRef = 1
     this.refs = new Map()
   }
   async ready() {
@@ -97,20 +98,30 @@ export class PersonalBrowser {
     }
     if (action === 'read') {
       await publicUrl(page.url())
-      const handles = await page.locator('a,button,input,textarea,select,[role="button"],[role="link"]').elementHandles()
+      const offset = args.offset ?? 0
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Read offset must be a nonnegative integer')
+      const handles = await page.locator('a,button,input,textarea,select,summary,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="combobox"],[contenteditable="true"],[tabindex],[onclick]').elementHandles()
       const refs = new Map()
       const elements = []
-      for (const handle of handles.slice(200)) await handle.dispose()
-      for (const handle of handles.slice(0, 200)) {
-        const info = await handle.evaluate(el => ({ tag: el.tagName.toLowerCase(), type: el.getAttribute('type'), label: (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText || '').slice(0, 150), visible: Boolean(el.getClientRects().length) })).catch(() => null)
+      let visibleCount = 0
+      for (const handle of handles) {
+        const info = await handle.evaluate(el => {
+          const style = getComputedStyle(el)
+          return { tag: el.tagName.toLowerCase(), type: el.getAttribute('type'),
+            role: el.getAttribute('role'),
+            label: (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText || el.getAttribute('title') || el.getAttribute('alt') || '').slice(0, 150),
+            visible: Boolean(el.getClientRects().length) && style.visibility !== 'hidden' && style.visibility !== 'collapse' }
+        }).catch(() => null)
         if (!info?.visible || ['password', 'hidden'].includes(info.type)) { await handle.dispose(); continue }
-        const ref = `e${elements.length + 1}`
+        const index = visibleCount++
+        if (index < offset || elements.length >= 200) { await handle.dispose(); continue }
+        const ref = `e${this.nextRef++}`
         refs.set(ref, handle)
         elements.push({ ref, ...info })
       }
       await this.invalidate(args.tab)
       this.refs.set(args.tab, refs)
-      return { untrustedPageContent: true, tab: args.tab, url: page.url(), title: await page.title(), text: (await page.locator('body').innerText()).slice(0, 16000), elements }
+      return { untrustedPageContent: true, tab: args.tab, url: page.url(), title: await page.title(), offset, totalElements: visibleCount, nextOffset: offset + elements.length < visibleCount ? offset + elements.length : null, text: (await page.locator('body').innerText()).slice(0, 16000), elements }
     }
     if (action === 'scroll') {
       if (!['up', 'down'].includes(args.direction)) throw new Error('Scroll direction must be up or down')

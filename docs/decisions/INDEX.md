@@ -775,3 +775,22 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Reveal and color the actual Find occurrence](2026-11-08-reveal-find-occurrences.md) — Exact-range navigation and visible fallback highlights.
 
 - [Recover managed engine observation errors](2026-11-08-recover-managed-observation-errors.md) — Generation-scoped recovery without clearing lifecycle faults.
+
+- [Keep completion review an experimental opt-in](2026-11-08-completion-review-opt-in.md) — Default-off personal setting with strict boolean rehydration and explicit classifier limitations.
+
+- [Browser target pagination and Safari screen routing](2026-11-08-browser-target-pagination-and-safari-routing.md)
+
+- [Desktop overlay approval actions](2026-11-08-desktop-overlay-approval-actions.md)
+
+- [Strata clean-shutdown disk session](2026-11-08-strata-clean-shutdown-disk-session.md)
+- [Screen click Accessibility target](2026-11-08-screen-click-accessibility-target.md)
+
+- [Batch idle Strata summary prefill](2026-11-08-batch-idle-summary-prefill.md)
+
+- [Show request-scoped input progress for managed local engines](2026-11-08-request-input-progress.md)
+
+- [Preserve socket ownership checks with an inaccessible SMB mount](2026-11-08-socket-ownership-smb-diagnostics.md)
+
+- [Keep desktop overlay interactions on the current app](2026-11-09-desktop-overlay-interaction.md)
+
+- [Preserve Strata prompt prefixes across Rust persistence](2026-11-09-stable-strata-tool-result-wire-order.md)

@@ -10,12 +10,24 @@ function appInfo(app) {
 }
 function frontmost() { return appInfo($.NSWorkspace.sharedWorkspace.frontmostApplication); }
 function ownerAt(x, y) {
+  // Accessibility hit testing follows actual input targets, not the bounding
+  // rectangles of transparent Dock/system windows.
+  var hit = safe(function () {
+    var element = Ref(), pid = Ref();
+    if ($.AXUIElementCopyElementAtPosition($.AXUIElementCreateSystemWide(), x, y, element) !== 0 ||
+        $.AXUIElementGetPid(element[0], pid) !== 0) return null;
+    return appInfo($.NSRunningApplication.runningApplicationWithProcessIdentifier(pid[0]));
+  }, null);
+  if (hit) return hit;
   var list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0))) || [];
   for (var i = 0; i < list.length; i++) {
     var w = list[i], b = w.kCGWindowBounds;
     if (!b || w.kCGWindowAlpha === 0) continue;
     if (x >= b.X && x < b.X + b.Width && y >= b.Y && y < b.Y + b.Height) {
       var info = appInfo($.NSRunningApplication.runningApplicationWithProcessIdentifier(w.kCGWindowOwnerPID));
+      // Without an AX target, a Dock rectangle is ambiguous. Never click
+      // through it into a window behind it or try to activate the Dock.
+      if (info && info.bundleId === "com.apple.dock") return null;
       return info || { name: w.kCGWindowOwnerName || null, bundleId: null, pid: w.kCGWindowOwnerPID };
     }
   }
@@ -182,6 +194,7 @@ function run() {
   }
   if (out.accessibility !== true) { out.error = "accessibility"; return JSON.stringify(out); }
   if (!p.expectBundleId || isProtected(p, p.expectBundleId)) { out.error = "protected"; return JSON.stringify(out); }
+  if (p.op === "click" && p.expectBundleId === "com.apple.dock") { out.error = "dock-target"; return JSON.stringify(out); }
   if (!bringToFront(p.expectBundleId)) { out.frontmost = safe(frontmost, null); out.error = "not-frontmost"; return JSON.stringify(out); }
   out.frontmost = safe(frontmost, null);
   if (!out.frontmost || isProtected(p, out.frontmost.bundleId)) { out.error = "protected"; return JSON.stringify(out); }

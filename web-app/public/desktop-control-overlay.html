@@ -4,10 +4,22 @@
 <title>Atomic Chat activity</title>
 <style>
   :root { color-scheme: light dark; font: 14px -apple-system, system-ui, sans-serif; }
-  body { box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; margin: 0; padding: 10px 14px; border-radius: 14px; background: color-mix(in srgb, Canvas 90%, transparent); color: CanvasText; overflow: hidden; }
+  html { background: transparent; overflow: hidden; border-radius: 18px; }
+  body { margin: 0; background: transparent; }
+  main { box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; margin: 0; padding: 10px 14px; border-radius: 18px; background: color-mix(in srgb, Canvas 90%, transparent); color: CanvasText; overflow: hidden; }
   h1 { flex: none; margin: 0 0 5px; font-size: 14px; cursor: grab; user-select: none; }
-  p { min-height: 0; margin: 0; line-height: 18px; overflow-wrap: anywhere; overflow-y: auto; }
+  p { flex: 1; white-space: pre-wrap; min-height: 0; margin: 0; line-height: 18px; overflow-wrap: anywhere; overflow-y: auto; }
+  #actions { flex: none; display: flex; gap: 8px; padding-top: 10px; }
+  #actions[hidden] { display: none; }
+  button { min-height: 36px; flex: 1; min-width: 0; border: 1px solid GrayText; border-radius: 8px; background: Canvas; color: CanvasText; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: default; }
+  #approve { background: Highlight; color: HighlightText; }
+  #feedback { flex: none; font-size: 12px; overflow-wrap: anywhere; }
 </style>
-<h1 data-tauri-drag-region></h1>
+<main>
+<h1 title="Drag to move"></h1>
 <p></p>
+<div id="actions" hidden><button id="deny" type="button">Deny</button><button id="approve" type="button">Allow once</button></div>
+<div id="feedback" role="status" aria-live="polite"></div>
+</main>
 <script src="./desktop-control-overlay.js" defer></script>
