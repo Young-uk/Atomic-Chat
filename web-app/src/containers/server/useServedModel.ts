@@ -7,8 +7,8 @@ import {
 import { getProviderTitle } from '@/lib/utils'
 
 /**
- * The engine and model the server serves while it runs, and the ones it will
- * load on the next start while it is stopped.
+ * The API provider/model recorded at startup, or the configured default.
+ * This is routing configuration, not a live backend-health observation.
  */
 export function useServedModel(running: boolean): {
   engine?: string

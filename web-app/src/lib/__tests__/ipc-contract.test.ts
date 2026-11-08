@@ -36,6 +36,7 @@ const EXPECTED_DESKTOP_ONLY = new Set([
   'check_for_app_updates',
   // The personal Dstar lifecycle owns a native process group on desktop only.
   'dstar_control',
+  'managed_engine_control',
   'update_desktop_control_overlay',
   // Writes the logs through the crash-report scrubber, which lives in the
   // desktop-only telemetry module; the mobile targets have no Logs window.
@@ -316,15 +317,16 @@ function frontendInvokeCommands(): Map<string, Set<string>> {
 }
 
 function configuredDesktopPluginDefaults(): Set<string> {
+  type Capability = { permissions: Array<string | { identifier: string }> }
   const config = JSON.parse(read(join(TAURI_ROOT, 'tauri.conf.json'))) as {
-    app: { security: { capabilities: string[] } }
+    app: { security: { capabilities: Array<string | Capability> } }
   }
   const granted = new Set<string>()
   for (const capability of config.app.security.capabilities) {
-    const path = join(TAURI_ROOT, 'capabilities', `${capability}.json`)
-    const parsed = JSON.parse(read(path)) as {
-      permissions: Array<string | { identifier: string }>
-    }
+    // Tauri supports named capability files and inline capability objects.
+    const parsed = typeof capability === 'string'
+      ? JSON.parse(read(join(TAURI_ROOT, 'capabilities', `${capability}.json`))) as Capability
+      : capability
     for (const permission of parsed.permissions) {
       const identifier =
         typeof permission === 'string' ? permission : permission.identifier

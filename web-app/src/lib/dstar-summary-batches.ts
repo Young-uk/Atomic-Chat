@@ -1,3 +1,4 @@
+import type { SummaryAdmission } from './atomic-summary-admission'
 import type { UIMessage } from 'ai'
 import { prepareToolResultImagesForModel } from './toolResultImages'
 import { fetchDstarContext } from './dstar-context-archive'
@@ -15,12 +16,13 @@ const consolidation = 'Consolidate these historical summaries in chronological o
 /** Independent segment extraction plus occasional bounded consolidation. The
  * exact wire envelope (including validation repairs) determines turn boundaries.
  * No successful extraction is silently split or truncated to make it fit. */
-export function summarizeBatchesWithDstar(baseUrl: string, model: string, options: { tokenCounting: boolean }): Summarize {
+export function summarizeBatchesWithDstar(baseUrl: string, model: string, options: { tokenCounting: boolean; admission?: SummaryAdmission }): Summarize {
   const bytes = (s: string) => new TextEncoder().encode(s).length
   const wire = (system: string, payload: string, task: string) => [
     { role: 'system', content: system }, { role: 'user', content: payload }, { role: 'user', content: task },
   ]
   const fits = async (system: string, payload: string, task: string, signal: AbortSignal) => {
+    options.admission?.assertAllowed()
     const messages = wire(system, payload, task)
     if (!options.tokenCounting) return messages.reduce((n, m) => n + bytes(m.content), 0) <= 8192 - 512 - 2048
     const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
@@ -44,7 +46,16 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
         method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, atomic_summary: true, stream: false, think: false, temperature: 0, max_tokens: 2048, messages: wire(system, payload, instruction) }),
       })
-      if (!response.ok) throw new Error(`Background summary failed (${response.status})`)
+      if (!response.ok) {
+        if (response.status === 409 && options.admission) {
+          const error = await response.json().catch(() => null)
+          if (error?.error?.code === 'atomic_summary_admission_refused') {
+            options.admission.refuse()
+            throw new Error('Background summary deferred by server safety admission; originals retained')
+          }
+        }
+        throw new Error(`Background summary failed (${response.status})`)
+      }
       return (await response.json()).choices?.[0]
     })
   }

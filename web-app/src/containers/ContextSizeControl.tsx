@@ -49,7 +49,10 @@ type LatestTokenUsage = {
 
 function getLatestTokenUsage(
   messages: ThreadMessage[],
-  modelId?: string
+  modelId?: string,
+  providerId?: string,
+  usageScope?: string,
+  requireScope = false
 ): LatestTokenUsage {
   let latest: LatestTokenUsage | undefined
   let cacheHitRateSum = 0
@@ -60,6 +63,10 @@ function getLatestTokenUsage(
 
     const metadata = message.metadata as Record<string, unknown> | undefined
     if (modelId && (metadata?.modelId !== modelId || !metadata?.usage)) continue
+    if (providerId && metadata?.providerId && metadata.providerId !== providerId) continue
+    if (requireScope && (!usageScope || metadata?.contextUsageScope !== usageScope || !metadata?.contextUsage)) continue
+    if (usageScope && metadata?.contextUsageScope && metadata.contextUsageScope !== usageScope) continue
+    if (['error', 'abort', 'cancelled'].includes(String(metadata?.finishReason))) continue
     const usage = (metadata?.contextUsage ?? metadata?.usage) as
       | {
           inputTokens?: unknown
@@ -88,8 +95,10 @@ function getLatestTokenUsage(
         : Math.max(0, totalTokens - outputTokens)
 
     const cached = usage?.cachedInputTokens
-    const cachedInputTokens = typeof cached === 'number' && Number.isSafeInteger(cached)
-      && cached >= 0 && cached <= inputTokens ? cached : undefined
+    const cachedInputTokens = typeof usage?.inputTokens === 'number'
+      && Number.isSafeInteger(usage.inputTokens) && usage.inputTokens > 0
+      && typeof cached === 'number' && Number.isSafeInteger(cached)
+      && cached >= 0 && cached <= usage.inputTokens ? cached : undefined
     latest ??= {
       cachedInputTokens,
       inputTokens,
@@ -116,30 +125,39 @@ export function ContextSizeControl({
 }: ContextSizeControlProps) {
   const tokenData = useTokensCount(messages, uploadedFiles)
   const dstar = useDstarContextLimit()
-  const maxTokens = dstar.isDstar ? dstar.maxTokens : tokenData.maxTokens
+  const isManagedLocal = dstar.isManagedLocal ?? dstar.isDstar
+  const maxTokens = isManagedLocal ? dstar.maxTokens : tokenData.maxTokens
   const latestUsage = getLatestTokenUsage(
     messages,
-    dstar.isDstar ? dstar.modelId : undefined
+    isManagedLocal ? dstar.modelId : undefined,
+    isManagedLocal ? dstar.providerId : undefined,
+    isManagedLocal ? dstar.usageScope : undefined,
+    dstar.requireUsageScope ?? dstar.isStrata
   )
   const currentUsage = useInferenceProgress(state => threadId ? state.contextByThread?.[threadId] : undefined)
   const progress = useInferenceProgress(state => threadId ? state.byThread[threadId] : undefined)
-  const activeTokens = progress?.total === undefined ? undefined : progress.total + (progress.cache ?? 0)
+  const requireRuntimeScope = dstar.isStrata || Boolean(dstar.runtimeScope)
+  const scopedProgress = (requireRuntimeScope && (!dstar.runtimeScope || progress?.runtimeScope !== dstar.runtimeScope))
+    || (progress?.usageScope && progress.usageScope !== dstar.usageScope) ? undefined : progress
+  const activeTokens = scopedProgress?.total === undefined ? undefined : scopedProgress.total + (scopedProgress.cache ?? 0)
   const current = currentUsage && (!currentUsage.modelId || currentUsage.modelId === dstar.modelId)
+    && (!requireRuntimeScope || (dstar.runtimeScope && currentUsage.runtimeScope === dstar.runtimeScope))
+    && (!currentUsage.usageScope || currentUsage.usageScope === dstar.usageScope)
     ? currentUsage : undefined
-  const currentTokens = dstar.isDstar ? activeTokens ?? current?.tokens : undefined
+  const currentTokens = isManagedLocal ? activeTokens ?? current?.tokens : undefined
   const currentEstimate = activeTokens === undefined && current?.estimated
   const usageLabel = currentTokens !== undefined
     ? currentEstimate ? 'Estimated next request' : current?.outputTokens && activeTokens === undefined ? 'Latest request including output' : 'Current request input'
     : 'Last reported request'
   // A summary estimate can replace occupancy while the last request's cache
   // measurement still describes that completed request.
-  const cachedInput = dstar.isDstar ? latestUsage.cachedInputTokens : undefined
+  const cachedInput = isManagedLocal ? latestUsage.cachedInputTokens : undefined
   const cacheHitRate = cachedInput !== undefined && latestUsage.inputTokens > 0
     ? (cachedInput / latestUsage.inputTokens) * 100
     : undefined
   const measuredTokens = tokenData.tokenCount + additionalTokens
   const totalTokens =
-    !dstar.isDstar && measuredTokens > 0
+    !isManagedLocal && measuredTokens > 0
       ? measuredTokens
       : (currentTokens ?? latestUsage.totalTokens) + additionalTokens
   const completionTokens = currentTokens !== undefined ? Math.min(totalTokens, activeTokens === undefined ? current?.outputTokens ?? 0 : 0) : Math.min(totalTokens, latestUsage.outputTokens)
@@ -167,10 +185,10 @@ export function ContextSizeControl({
   } = useModelContextLength()
   const { t } = useTranslation()
 
-  if ((!available || !contextSetting) && !dstar.isDstar) return null
+  if ((!available || !contextSetting) && !isManagedLocal) return null
 
   const percentageLabel =
-    maxTokens && (!dstar.isDstar || totalTokens > 0)
+    maxTokens && (!isManagedLocal || totalTokens > 0)
       ? `${percentage.toFixed(1)}%`
       : '—'
 
@@ -183,7 +201,7 @@ export function ContextSizeControl({
           size="sm"
           className="h-7 gap-2 px-2 font-mono text-xs"
           aria-label={`Context usage: ${percentageLabel}`}
-          title={`${percentageLabel} · ${dstar.isDstar && totalTokens === 0 ? '—' : formatTokenCount(totalTokens)} / ${maxTokens ? formatTokenCount(maxTokens) : '—'} tokens${dstar.isDstar ? ` · ${usageLabel}` : ''}`}
+          title={`${percentageLabel} · ${isManagedLocal && totalTokens === 0 ? '—' : formatTokenCount(totalTokens)} / ${maxTokens ? formatTokenCount(maxTokens) : '—'} tokens${isManagedLocal ? ` · ${usageLabel}` : ''}`}
         >
           <span className={cn(isOverLimit && 'text-destructive')}>
             {percentageLabel}
@@ -235,7 +253,7 @@ export function ContextSizeControl({
               {percentageLabel}
             </span>
             <span className="font-mono text-sm text-muted-foreground">
-              {dstar.isDstar && totalTokens === 0
+              {isManagedLocal && totalTokens === 0
                 ? '—'
                 : formatTokenCount(totalTokens)}{' '}
               / {maxTokens ? formatTokenCount(maxTokens) : '—'}
@@ -268,23 +286,23 @@ export function ContextSizeControl({
             </span>
           </div>
         </div>
-        {dstar.isDstar && latestUsage.averageCacheHitRate !== undefined && (
+        {isManagedLocal && latestUsage.averageCacheHitRate !== undefined && (
           <div className="flex items-center justify-between gap-2 text-sm">
-            <span className="text-muted-foreground">Average cache hit rate in this chat</span>
-            <span className="shrink-0 font-mono text-foreground">
+            <span className="min-w-0 text-muted-foreground">Average cache hit rate in this chat</span>
+            <span className="shrink-0 whitespace-nowrap font-mono tabular-nums text-foreground">
               {latestUsage.averageCacheHitRate.toFixed(1)}%
             </span>
           </div>
         )}
         {cacheHitRate !== undefined && (
           <div className="flex items-center justify-between gap-2 text-sm">
-            <span className="text-muted-foreground">Last request cache hit rate</span>
-            <span className="shrink-0 font-mono text-foreground">
+            <span className="min-w-0 text-muted-foreground">Last request cache hit rate</span>
+            <span className="shrink-0 whitespace-nowrap font-mono tabular-nums text-foreground">
               {cacheHitRate.toFixed(1)}% ({formatTokenCount(cachedInput ?? 0)} / {formatTokenCount(latestUsage.inputTokens)})
             </span>
           </div>
         )}
-        {dstar.isDstar && (
+        {isManagedLocal && (
           <p className="text-sm text-muted-foreground">
             {currentTokens !== undefined
               ? currentEstimate

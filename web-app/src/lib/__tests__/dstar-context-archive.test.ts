@@ -349,3 +349,17 @@ it('returns JSON-safe search results for archived messages without clocks', asyn
   expect(hits).toEqual(JSON.parse(JSON.stringify(hits)))
   expect(hits.every(hit => !Object.hasOwn(hit, 'time'))).toBe(true)
 })
+
+it('isolates derived summaries by runtime without hiding original archive evidence', async () => {
+  const scoped = { ...record, summary: 'Scoped summary', runtimeScope: 'provider:model:runtime-a' }
+  vi.mocked(invoke).mockResolvedValue([JSON.stringify(scoped), JSON.stringify({ ...record, summary: 'Legacy summary' })])
+  expect(await archiveStore('provider:model:runtime-a').load('thread')).toEqual(scoped)
+  expect(await archiveStore('provider:model:runtime-b').load('thread')).toBeUndefined()
+  expect(await archiveStore('provider:model:runtime-b').loadCandidates!('thread')).toEqual([])
+  expect((await searchConversationArchive('thread', 'Maple')).length).toBeGreaterThan(0)
+  await archiveStore('provider:model:runtime-b').save(record)
+  const args = vi.mocked(invoke).mock.calls.at(-1)![1] as { data: string }
+  expect(JSON.parse(args.data).runtimeScope).toBe('provider:model:runtime-b')
+  expect(JSON.parse(args.data).source).toEqual(record.source)
+  expect(record.runtimeScope).toBeUndefined()
+})

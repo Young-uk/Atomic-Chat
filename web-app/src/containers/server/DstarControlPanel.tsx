@@ -21,6 +21,8 @@ import {
   type DstarSnapshot,
   type DstarSelection,
 } from '@/services/dstar'
+import { localEngineCoordinator, localEngineTarget, useLocalEngine } from '@/services/managed-local-engine'
+import { isLocalEngineBusy, useLocalEngineBusy } from '@/hooks/useLocalEngineBusy'
 import { useEndpointCheckStore } from '@/stores/endpoint-check-store'
 import { ServerField, ServerSelect } from './ServerPageParts'
 
@@ -37,6 +39,12 @@ export function DstarControlPanel({
   const hub = useServiceHub()
   const providers = useModelProvider((state) => state.providers)
   const selectModel = useModelProvider((state) => state.selectModelProvider)
+  const chatBusy = useLocalEngineBusy()
+  const enginePhase = useLocalEngine(state => state.phase)
+  const engineTransition = ['loading', 'waiting', 'stopping'].includes(enginePhase)
+  const selectedProvider = useModelProvider(store => store.selectedProvider)
+  const selectedModel = useModelProvider(store => store.selectedModel)
+
   const provider = providers.find((entry) => isDstarEndpoint(entry.base_url))
   const [snapshot, setSnapshot] = useState<DstarSnapshot>()
   const [draft, setDraft] = useState<DstarSelection>()
@@ -46,6 +54,9 @@ export function DstarControlPanel({
   const [chatModel, setChatModel] = useState('')
   const alive = useRef(false)
   const synchronized = useRef('')
+  const selectOnReady = useRef(false)
+  useEffect(() => { selectOnReady.current = false }, [selectedProvider, selectedModel])
+  const inAction = useRef(false)
   useEffect(() => {
     onAvailabilityChange?.(snapshot?.available ?? false)
   }, [snapshot?.available, onAvailabilityChange])
@@ -116,6 +127,20 @@ export function DstarControlPanel({
     }
   }, [status, servedKey, provider, hub, t])
 
+  useEffect(() => {
+    if (!selectOnReady.current || snapshot?.status !== 'ready' || !snapshot.owned || !provider) return
+    const model = provider.models.find(model => snapshot.servedModels.includes(model.id))
+    if (model && !isLocalEngineBusy()) {
+      selectOnReady.current = false
+      const target = localEngineTarget(provider, model)
+      if (target) localEngineCoordinator.reconcileReady(target, {
+        engine: 'dstar', status: 'ready', owned: snapshot.owned,
+        servedModels: snapshot.servedModels, error: snapshot.error,
+      })
+      selectModel(provider.provider, model.id)
+    }
+  }, [snapshot, provider, selectModel])
+
   if (!supported) return null
   const ready = snapshot?.status === 'ready' || snapshot?.status === 'external'
   const transitioning =
@@ -138,19 +163,31 @@ export function DstarControlPanel({
   )
 
   const run = async (action: 'start' | 'stop' | 'restart') => {
-    if (!draft || busy) return
+    if (!draft || inAction.current || isLocalEngineBusy() || (action !== 'stop' && engineTransition)) return
+    inAction.current = true
+    selectOnReady.current = action !== 'stop'
     setBusy(true)
     setError(undefined)
     setConfirmRestart(false)
     try {
+      if (action !== 'stop') await localEngineCoordinator.prepareStart()
+      const coordinatedStop = action === 'stop' && useLocalEngine.getState().target?.engine === 'dstar'
+      if (coordinatedStop) {
+        localEngineCoordinator.cancel()
+        await localEngineCoordinator.settled()
+        const state = useLocalEngine.getState()
+        if (state.phase === 'error') throw new Error(state.error || 'stopFailed')
+      }
       const next =
         action === 'restart'
           ? await restartDstar(draft)
-          : await controlDstar(action, action === 'start' ? draft : undefined)
+          : await controlDstar(coordinatedStop ? 'status' : action, action === 'start' ? draft : undefined)
       if (alive.current) setSnapshot(next)
     } catch (reason) {
+      selectOnReady.current = false
       if (alive.current) setError(String(reason))
     } finally {
+      inAction.current = false
       if (alive.current) setBusy(false)
     }
   }
@@ -191,7 +228,7 @@ export function DstarControlPanel({
               {snapshot.status === 'ready' && dirty && (
                 <Button
                   size="sm"
-                  disabled={busy || !runnable || !validContext}
+                  disabled={busy || chatBusy || engineTransition || !runnable || !validContext}
                   onClick={() => setConfirmRestart(true)}
                 >
                   {t('endpoints:dstar.restart')}
@@ -200,7 +237,7 @@ export function DstarControlPanel({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy || snapshot.status === 'stopping'}
+                disabled={busy || chatBusy || snapshot.status === 'stopping'}
                 onClick={() => void run('stop')}
               >
                 {t('endpoints:dstar.stop')}
@@ -210,7 +247,7 @@ export function DstarControlPanel({
             <Button
               size="sm"
               disabled={
-                busy ||
+                busy || chatBusy || engineTransition ||
                 !snapshot?.available ||
                 snapshot.status === 'external' ||
                 !runnable ||
@@ -223,6 +260,7 @@ export function DstarControlPanel({
           )}
         </div>
       </div>
+      {chatBusy && <p role="status" className="mt-2 break-words text-sm text-muted-foreground">{t('endpoints:localEngine.waiting')}</p>}
       {snapshot?.owned && (
         <p className="mt-2 break-words text-sm text-muted-foreground">
           {t('endpoints:dstar.activeSettings', {
@@ -343,7 +381,7 @@ export function DstarControlPanel({
           className="mt-3 whitespace-pre-wrap break-words text-sm text-destructive"
         >
           {error
-            ? t(`endpoints:dstar.reason.${error}`, { defaultValue: error })
+            ? t(`endpoints:dstar.reason.${error}`, { defaultValue: t(`endpoints:localEngine.errors.${error}`, { defaultValue: error }) })
             : snapshot?.error}
         </p>
       )}

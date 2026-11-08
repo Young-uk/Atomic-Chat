@@ -52,6 +52,9 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
   }),
 }))
 
+vi.mock('@/containers/server/StrataControlPanel', () => ({
+  StrataControlPanel: () => <section aria-label="strata-runtime-controls" />,
+}))
 vi.mock('@/containers/server/DstarControlPanel', () => ({
   DstarControlPanel: () => <section aria-label="dstar-runtime-controls" />,
 }))
@@ -269,6 +272,23 @@ describe('EndpointsPage', () => {
     // No media catalog from the core unless a case says otherwise.
     useMediaCatalog.setState({ available: false, status: 'ready' })
     mockStore()
+  })
+
+  it('shows Strata controls only for the registered local model and endpoint', () => {
+    vi.stubGlobal('IS_MACOS', true)
+    try {
+      mockStore([...providers, {
+        provider: 'Strata · ISTA IQ3_XXS', base_url: 'http://127.0.0.1:18080/v1',
+        active: true, models: [{ id: 'ista-iq3-xxs' }], settings: [],
+      }, {
+        provider: 'Untrusted Strata', base_url: 'http://127.0.0.1:18080/v1',
+        active: true, models: [{ id: 'ista-iq3-xxs' }], settings: [],
+      }])
+      render(<EndpointsPage />)
+      const controls = screen.getByRole('region', { name: 'strata-runtime-controls', hidden: true })
+      expect(card('Strata · ISTA IQ3_XXS')).toContainElement(controls)
+      expect(within(card('Untrusted Strata')).queryByRole('region', { name: 'strata-runtime-controls', hidden: true })).toBeNull()
+    } finally { vi.unstubAllGlobals() }
   })
 
   it('keeps runtime controls inside only the matching Dstar endpoint card', () => {

@@ -21,6 +21,8 @@ import { cn, getProviderLogo, getProviderTitle } from '@/lib/utils'
 import { useEndpointCheckStore } from '@/stores/endpoint-check-store'
 import { useProviderKeyStatus } from '@/stores/provider-key-status-store'
 
+import { isRegisteredStrata, strataEndpointPhase, useStrataEndpointStatus } from '@/hooks/useStrataEndpointStatus'
+
 type EndpointCardProps = {
   provider: ProviderObject
   expanded: boolean
@@ -56,6 +58,8 @@ export function EndpointCard({
   serverControls,
 }: EndpointCardProps) {
   const { t } = useTranslation()
+  const managedStrata = isRegisteredStrata(provider as ModelProvider)
+  const live = useStrataEndpointStatus(managedStrata)
   const name = provider.provider
   const title = getProviderTitle(name)
   const check = useEndpointCheckStore((s) => s.results[name])
@@ -79,7 +83,21 @@ export function EndpointCard({
   const bodyId = `endpoint-models-${name}`
 
   let status: ReactNode
-  if (checking) {
+  if (managedStrata) {
+    const state = strataEndpointPhase(live)
+    status = (
+      <>
+        {['checking', 'loading', 'stopping'].includes(state) ?
+          <Loader2 size={12} className="shrink-0 animate-spin" aria-hidden /> :
+          state === 'ready' ? <CircleCheck size={12} className="shrink-0 text-emerald-500" aria-hidden /> :
+          state === 'error' ? <TriangleAlert size={12} className="shrink-0 text-destructive" aria-hidden /> : null}
+        <span className="truncate">
+          {state === 'checking' ? t('endpoints:status.checking') :
+            state === 'unknown' ? t('endpoints:status.unverified') : t(`endpoints:dstar.status.${state}`)}
+        </span>
+      </>
+    )
+  } else if (checking) {
     status = (
       <>
         <Loader2 size={12} className="shrink-0 animate-spin" aria-hidden />
@@ -178,7 +196,7 @@ export function EndpointCard({
             role="status"
             className={cn(
               'mt-2 flex min-w-0 items-center gap-1 text-xs text-muted-foreground',
-              ((check && !check.ok) || (!check && keyState === 'rejected')) &&
+              !managedStrata && ((check && !check.ok) || (!check && keyState === 'rejected')) &&
                 !checking &&
                 'text-destructive'
             )}

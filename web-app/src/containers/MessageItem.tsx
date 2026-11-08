@@ -350,14 +350,14 @@ export const MessageItem = memo(
 
       if (message.role !== 'user') {
         return (
-          <div key={key} className="w-full">
+          <div key={key} data-atomic-find-rendered-text className="w-full">
             {editor}
           </div>
         )
       }
 
       return (
-        <div key={key} className="w-full">
+        <div key={key} data-atomic-find-rendered-text className="w-full">
           <div className="flex justify-end w-full text-start">
             {/* `w-full` instead of the bubble's `inline-block`, so clearing the
                 text does not collapse the box to caret width. */}
@@ -412,7 +412,7 @@ export const MessageItem = memo(
           : block.text
 
       return (
-        <div key={block.key} className="w-full">
+        <div key={block.key} data-atomic-find-rendered-text className="w-full">
           {message.role === 'user' ? (
             <div className="flex justify-end w-full h-full text-start wrap-break-word whitespace-normal">
               <div className="bg-secondary relative text-foreground p-2 rounded-md inline-block max-w-[80%]">

@@ -89,6 +89,7 @@ describe('trayRuntimeLabel', () => {
 
 describe('useTrayStatusSync', () => {
   let sessions: ReturnType<typeof session>[] = []
+  let managed: { engine: string; status: string; servedModels: string[] } | undefined
   let dstar: { status: string; servedModels: string[]; selection?: { model: string }; models?: { id: string; name: string }[] } | undefined
 
   beforeEach(() => {
@@ -100,6 +101,7 @@ describe('useTrayStatusSync', () => {
     mocks.invoke.mockReset()
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'dstar_control') return dstar
+      if (command === 'managed_engine_control') return managed
       if (command === 'list_local_sessions') return sessions
       if (command === 'plugin:hardware|get_system_usage')
         return { cpu: 0, used_memory: 8192, total_memory: 16384 }
@@ -107,6 +109,7 @@ describe('useTrayStatusSync', () => {
     })
     sessions = []
     dstar = undefined
+    managed = undefined
     useAppState.setState({ activeModels: [], serverStatus: 'running' })
     useModelProvider.setState({ providers: [] })
     useEngineVersionsStore.setState({ engines: {} })
@@ -131,6 +134,14 @@ describe('useTrayStatusSync', () => {
     dstar = { status, servedModels: ['stale-model'] }
     const { unmount } = renderHook(() => useTrayStatusSync())
     await waitFor(() => expect(lastPush()).toMatchObject({ model_label: '', runtime_label: '' }))
+    unmount()
+  })
+
+  it('reports Strata rather than the saved Dstar model when Strata is ready', async () => {
+    managed = { engine: 'strata', status: 'ready', servedModels: ['ista-iq3-xxs'] }
+    dstar = { status: 'stopped', servedModels: ['old-dstar'] }
+    const { unmount } = renderHook(() => useTrayStatusSync())
+    await waitFor(() => expect(lastPush()).toMatchObject({ model_label: 'Qwen3.8 Flash Next · IQ2_XS', runtime_label: 'Strata' }))
     unmount()
   })
 

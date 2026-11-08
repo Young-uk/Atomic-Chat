@@ -1,6 +1,7 @@
 import { createRootRoute, Outlet, useRouterState } from '@tanstack/react-router'
 // import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 
+import { FindInPage } from '@/components/FindInPage'
 import DialogAppUpdater from '@/containers/dialogs/AppUpdater'
 import BackendUpdater from '@/containers/dialogs/BackendUpdater'
 import EngineUpdateBanner from '@/containers/dialogs/EngineUpdateBanner'
@@ -123,6 +124,7 @@ const AppLayout = () => {
         minInsetWidth={MIN_PAGE_WIDTH}
       >
         <AnalyticProvider />
+        <FindInPage />
         {!onOnboarding && <KeyboardShortcutsProvider />}
         <DialogAppUpdater />
         {isSetupCompleted && <BackendUpdater />}

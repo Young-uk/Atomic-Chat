@@ -733,3 +733,45 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Local Personal app replacement](2026-11-06-personal-self-update.md)
 
 - [Personal desktop control activity overlay](2026-11-06-personal-desktop-overlay.md)
+
+- [Keep Personal audio engine updates out of the chat banner](2026-11-07-personal-audio-update-prompt.md) — Suppress only the Personal audio.cpp prompt, preserving manual updates.
+
+- [Keep chat speech alive across navigation](2026-11-07-app-owned-chat-speech.md) — App-owned playback and background stream cursors, stopped only by Off or shutdown.
+
+- [Select the installed shefowl hybrid explicitly](2026-11-07-shefowl-hybrid-selection.md) — Accurate mixed-quant label, explicit verified shard pair, isolated cache.
+
+- [Select official ISTA IQ2_XS independently](2026-11-07-official-ista-iq2-xs-selection.md) — Pinned official pair, accurate identity, isolated cache, verified engine prerequisite.
+
+- [Manage the selected Personal engine inside Atomic](2026-11-08-selected-personal-engine-lifecycle.md) — One owner for Dstar/Strata selection, startup, switching and shutdown.
+
+- [2026-11-08 — Gate local summaries and tool policy by runtime capabilities](2026-11-08-scope-local-runtime-summaries.md)
+
+- [Distinguish API routing from engine health](2026-11-08-distinguish-api-route-engine-status.md)
+
+- [Keep unqualified completion review disabled](2026-11-08-gate-unqualified-completion-review.md) — App-only release gate for both engines; summaries and ordinary tool continuation remain independent.
+
+- [Bind summary qualification to the tested runtime](2026-11-08-bind-summary-qualification-to-runtime.md) — Optional fail-closed native, backend and model/config pins preserve foreground startup.
+
+- [Deduplicate only the Strata child PATH](2026-11-08-deduplicate-strata-child-path.md) — Preserve exact first-occurrence lookup order without weakening runtime pins.
+
+- [Schedule summaries against actual foreground context](2026-11-08-schedule-summaries-against-actual-context.md) — Shared 60%/85% triggers remain independent of Strata's qualified admission limits.
+
+- [Separate experimental Strata summary state from foreground state](2026-11-08-separate-strata-summary-state.md)
+
+- [Negotiate experimental weighted summary priority](2026-11-08-negotiate-weighted-summary-priority.md) — Explicit protocol 5 scheduler and first-token preparation contract; protocols 3/4 unchanged.
+
+- **2026-11-08** — [Expose owned Strata controls on its endpoint card](2026-11-08-managed-endpoint-controls.md)
+
+- [Permit shutdown of an idle poisoned engine](2026-11-08-idle-poisoned-engine-disposal.md)
+
+- [Live Strata endpoint status](2026-11-08-live-strata-endpoint-status.md) — Separate current native lifecycle from cached/manual checks.
+
+- [Scoped app-owned Find](2026-11-08-scoped-app-find.md) — Current editor/layer search with complete loaded conversation and virtual API row adapters.
+
+- [Preserve Find query focus](2026-11-08-find-focus-preservation.md) — Non-selection DOM highlights and character-by-character keyboard regressions.
+
+- [Configure Strata context through the managed owner](2026-11-08-configure-strata-context.md) — Independent bounded settings, safe restart and context-specific runtime identity.
+
+- [Reveal and color the actual Find occurrence](2026-11-08-reveal-find-occurrences.md) — Exact-range navigation and visible fallback highlights.
+
+- [Recover managed engine observation errors](2026-11-08-recover-managed-observation-errors.md) — Generation-scoped recovery without clearing lifecycle faults.

@@ -7,9 +7,11 @@ export type InferenceProgress = {
   processed?: number
   total?: number
   cache?: number
+  usageScope?: string
+  runtimeScope?: string
 }
 
-export type ContextUsage = { tokens: number; estimated: boolean; modelId?: string; outputTokens?: number }
+export type ContextUsage = { tokens: number; estimated: boolean; modelId?: string; outputTokens?: number; usageScope?: string; runtimeScope?: string }
 type ProgressState = { byThread: Record<string, InferenceProgress>; contextByThread?: Record<string, ContextUsage> }
 /** Keep the most recent foreground measurement after its progress row ends.
  * Background summaries publish estimates separately, never their slot usage. */
@@ -22,7 +24,7 @@ export function publishContextUsage(threadId: string, usage: ContextUsage) {
 export const useInferenceProgress = create<ProgressState>(() => ({ byThread: {} }))
 
 /** Observe a copy of SSE bytes; never consume, delay, or rewrite the SDK stream. */
-export function observeInferenceProgress(threadId: string, modelId?: string) {
+export function observeInferenceProgress(threadId: string, modelId?: string, usageScope?: string, runtimeScope?: string) {
   const requestId = crypto.randomUUID()
   const startedAt = Date.now()
   const update = (patch: Partial<InferenceProgress>) => {
@@ -35,7 +37,7 @@ export function observeInferenceProgress(threadId: string, modelId?: string) {
     })
   }
   useInferenceProgress.setState(({ byThread }) => ({ byThread: {
-    ...byThread, [threadId]: { requestId, startedAt, phase: 'waiting' },
+    ...byThread, [threadId]: { requestId, startedAt, phase: 'waiting', usageScope, runtimeScope },
   } }))
   let pending = ''
   let ended = false
@@ -56,7 +58,7 @@ export function observeInferenceProgress(threadId: string, modelId?: string) {
             update({ phase: processed === total ? 'preparing' : 'reading', processed, total, cache })
             // Progress counts the unread suffix; add the cached prefix for context usage.
             if (useInferenceProgress.getState().byThread[threadId]?.requestId === requestId)
-              publishContextUsage(threadId, { tokens: total + cache, estimated: false, modelId })
+              publishContextUsage(threadId, { tokens: total + cache, estimated: false, modelId, usageScope, runtimeScope })
           } else if (line.startsWith('data: ') && !line.includes('[DONE]')) {
             const value = JSON.parse(line.slice(6))
             const delta = value.choices?.[0]?.delta

@@ -7,8 +7,14 @@ import {
   within,
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
+import { localEngineCoordinator } from '@/services/managed-local-engine'
 import { DstarControlPanel } from './DstarControlPanel'
 import type { DstarSnapshot } from '@/services/dstar'
+
+vi.mock('@tauri-apps/api/core', async original => ({
+  ...(await original<typeof import('@tauri-apps/api/core')>()), invoke: vi.fn(),
+}))
 
 const mock = vi.hoisted(() => ({
   control: vi.fn(),
@@ -108,6 +114,51 @@ describe('Dstar local control panel', () => {
     )
     await flush()
     expect(mock.control).toHaveBeenCalledWith('stop', undefined)
+  })
+
+  it('selects a served Dstar chat model only after an explicit start is ready', async () => {
+    render(<DstarControlPanel />)
+    await flush()
+    expect(mock.select).not.toHaveBeenCalled()
+    const reconcile = vi.spyOn(localEngineCoordinator, 'reconcileReady')
+    mock.control.mockResolvedValue({ ...base, status: 'ready', owned: true, servedModels: ['qwen-chat'] })
+    fireEvent.click(screen.getByRole('button', { name: 'endpoints:dstar.start' }))
+    await flush()
+    expect(reconcile).toHaveBeenCalledWith(
+      { engine: 'dstar', provider: 'dstar-test', model: 'qwen-chat' },
+      { engine: 'dstar', status: 'ready', owned: true, servedModels: ['qwen-chat'], error: undefined },
+    )
+    reconcile.mockRestore()
+    expect(mock.select).toHaveBeenCalledWith('dstar-test', 'qwen-chat')
+    expect(screen.getByRole('status')).toHaveTextContent('endpoints:dstar.status.ready')
+    expect(screen.getByRole('button', { name: 'endpoints:dstar.stop' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'endpoints:dstar.start' })).not.toBeInTheDocument()
+  })
+
+  it('reconciles a previously failed selected Dstar after Start without replacing its configuration', async () => {
+    const target = { engine: 'dstar' as const, provider: 'dstar-test', model: 'qwen-chat' }
+    localEngineCoordinator.selectEngineTarget(null, false)
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('engineSummaryRecoveryRequired'))
+    localEngineCoordinator.selectEngineTarget(target)
+    await localEngineCoordinator.settled()
+    const ready = { engine: 'dstar', status: 'ready', owned: true, servedModels: ['qwen-chat'] }
+    vi.mocked(invoke).mockResolvedValue(ready)
+    const view = render(<DstarControlPanel />)
+    await flush()
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '32768' } })
+    mock.control.mockResolvedValue({ ...base, ...ready, selection: { model: 'iq3', context: 32768 } })
+    fireEvent.click(screen.getByRole('button', { name: 'endpoints:dstar.start' }))
+    await flush()
+    expect(mock.control).toHaveBeenCalledWith('start', { model: 'iq3', context: 32768 })
+    expect(screen.getByRole('button', { name: 'endpoints:dstar.stop' })).toBeEnabled()
+    // Reconciliation itself does not make another lifecycle request.
+    expect(invoke).toHaveBeenCalledTimes(1)
+    let release!: () => void
+    await act(async () => { release = await localEngineCoordinator.acquire(target) })
+    expect(release).toBeTypeOf('function')
+    release()
+    view.unmount()
+    localEngineCoordinator.selectEngineTarget(null, false)
   })
 
   it('does not trust an old Connected label or stop an externally started server', async () => {

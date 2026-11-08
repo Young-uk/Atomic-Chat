@@ -1646,3 +1646,49 @@ describe('OOM retry ladder', () => {
     expect(modelSetting('ctx_len')).toBe(16384)
   })
 })
+
+describe('managed custom endpoint selection', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('supersedes an older remote switch without rewriting the selected endpoint or thread', async () => {
+    const { localEngineCoordinator } = await import('@/services/managed-local-engine')
+    vi.stubGlobal('IS_TAURI', true)
+    vi.spyOn(localEngineCoordinator, 'startSelected').mockImplementation(() => {})
+    modelProviderState.providers = [
+      { provider: 'remote-before', active: true, api_key: 'test', base_url: 'https://example.com/v1', models: [{ id: 'remote-model' }], settings: [] },
+      { provider: 'Strata · ISTA IQ3_XXS', active: true, base_url: 'http://127.0.0.1:18080/v1', models: [{ id: 'ista-iq3-xxs' }], settings: [] },
+    ]
+    let registered!: (value: boolean) => void
+    vi.mocked(registerRemoteProvider).mockImplementationOnce(() => new Promise(resolve => { registered = resolve }))
+    const models = createLoadedEngines({})
+    const serviceHub = { app: () => ({ getServerStatus: async () => false }), models: () => models } as unknown as ServiceHub
+    const old = switchToModel({ providerName: 'remote-before', modelId: 'remote-model', serviceHub })
+    await vi.waitFor(() => expect(registered).toBeTypeOf('function'))
+    await switchToModel({ providerName: 'Strata · ISTA IQ3_XXS', modelId: 'ista-iq3-xxs', serviceHub })
+    const writes = modelProviderState.selectModelProvider.mock.calls.length
+    registered(true)
+    await old
+    expect(modelProviderState.selectModelProvider).toHaveBeenLastCalledWith('Strata · ISTA IQ3_XXS', 'ista-iq3-xxs')
+    expect(modelProviderState.selectModelProvider.mock.calls).toHaveLength(writes)
+  })
+
+  it('does not load a built-in model until the managed engine has stopped', async () => {
+    const engines = await import('@/services/managed-local-engine')
+    vi.stubGlobal('IS_TAURI', true)
+    vi.stubGlobal('IS_MACOS', true)
+    vi.spyOn(engines.localEngineCoordinator, 'settled').mockResolvedValue(undefined)
+    const control = vi.spyOn(engines, 'controlLocalEngine').mockResolvedValue({ engine: 'strata', owned: true, status: 'ready', servedModels: ['ista-iq3-xxs'] })
+    modelProviderState.providers = [
+      { provider: 'mlx', active: true, models: [{ id: 'builtin-test' }], settings: [] },
+      { provider: 'Strata · ISTA IQ3_XXS', active: true, base_url: 'http://127.0.0.1:18080/v1', models: [{ id: 'ista-iq3-xxs' }], settings: [] },
+    ]
+    const models = createLoadedEngines({})
+    const start = vi.spyOn(models, 'startModel')
+    const serviceHub = { app: () => ({ getServerStatus: async () => false }), models: () => models } as unknown as ServiceHub
+    await expect(switchToModel({ providerName: 'mlx', modelId: 'builtin-test', serviceHub })).rejects.toThrow('managedEngineRunning')
+    expect(start).not.toHaveBeenCalled()
+    control.mockResolvedValue({ engine: null, owned: false, status: 'stopped', servedModels: [] })
+    await switchToModel({ providerName: 'mlx', modelId: 'builtin-test', serviceHub })
+    expect(start).toHaveBeenCalledOnce()
+  })
+})

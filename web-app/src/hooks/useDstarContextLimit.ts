@@ -1,59 +1,41 @@
 import { useEffect, useState } from 'react'
 import { useModelProvider } from '@/hooks/useModelProvider'
-import { fetchDstarContext } from '@/lib/dstar-context-archive'
-import { isDstarEndpoint } from '@/services/dstar'
+import { localCapabilityTarget, probeLocalModelCapabilities, type LocalModelCapabilities } from '@/services/local-model-capabilities'
 
-/** Read the running endpoint's limit; never infer it from an unloaded model. */
+/** Retain the public hook name; both managed engines report their actual limit. */
 export function useDstarContextLimit() {
-  const modelId = useModelProvider((state) => state.selectedModel?.id)
-  const baseUrl = useModelProvider(
-    (state) =>
-      state.providers.find(
-        (provider) => provider.provider === state.selectedProvider
-      )?.base_url
-  )
-  const [limit, setLimit] = useState<{ key: string; value: number }>()
-  const isDstar = isDstarEndpoint(baseUrl)
-  const key = `${baseUrl}/${modelId}`
+  const model = useModelProvider(state => state.selectedModel)
+  const provider = useModelProvider(state => state.providers.find(entry => entry.provider === state.selectedProvider))
+  const target = localCapabilityTarget(provider, model)
+  const key = JSON.stringify([provider?.provider, provider?.base_url, model?.id, target?.engine])
+  const [observation, setObservation] = useState<{ key: string; value: LocalModelCapabilities }>()
   useEffect(() => {
-    if (!isDstar || !modelId) return
+    if (!target || !provider || !model) return
     let active = true
     let timer: ReturnType<typeof setTimeout>
     const abort = new AbortController()
     const poll = async () => {
-      try {
-        const response = await fetchDstarContext(
-          `${baseUrl?.replace(/\/$/, '')}/models`,
-          {
-            signal: AbortSignal.any([abort.signal, AbortSignal.timeout(3000)]),
-          }
-        )
-        const body = await response.json()
-        const value = body.data?.find(
-          (model: { id: string }) => model.id === modelId
-        )?.context_length
-        if (active)
-          setLimit(
-            response.ok && Number.isSafeInteger(value) && value > 0
-              ? { key, value }
-              : undefined
-          )
-      } catch {
-        if (active) setLimit(undefined)
-      } finally {
-        if (active) timer = setTimeout(poll, 5000)
+      const value = await probeLocalModelCapabilities(provider, model, { signal: abort.signal })
+      if (active) {
+        setObservation(value ? { key, value } : undefined)
+        timer = setTimeout(poll, 5000)
       }
     }
     void poll()
-    return () => {
-      active = false
-      abort.abort()
-      clearTimeout(timer)
-    }
-  }, [baseUrl, isDstar, key, modelId])
+    return () => { active = false; abort.abort(); clearTimeout(timer) }
+    // The identity key captures the selected service/model, not store object churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  const value = observation?.key === key ? observation.value : undefined
   return {
-    isDstar,
-    modelId,
-    maxTokens: limit?.key === key ? limit.value : undefined,
+    isDstar: target?.engine === 'dstar',
+    isStrata: target?.engine === 'strata',
+    isManagedLocal: Boolean(target),
+    modelId: model?.id,
+    providerId: provider?.provider,
+    usageScope: value?.usageScope,
+    runtimeScope: value?.runtimeScope,
+    requireUsageScope: Boolean(target) && (!value || target?.engine === 'strata' || Boolean(value.archiveScope)),
+    maxTokens: value?.contextLength,
   }
 }

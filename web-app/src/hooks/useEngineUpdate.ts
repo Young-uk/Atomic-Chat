@@ -25,6 +25,11 @@ function firstOffer(
   now = Date.now()
 ): EngineUpdateOffer | null {
   for (const engine of ENGINE_UPDATE_ORDER) {
+    // Personal audio.cpp carries local fixes. Do not nag to replace it with
+    // the upstream build; manual updates remain available in engine settings.
+    if (engine === 'audio-cpp' && import.meta.env.VITE_PERSONAL_BUILD === 'true') {
+      continue
+    }
     const versions = engines[engine]
     if (!versions) continue
     const offer = engineUpdateOfferFrom(versions)

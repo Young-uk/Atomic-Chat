@@ -32,6 +32,8 @@ import { useReasoningEffort } from '@/hooks/useReasoningEffort'
 import { useNavigate } from '@tanstack/react-router'
 import { route } from '@/constants/routes'
 import ProvidersAvatar from '@/containers/ProvidersAvatar'
+import { LocalEngineStatus } from '@/containers/LocalEngineStatus'
+import { localEngineTarget } from '@/services/managed-local-engine'
 import { ActiveModelIndicator } from '@/containers/ActiveModelIndicator'
 import { useAppState } from '@/hooks/useAppState'
 import { ModelSupportStatus } from '@/containers/ModelSupportStatus'
@@ -1005,7 +1007,9 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
         )}
       >
         <div className="inline-flex h-7 w-full min-w-0 items-center rounded-full border bg-secondary/40 text-xs transition-colors duration-200 hover:bg-secondary/70">
-          {!pending && <ActiveModelIndicator className="ml-1.5" />}
+          {!pending && (localEngineTarget(provider, selectedModel) && IS_TAURI && !IS_IOS && !IS_ANDROID
+            ? <LocalEngineStatus compact />
+            : <ActiveModelIndicator className="ml-1.5" />)}
           <PopoverTrigger asChild>
             <button
               type="button"
@@ -1123,6 +1127,7 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
                 className="text-muted-foreground ml-auto shrink-0"
               />
             </button>
+            <LocalEngineStatus />
             {/* Mounted with the panel, so a fresh open always starts settled. */}
             <ReasoningEffortPanel className="mt-2 min-w-0 border-t pt-3" />
           </div>

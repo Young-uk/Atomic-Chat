@@ -94,5 +94,41 @@
     "activeSettings": "Active: {{model}} · {{context}} tokens",
     "showUnavailableModels": "Show uninstalled models",
     "controls": "Server controls"
+  },
+  "localEngine": {
+    "strataTitle": "Strata local server",
+    "title": "Local engine",
+    "idle": "{{engine}} is stopped",
+    "loading": "Starting {{engine}}…",
+    "waiting": "Engine change will apply after the current reply and tools finish.",
+    "ready": "{{engine}} is ready",
+    "error": "{{engine}} could not start",
+    "retry": "Start",
+    "strataCaution": "Strata IQ3_XXS is an experimental engine with high memory requirements. Available features depend on the server’s reported capabilities. The separate 16K summary state is experimental and needs a foreground conversation first. Low memory can defer summarization. Stability has not yet been verified on this Mac.",
+    "selectDstar": "Choose Dstar in the chat model selector before using these controls.",
+    "errors": {
+      "engineSummaryRecoveryRequired": "The previous summary failed to restore model state. Stop this engine, then start it again.",
+      "engineBusy": "Another reply or tool is still running. Finish or stop it, then try again.",
+      "foreignEngine": "A server is running outside Atomic. Stop it in the app that started it, then try again.",
+      "engineTransition": "The previous engine is still stopping. Wait, then try again.",
+      "stopFailed": "The previous engine did not stop. The other engine was not started.",
+      "modelNotServed": "The selected model is not available on this engine. Choose an available model.",
+      "engineTimeout": "Loading timed out. Check the runtime and model files, then try again.",
+      "engineSelectionChanged": "The selected model changed while starting. Send again with the current selection.",
+      "engineFailed": "The engine could not start. Check the runtime and model files, then try again.",
+      "otherLocalEngine": "Unload the current local model before starting this engine.",
+      "managedEngineRunning": "Stop Dstar or Strata in the chat model selector before loading another local model.",
+      "invalidStrataContext": "Enter a whole number from 16384 to 65536 tokens.",
+      "strataSettingsWriteFailed": "The context setting could not be saved. Check available disk space and try again.",
+      "strataContextPinMismatch": "The Strata runtime has changed. Context changes are blocked until this runtime is verified.",
+      "strataContextPinCalculationFailed": "The Strata runtime configuration could not be verified. Try again after the current work finishes.",
+      "processInspectionFailed": "The local server’s process ownership could not be verified temporarily. Checking its status again."
+    },
+    "stop": "Stop",
+    "stopping": "Stopping {{engine}}…",
+    "savedContext": "Saved: {{context}} tokens",
+    "activeContext": "Running: {{context}} tokens",
+    "pendingContext": "Pending: {{context}} tokens. Apply by starting or restarting Strata.",
+    "strataContextHint": "16,384–65,536 tokens. Larger contexts use more memory. The experimental summary state remains 16K."
   }
 }

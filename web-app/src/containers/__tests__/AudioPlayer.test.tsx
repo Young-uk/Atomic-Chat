@@ -86,8 +86,41 @@ describe('AudioPlayer switching clips (QA 2.3.2)', () => {
   })
 
   it('reloads when the same player is given another clip', () => {
-    const { rerender } = render(<AudioPlayer src={SRC} mediaType="audio/wav" />)
+    const { container, rerender } = render(
+      <AudioPlayer src={SRC} mediaType="audio/wav" />
+    )
+    const audio = container.querySelector('audio')!
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 30 })
+    fireEvent.loadedMetadata(audio)
+    expect(screen.getByText('0:00 / 0:30')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Play' })).toHaveAttribute(
+      'aria-busy',
+      'false'
+    )
+
     rerender(<AudioPlayer src={`${SRC}?next`} mediaType="audio/wav" />)
+
+    expect(container.querySelector('audio')).toBe(audio)
+    expect(audio).toHaveAttribute('src', `${SRC}?next`)
+    expect(audio.querySelector('source')).toHaveAttribute('src', `${SRC}?next`)
     expect(load).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Play' })).toHaveAttribute(
+      'aria-busy',
+      'true'
+    )
+    expect(container.querySelector('.animate-spin')).toBeNull()
+    act(() => vi.advanceTimersByTime(300))
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 12 })
+    fireEvent.loadedMetadata(audio)
+    expect(screen.getByText('0:00 / 0:12')).toBeInTheDocument()
+    expect(screen.getByRole('slider')).toHaveAttribute('aria-valuemax', '12')
+    expect(screen.getByRole('button', { name: 'Play' })).toHaveAttribute(
+      'aria-busy',
+      'false'
+    )
+    expect(container.querySelector('.animate-spin')).toBeNull()
   })
 })

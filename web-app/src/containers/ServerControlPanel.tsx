@@ -32,8 +32,8 @@ export function ServerControlPanel() {
       state.configuredAgents.length + (state.endpointConfigured ? 1 : 0)
   )
 
-  // While running, show what the server actually loaded; otherwise what it
-  // will load on the next start.
+  // Show the recorded API provider/model, not a claim of backend readiness.
+  // The selected chat engine has its own native-backed status on Overview.
   const served = useServedModel(control.isRunning)
 
   const busy = control.isBusy
@@ -90,6 +90,7 @@ export function ServerControlPanel() {
         hint={2}
         running={control.status === 'running'}
       />
+      <p className="mb-2 min-w-0 break-words text-xs text-muted-foreground">{t('api:overview.listenerLabel')}</p>
       <div className="dsc-actions">
         <button
           type="button"
@@ -134,7 +135,7 @@ export function ServerControlPanel() {
           <Cpu size={15} />
           <span className="dsc-model-text">
             <span className="dsc-model-label">
-              {t('common:navigation.engine')}
+              {t('api:overview.apiProvider')}
             </span>
             <span className="dsc-model-value">
               <strong>{engine ?? t('common:navigation.notSelected')}</strong>

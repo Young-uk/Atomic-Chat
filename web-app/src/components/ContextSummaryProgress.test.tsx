@@ -2,6 +2,7 @@ import { render, screen, act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ContextSummaryProgress } from './ContextSummaryProgress'
 import { useContextSummaryProgress } from '@/lib/context-summary-progress'
+import { beginDstarForeground, runIdleSummaryRequest } from '@/lib/dstar-summary-idle'
 import { withTranslations } from '@/test/layout'
 afterEach(() => { cleanup(); vi.useRealTimers(); useContextSummaryProgress.setState({ byThread: {} }) })
 it('shows only the selected thread and exposes actual completed sections and archive status', () => {
@@ -31,4 +32,27 @@ it('shows a paused summary without losing completed sections', () => {
   render(withTranslations(<ContextSummaryProgress threadId="a" />))
   expect(screen.getByRole('status')).toHaveTextContent('Summary paused · Chat has priority')
   expect(screen.getByText('3 sections processed')).toBeInTheDocument()
+})
+
+it('keeps an in-flight summary active during foreground scheduling, never paused or cancelled', async () => {
+  const owner = new AbortController()
+  const progress = { phase: 'summarizing' as const, startedAt: Date.now(), completed: 3, archived: true }
+  useContextSummaryProgress.setState({ byThread: { a: progress } })
+  render(withTranslations(<ContextSummaryProgress threadId="a" />))
+  let finish!: () => void
+  const phases: boolean[] = []
+  const task = runIdleSummaryRequest('http://priority-progress', owner.signal, paused => {
+    phases.push(paused)
+  }, () => new Promise<void>(resolve => { finish = resolve }))
+  const endForeground = beginDstarForeground('http://priority-progress')
+  try {
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('status')).toHaveTextContent('Summarizing earlier messages')
+    expect(screen.getByText('3 sections processed')).toBeInTheDocument()
+    expect(screen.queryByText(/paused|cancelled/i)).toBeNull()
+    expect(phases).toEqual([false])
+    expect(owner.signal.aborted).toBe(false)
+    finish()
+    await task
+  } finally { endForeground() }
 })

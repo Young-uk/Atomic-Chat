@@ -168,7 +168,7 @@ describe.each(['light', 'dark'] as const)(
         expectOneLine(engine)
         expect(
           screen
-            .getByText('Engine', { selector: 'span' })
+            .getByText('Configured API provider', { selector: 'span' })
             .getBoundingClientRect().bottom
         ).toBeLessThanOrEqual(engine.getBoundingClientRect().top + 1)
         expect(getComputedStyle(engine).fontSize).toBe(

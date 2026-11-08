@@ -122,7 +122,7 @@ describe('ServerControlPanel', () => {
     render(<ServerControlPanel />)
 
     expect(
-      screen.getByText('common:navigation.engine').closest('a')
+      screen.getByText('api:overview.apiProvider').closest('a')
     ).toHaveAttribute('href', '/api/model')
     expect(
       screen.getByText('common:navigation.model').closest('a')

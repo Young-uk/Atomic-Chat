@@ -360,3 +360,35 @@ it('leaves low raw history alone when the complete foreground envelope has room'
   expect(summarize).not.toHaveBeenCalled()
   expect(c.status).toBe('idle')
 })
+
+it('retains raw archives without committing derived state on admission refusal and suppresses repeated inference', async () => {
+  const { SummaryAdmission } = await import('../atomic-summary-admission')
+  const admission = new SummaryAdmission(8192)
+  admission.observeForeground(7000, 'completed-foreground')
+  const fetcher = vi.fn(async (url: string) => url.endsWith('/summary-token-count')
+    ? { ok: true, json: async () => ({ input_tokens: 6000, context_length: 16384 }) }
+    : { ok: false, status: 409, json: async () => ({ error: { code: 'atomic_summary_admission_refused' } }) })
+  vi.stubGlobal('fetch', fetcher)
+  const saved: ArchiveRecord[] = []
+  const c = new ContextCompaction('refusal', { load: async () => undefined,
+    save: async record => { saved.push(structuredClone(record)) } })
+  const summarize = summarizeBatchesWithDstar('http://strata/v1', 'model', { tokenCounting: true, admission })
+  const messages = turn(1), original = structuredClone(messages)
+  c.schedule(messages, 65536, 6000, summarize)
+  await vi.waitFor(() => expect(c.status).toBe('idle'))
+  expect(saved).toEqual([])
+  expect(fetcher.mock.calls.some(([url]) => url.endsWith('/chat/completions'))).toBe(false)
+  c.schedule(messages, 8192, 6000, summarize)
+  await vi.waitFor(() => expect(c.status).toBe('idle'))
+  expect(admission.allowed).toBe(false)
+  expect(c.error).toContain('server safety admission')
+  expect(saved.length).toBeGreaterThan(0)
+  expect(saved.every(record => !record.summary && !record.checkpoint)).toBe(true)
+  expect(saved[0].source).toEqual(original)
+  expect(c.apply(messages)).toEqual(original)
+  const calls = fetcher.mock.calls.filter(([url]) => url.endsWith('/chat/completions')).length
+  await expect(summarize('', 'evidence', new AbortController().signal, undefined,
+    { requestSources: messages, save: async () => {} })).rejects.toThrow('deferred')
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/chat/completions'))).toHaveLength(calls)
+  expect(messages).toEqual(original)
+})

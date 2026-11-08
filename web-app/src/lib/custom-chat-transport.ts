@@ -1,3 +1,8 @@
+import i18n from '@/i18n/setup'
+import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
+import { SummaryAdmission, summarySchedulingContext } from './atomic-summary-admission'
+import { ATOMIC_PLAIN_TOOL_POLICY } from './atomic-tool-policy'
+import { localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
 import { convertThreadMessagesToUIMessages } from './messages'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
 import { beginCompletionReviewProgress, publishContextUsage } from './inference-progress'
@@ -463,6 +468,17 @@ function prependTextDeltaToUIStream(
 }
 
 const threadCompactions = new Map<string, ContextCompaction>()
+const summaryAdmissions = new Map<string, SummaryAdmission>()
+// Background work never owns a foreground engine lease. Cancel it before a
+// newly selected engine can stop its process; saved originals/checkpoints stay.
+useModelProvider.subscribe((state, previous) => {
+  if (state.selectedProvider !== previous.selectedProvider || state.selectedModel?.id !== previous.selectedModel?.id) {
+    for (const [key, compaction] of threadCompactions) {
+      compaction.cancel()
+      publishSummaryProgress(JSON.parse(key)[0])
+    }
+  }
+})
 
 export class CustomChatTransport implements ChatTransport<UIMessage> {
   public model: LanguageModel | null = null
@@ -909,22 +925,79 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
   private readonly reviewedToolTurns = new Set<string>()
   private summaryForeground?: { key: string; release: () => void; cleanups: (() => void)[] }
 
-  async sendMessages(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0]): Promise<ReadableStream<UIMessageChunk>> {
-    return this.sendWithContextRecovery(options, false)
+  private managedForeground?: {
+    selection: { provider?: ModelProvider; model: Model | null }
+    release: () => void
+    cleanups: (() => void)[]
   }
 
-  private async sendWithContextRecovery(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0], recovered: boolean): Promise<ReadableStream<UIMessageChunk>> {
+  async sendMessages(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0]): Promise<ReadableStream<UIMessageChunk>> {
+    // Client tool continuations belong to the original engine, even if a new
+    // picker selection is waiting. A new user turn/regenerate starts afresh.
+    if (options.trigger === 'regenerate-message' || options.messages.at(-1)?.role === 'user') {
+      this.managedForeground?.release()
+    }
+    const state = useModelProvider.getState()
+    const selection = this.managedForeground?.selection ?? {
+      provider: state.getProviderByName(state.selectedProvider), model: state.selectedModel,
+    }
+    const target = localEngineTarget(selection.provider, selection.model)
+    if (!this.managedForeground && target && IS_TAURI && !IS_IOS && !IS_ANDROID) {
+      // Busy state is keyed by the persisted thread, not the SDK Chat's
+      // generated id. Exempt this submitted turn without exempting others.
+      const end = await localEngineCoordinator.acquire(target, this.threadId ?? options.chatId, options.abortSignal).catch(error => {
+        if (options.abortSignal?.aborted) throw error
+        const code = error instanceof Error ? error.message : String(error)
+        throw new Error(i18n.t(`endpoints:localEngine.errors.${code}`, {
+          defaultValue: i18n.t('endpoints:localEngine.errors.engineFailed'),
+        }))
+      })
+      const foreground = { selection, cleanups: [] as (() => void)[], release: () => {
+        if (this.managedForeground !== foreground) return
+        this.managedForeground = undefined
+        for (const cleanup of foreground.cleanups) cleanup()
+        end()
+      } }
+      this.managedForeground = foreground
+    }
+    const foreground = this.managedForeground
+    if (foreground && options.abortSignal) {
+      options.abortSignal.addEventListener('abort', foreground.release, { once: true })
+      foreground.cleanups.push(() => options.abortSignal?.removeEventListener('abort', foreground.release))
+      if (options.abortSignal.aborted) foreground.release()
+    }
+    const release = () => foreground?.release()
+    let continuingTools = false
+    try {
+      options.abortSignal?.throwIfAborted()
+      const stream = await this.sendWithContextRecovery(options, false, selection, reason => {
+        continuingTools = reason === 'tool-calls'
+      })
+      const reader = stream.getReader()
+      return new ReadableStream<UIMessageChunk>({
+        async pull(controller) {
+          try {
+            const next = await reader.read()
+            if (next.done) { if (!continuingTools) release(); controller.close() }
+            else controller.enqueue(next.value)
+          } catch (error) { release(); controller.error(error) }
+        },
+        async cancel(reason) { release(); await reader.cancel(reason) },
+      })
+    } catch (error) { release(); throw error }
+  }
+
+  private async sendWithContextRecovery(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0], recovered: boolean, selection: { provider?: ModelProvider; model: Model | null }, completed: (reason: string | undefined) => void): Promise<ReadableStream<UIMessageChunk>> {
     // Keep the continuation attached to this logical request until context
     // recovery succeeds. Preparing an oversized prompt consumes the pending
     // prefill, but has not yet generated any replacement text.
     const continuationForRecovery = this.continueFromContent
     this.contextRecovery = undefined
-    const state = useModelProvider.getState()
-    const provider = state.getProviderByName(state.selectedProvider)
+    const provider = selection.provider
     const key = provider?.base_url
     let lease = this.summaryForeground
     if (lease && lease.key !== key) { lease.release(); lease = undefined }
-    if (!lease && key && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && usesAppendOnlyDstarEffort(key, state.selectedModel?.id)) {
+    if (!lease && key && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && usesAppendOnlyDstarEffort(key, selection.model?.id)) {
       const end = beginDstarForeground(key)
       const current = { key, cleanups: [] as (() => void)[], release: () => {
         if (this.summaryForeground !== current) return
@@ -942,7 +1015,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     }
     let continuingTools = false
     try {
-      const stream = await this.sendMessagesInternal(options, reason => { continuingTools = reason === 'tool-calls' })
+      const stream = await this.sendMessagesInternal(options, reason => { continuingTools = reason === 'tool-calls'; completed(reason) }, selection)
       const reader = stream.getReader()
       // Provider HTTP errors arrive as SDK error chunks, not rejected promises.
       // Hold only the invisible SDK envelope; once any content/progress starts,
@@ -979,7 +1052,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         await recover(error)
         options.abortSignal?.throwIfAborted()
         this.continueFromContent = continuationForRecovery
-        return this.sendWithContextRecovery(options, true)
+        return this.sendWithContextRecovery(options, true, selection, completed)
       }
       throw error
     }
@@ -994,9 +1067,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       trigger: 'submit-message' | 'regenerate-message'
       messageId: string | undefined
     } & ChatRequestOptions,
-    completed: (reason: string | undefined) => void = () => {}
+    completed: (reason: string | undefined) => void = () => {},
+    selection?: { provider?: ModelProvider; model: Model | null }
   ): Promise<ReadableStream<UIMessageChunk>> {
     const requestStartedAt = Date.now()
+    const foregroundObservationId = crypto.randomUUID()
     ttftMark('gammaStart')
     // A send right after switching on web search would otherwise go out
     // without its tools.
@@ -1007,10 +1082,20 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // Capture the effective provider name early so the Anthropic serial
     // tool-use repair later uses the same value that was used to create the
     // model, even if the user switches provider mid-request.
-    const modelId = useModelProvider.getState().selectedModel?.id
-    const providerId = useModelProvider.getState().selectedProvider
+    const selectedModel = selection ? selection.model : useModelProvider.getState().selectedModel
+    const modelId = selectedModel?.id
+    const providerId = selection ? selection.provider?.provider ?? '' : useModelProvider.getState().selectedProvider
     const effectiveProviderName = providerId
-    const provider = useModelProvider.getState().getProviderByName(providerId)
+    const provider = selection ? selection.provider : useModelProvider.getState().getProviderByName(providerId)
+    const runtime = provider && selectedModel
+      ? await probeLocalModelCapabilities(provider, selectedModel, { signal: options.abortSignal })
+      : null
+    const usageScope = runtime?.usageScope
+    const runtimeScope = runtime?.runtimeScope
+    const appendOnlyDstar = usesAppendOnlyDstarEffort(provider?.base_url, modelId)
+    const applyPolicies = (messages: UIMessage[], history: UIMessage[] = messages) =>
+      withToolCompletionReviews(appendOnlyDstar
+        ? withDstarEffortUpdates(withDstarToolUpdates(messages, history), history) : messages)
     // Re-creates `this.model` against the provider store's current settings
     // (used after a pre-flight context growth reloads the local session).
     let recreateModel: (() => Promise<void>) | undefined
@@ -1045,7 +1130,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           useGeneralSetting.getState()
         const reasoningOverride: Record<string, unknown> = {}
         const reasoningControls =
-          useModelProvider.getState().selectedModel?.reasoning
+          selectedModel?.reasoning
         const allowReasoningDisable = canDisableReasoning(
           effectiveProviderName,
           reasoningControls
@@ -1173,7 +1258,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Reserve answer space against the server's actual rendered prompt,
         // including tool-result continuations whose heuristic can undercount.
         if (import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' &&
-          usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+          (appendOnlyDstar || runtime?.summarySlot)) {
           effectiveReasoningOverride.atomic_output_reserve = Math.min(
             (getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
         }
@@ -1294,14 +1379,12 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // image as a proper multimodal user message. Cloud providers are left
     // untouched (they have large contexts and handle this differently).
     // Dstar is a custom endpoint, but has the same text-only tool-result wire format.
-    if (isLocalInferenceProvider(effectiveProviderName) || usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
+    if (isLocalInferenceProvider(effectiveProviderName) || runtime || usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
       // Dstar accepts multimodal input, but its model discovery does not yet
       // advertise vision. Preserve images on that endpoint instead of treating
       // missing discovery metadata as an explicit lack of image support.
       const supportsVision = usesAppendOnlyDstarEffort(provider.base_url, modelId) ||
-        useModelProvider
-          .getState()
-          .selectedModel?.capabilities?.includes('vision') === true
+        selectedModel?.capabilities?.includes('vision') === true
       preparedMessages = prepareToolResultImagesForModel(preparedMessages, {
         supportsVision,
       })
@@ -1309,8 +1392,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     if (usesAppendOnlyDstarEffort(provider.base_url, modelId)) {
       preparedMessages = withStableToolResultOrder(preparedMessages)
     }
-    const hasTools = Object.keys(this.tools).length > 0 || (import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && usesAppendOnlyDstarEffort(provider.base_url, modelId))
-    const selectedModel = useModelProvider.getState().selectedModel
+    const hasTools = Object.keys(this.tools).length > 0 || (import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && runtime?.summarySlot === true)
     const modelSupportsTools =
       selectedModel?.capabilities?.includes('tools') ?? this.modelSupportsTools
     const suppressToolsForDflash = shouldSuppressToolsForUpstreamDflash(
@@ -1325,37 +1407,56 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         ? withGrammarSafeToolSchemas(this.tools)
         : this.tools
 
-    const appendOnlyDstar = usesAppendOnlyDstarEffort(provider.base_url, modelId)
     let compaction: ContextCompaction | undefined
     let summaryAfterTurn: ((response: UIMessage) => void) | undefined
-    let toolPreambleVersion: 'v3' | 'v4' = 'v3'
-    let completionReviewSupported = false
+    let toolPreambleVersion: 'v3' | 'v4' = runtime?.toolPreamble === 4 ? 'v4' : 'v3'
+    const completionReviewSupported = runtime?.completionReview === true
     let summaryTokenCounting = false
     let compactionContext = 0
+    let schedulingContext = 0
+    let summaryAdmission: SummaryAdmission | undefined
     let recoveryOverflow = 0
     const compactionThread = this.threadId ?? options.chatId
-    if (appendOnlyDstar && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && compactionThread !== TEMPORARY_CHAT_ID) {
+    const compactionKey = JSON.stringify([compactionThread, runtimeScope ?? usageScope])
+    // A same-endpoint restart may keep the picker unchanged. Never leave an
+    // old epoch's deferred extraction running against the replacement server.
+    for (const [key, coordinator] of threadCompactions) {
+      if (key !== compactionKey && JSON.parse(key)[0] === compactionThread) {
+        coordinator.cancel()
+        threadCompactions.delete(key)
+        publishSummaryProgress(compactionThread)
+      }
+    }
+    if (runtime?.summarySlot && import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && compactionThread !== TEMPORARY_CHAT_ID) {
       try {
-        const runtimeResponse = await fetchDstarContext(`${provider.base_url?.replace(/\/$/, '')}/models`, { signal: options.abortSignal ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000) })
-        const runtime = await runtimeResponse.json()
-        if (runtimeResponse.ok && runtime.atomic_summary_slot === true) {
-          toolPreambleVersion = runtime.atomic_tool_preamble === 4 ? 'v4' : 'v3'
-          completionReviewSupported = runtime.atomic_completion_review === true
-          summaryTokenCounting = runtime.atomic_summary_token_count === true && runtime.atomic_summary_context === 16384
-          compactionContext = runtime.data?.find((m: { id: string }) => m.id === modelId)?.context_length ?? 0
-          compaction = threadCompactions.get(compactionThread)
+        if (runtime.summarySlot) {
+          toolPreambleVersion = runtime.toolPreamble === 4 ? 'v4' : 'v3'
+          summaryTokenCounting = runtime.summaryTokenCounting && runtime.summaryContext === 16384
+          compactionContext = runtime.contextLength ?? 0
+          schedulingContext = summarySchedulingContext(compactionContext)
+          if (runtime.engine === 'strata' && runtimeScope && runtime.summaryMaxMainTokens) {
+            summaryAdmission = summaryAdmissions.get(runtimeScope)
+            if (!summaryAdmission) {
+              summaryAdmission = new SummaryAdmission(runtime.summaryMaxMainTokens)
+              summaryAdmissions.set(runtimeScope, summaryAdmission)
+            }
+          }
+          compaction = threadCompactions.get(compactionKey)
           if (!compaction) {
-            compaction = new ContextCompaction(compactionThread, archiveStore())
-            threadCompactions.set(compactionThread, compaction)
+            compaction = new ContextCompaction(compactionThread, archiveStore(runtime.archiveScope ?? usageScope))
+            threadCompactions.set(compactionKey, compaction)
           }
           compaction.setProgressListener(progress => {
+            const selected = useModelProvider.getState()
+            if (selected.selectedProvider !== providerId || selected.selectedModel?.id !== modelId ||
+                threadCompactions.get(compactionKey) !== compaction) return
             publishSummaryProgress(compactionThread, progress)
             if (progress?.phase !== 'ready') return
             try {
               // Read the latest persisted history: a summary may finish while
               // another turn is running. Preview never changes its envelope.
               const history = convertThreadMessagesToUIMessages(useMessages.getState().getMessages(compactionThread))
-              const coordinator = threadCompactions.get(compactionThread)
+              const coordinator = threadCompactions.get(compactionKey)
               if (coordinator) {
                 const view = coordinator.previewReady(history)
                 // Use the same image/document projection as the actual request.
@@ -1364,8 +1465,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
                   stripUnsupportedFileParts(this.mapUserInlineAttachments(history)),
                   { supportsVision: true }))
                 const projected = projectCompactedMessages(view, preparedHistory)
-                const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(projected, history), history))
-                publishContextUsage(compactionThread, { modelId, estimated: true,
+                const wire = applyPolicies(projected, history)
+                publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope, estimated: true,
                   tokens: estimatePromptTokensHeuristic({ system: systemWithSkills,
                     messages: convertToModelMessages(chatExecOutputsForModel(wire)),
                     tools: activeTools, omitInlineMediaFromTextEstimate: true }) })
@@ -1428,6 +1529,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       // by this transport must be replayed even before a route/app reload.
       preparedMessages = replayDstarToolSnapshots(preparedMessages,
         useMessages.getState().getMessages(snapshotThreadId))
+    }
+    if (appendOnlyDstar || compaction || completionReviewSupported) {
+      const snapshotThreadId = this.threadId ?? options.chatId
       if (compaction) {
         // Archive the original UI parts before file/image/model conversions.
         // Only hidden catalog metadata is reconciled from durable messages.
@@ -1444,6 +1548,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
         this.contextRecovery = (error) => {
+          summaryAdmission?.assertAllowed()
           // An exact server rejection carries the tokenizer evidence. Preserve
           // that undercount through every projected recovery view.
           const exact = /Prompt has (\d+) tokens plus (\d+) reserved output tokens/.exec(String(error))
@@ -1451,9 +1556,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             messages: finalModelMessages, tools: activeTools })
           const correction = exact ? Math.max(0, Number(exact[1]) - baseline) : 0
           return coordinator.recover(original, compactionContext,
-          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
+          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission }), options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
             const retained = projectCompactedMessages(view, preparedMessages)
-            const wire = withToolCompletionReviews(withDstarEffortUpdates(withDstarToolUpdates(retained, original), original))
+            const wire = applyPolicies(retained, original)
             // Use the foreground envelope, including fixed instructions/tools
             // and output reserve; raw-history savings alone cannot prove fit.
             const projected = convertToModelMessages(chatExecOutputsForModel(wire))
@@ -1466,15 +1571,17 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           })
         }
         summaryAfterTurn = response => {
+          const selected = useModelProvider.getState()
+          if (selected.selectedProvider !== providerId || selected.selectedModel?.id !== modelId) return
+          if (summaryAdmission && !summaryAdmission.allowed) return
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
-          coordinator.schedule(history, compactionContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting }), undefined,
+          coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
+            summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission }), undefined,
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)
-              const wire = withToolCompletionReviews(withDstarEffortUpdates(
-                withDstarToolUpdates(retainedView, history), history))
+              const wire = applyPolicies(retainedView, history)
               // Reserve room for historical memory and unresolved work. These
               // are added after the background summary finishes.
               return estimatePromptTokensHeuristic({ system: systemWithSkills,
@@ -1485,8 +1592,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       }
       const catalogHistory = replayDstarToolSnapshots(options.messages,
         useMessages.getState().getMessages(snapshotThreadId))
-      preparedMessages = withToolCompletionReviews(withDstarEffortUpdates(
-        withDstarToolUpdates(preparedMessages, catalogHistory), catalogHistory))
+      preparedMessages = applyPolicies(preparedMessages, catalogHistory)
     }
     const baseMessages = convertToModelMessages(
       chatExecOutputsForModel(preparedMessages)
@@ -1534,7 +1640,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         : undefined
     const systemWithSkills = composeSystemMessage(
       composeSystemMessage(renderInstructions(this.systemMessage), skillsBlock),
-      documentsHint
+      composeSystemMessage(documentsHint, runtime?.toolPolicy === 'plain-system-v1' && shouldEnableTools ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
     )
 
     const dropSystemForTools =
@@ -1600,7 +1706,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       }
     }
 
-    if (appendOnlyDstar) publishContextUsage(compactionThread, { modelId, estimated: true,
+    if (appendOnlyDstar) publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope, estimated: true,
       tokens: estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
         messages: finalModelMessages, tools: activeTools }) })
 
@@ -1627,6 +1733,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     })
 
     let latestStepUsage: LanguageModelUsage | undefined
+    let completedForegroundTokens: number | undefined
     let tokensPerSecond = 0
     let draftTokensTotal: number | null = null
     let draftTokensAccepted: number | null = null
@@ -1637,6 +1744,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         const toolsPending = summaryTurnHasToolsPending(responseMessage)
         completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)
         if (!requestFailed && !isAborted && !toolsPending && finishReason === 'stop' && responseMessage) {
+          if (completedForegroundTokens !== undefined) {
+            summaryAdmission?.observeForeground(completedForegroundTokens, foregroundObservationId)
+          }
           summaryAfterTurn?.(responseMessage)
           if (personalMemoryEnabled && this.serviceHub && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
             const user = options.messages.findLast(message => message.role === 'user')
@@ -1724,8 +1834,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           // Billing totals can sum several tool steps. Context occupancy is
           // the final request's prompt/output, never the sum of those requests.
           const contextUsage = latestStepUsage ?? usage
-          if (appendOnlyDstar && contextUsage) publishContextUsage(compactionThread, {
-            modelId, estimated: false, outputTokens: contextUsage.outputTokens ?? 0,
+          if (contextUsage && finishPart.finishReason === 'stop') {
+            const tokens = contextUsage.totalTokens ?? ((contextUsage.inputTokens !== undefined && contextUsage.outputTokens !== undefined)
+              ? contextUsage.inputTokens + contextUsage.outputTokens : undefined)
+            if (tokens !== undefined) completedForegroundTokens = tokens
+          }
+          if (runtime && contextUsage) publishContextUsage(compactionThread, {
+            modelId, usageScope, runtimeScope, estimated: false, outputTokens: contextUsage.outputTokens ?? 0,
             tokens: contextUsage.totalTokens ?? (contextUsage.inputTokens ?? 0) + (contextUsage.outputTokens ?? 0),
           })
           finalResponseMetadata = {
@@ -1742,7 +1857,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             // recorded anywhere, so a finished turn could not be attributed.
             modelId,
             providerId,
-            ...(appendOnlyDstar && contextUsage ? { contextUsage } : {}),
+            ...(runtime && contextUsage ? { contextUsage, contextUsageScope: usageScope } : {}),
             usage: {
               inputTokens: inputTokens,
               outputTokens: outputTokens,

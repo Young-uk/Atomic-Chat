@@ -90,5 +90,15 @@
     "noReply": "No reply captured.",
     "estimated": "estimated from streamed deltas",
     "nonTextParts": "Includes non-text content"
+  },
+  "overview": {
+    "listenerLabel": "로컬 API 수신 서버",
+    "listenerRunning": "로컬 API 수신 서버가 실행 중입니다",
+    "apiProvider": "설정된 API 제공자",
+    "routeHint": "API는 요청의 모델 ID에 따라 전달합니다. 이 제공자 설정은 채팅 엔진과 별개이며, 해당 엔진의 실행 여부를 뜻하지 않습니다.",
+    "chatEngine": "선택한 채팅 엔진",
+    "engineUnknown": "엔진 상태가 아직 확인되지 않았습니다.",
+    "reportedEngine": "마지막으로 확인된 엔진: {{engine}} ({{status}})",
+    "listenerStopped": "로컬 API 수신 서버가 중지되어 있습니다"
   }
 }

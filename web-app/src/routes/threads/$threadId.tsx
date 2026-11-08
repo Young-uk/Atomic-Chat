@@ -1,3 +1,4 @@
+import { useConversationFind } from '@/lib/conversation-find'
 import { useChatSpeech } from '@/hooks/useChatSpeech'
 import { useDesktopControlOverlay } from '@/hooks/useDesktopControlOverlay'
 import { ContextSummaryProgress } from '@/components/ContextSummaryProgress'
@@ -357,8 +358,7 @@ function ThreadDetail() {
   const effectiveInstructions =
     liveAssistant?.instructions ?? threadAssistant?.instructions
   // Keep legacy templates raw until the request; toggle clocks live in saved message metadata.
-  const [speechThread, setSpeechThread] = useState<string | null>(null)
-  const autoSpeech = speechThread === threadId
+  const { enabled: autoSpeech, status: autoSpeechStatus, toggle: toggleAutoSpeech } = useChatSpeech()
   const systemMessage = effectiveInstructions
 
   // Holds the partial assistant message while the model reloads after a
@@ -713,7 +713,6 @@ function ThreadDetail() {
     sendAutomaticallyWhen: followUpMessage,
   })
   useDesktopControlOverlay(threadId, chatMessages, status)
-  const autoSpeechStatus = useChatSpeech(threadId, chatMessages, status, autoSpeech)
 
   chatMessagesRef.current = chatMessages
 
@@ -2082,6 +2081,8 @@ function ThreadDetail() {
       messages: chatMessages,
       requestActive,
     })
+  const conversationFindRef = useRef<HTMLDivElement>(null)
+  useConversationFind(conversationFindRef, chatMessages)
   const lastChatMessage = chatMessages[chatMessages.length - 1]
   const hasActiveAssistantMessage = lastChatMessage?.role === 'assistant'
   const latestUserMessageId = useMemo(() => {
@@ -2118,7 +2119,7 @@ function ThreadDetail() {
       refreshKey={agentRun?.finishedAtMs ?? 0}
       isGenerating={requestActive}
     >
-      <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+      <div ref={conversationFindRef} className="flex flex-1 flex-col overflow-hidden min-w-0">
         <HeaderPage>
           <div className="flex items-center justify-end w-full pr-2">
             {/* The model is picked from the composer; the header keeps the
@@ -2141,25 +2142,26 @@ function ThreadDetail() {
                     const isLastMessage = index === chatMessages.length - 1
                     const isFirstMessage = index === 0
                     return (
-                      <MessageItem
-                        key={message.id}
-                        message={message}
-                        isFirstMessage={isFirstMessage}
-                        isLastMessage={isLastMessage}
-                        status={inputStatus}
-                        requestActive={requestActive}
-                        inferenceThreadId={isLastMessage && message.role === 'assistant' ? threadId : undefined}
-                        reasoningContainerRef={reasoningContainerRef}
-                        onReasoningScroll={onReasoningScroll}
-                        onRegenerate={handleRegenerate}
-                        onEdit={handleEditMessage}
-                        onDelete={handleDeleteMessage}
-                        isAnimating={!pendingContinueMessage}
-                        hideActions={!!pendingContinueMessage}
-                        agentAttachmentReferences={agentAttachmentReferencesByMessageId.get(
-                          message.id
-                        )}
-                      />
+                      <div key={message.id} data-atomic-find-message={message.id}>
+                        <MessageItem
+                          message={message}
+                          isFirstMessage={isFirstMessage}
+                          isLastMessage={isLastMessage}
+                          status={inputStatus}
+                          requestActive={requestActive}
+                          inferenceThreadId={isLastMessage && message.role === 'assistant' ? threadId : undefined}
+                          reasoningContainerRef={reasoningContainerRef}
+                          onReasoningScroll={onReasoningScroll}
+                          onRegenerate={handleRegenerate}
+                          onEdit={handleEditMessage}
+                          onDelete={handleDeleteMessage}
+                          isAnimating={!pendingContinueMessage}
+                          hideActions={!!pendingContinueMessage}
+                          agentAttachmentReferences={agentAttachmentReferencesByMessageId.get(
+                            message.id
+                          )}
+                        />
+                      </div>
                     )
                   })}
                   {pendingInitialUserMessage && (
@@ -2349,7 +2351,7 @@ function ThreadDetail() {
                 chatStatus={inputStatus}
                 autoSpeech={autoSpeech}
                 autoSpeechStatus={autoSpeechStatus}
-                onToggleAutoSpeech={() => setSpeechThread(autoSpeech ? null : threadId)}
+                onToggleAutoSpeech={toggleAutoSpeech}
               />
             </div>
           </div>

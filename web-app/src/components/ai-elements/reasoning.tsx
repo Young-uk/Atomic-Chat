@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
+import { useFindDisclosure } from '@/lib/find-reveal'
 import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import {
   Collapsible,
@@ -91,6 +92,7 @@ export const Reasoning = memo(
       defaultProp: defaultOpen,
       onChange: onOpenChange,
     })
+    const findRef = useFindDisclosure(isOpen, setIsOpen)
     const [duration, setDuration] = useControllableState({
       prop: durationProp,
       defaultProp: isStreaming ? 1 : undefined,
@@ -162,6 +164,8 @@ export const Reasoning = memo(
     return (
       <ReasoningContext.Provider value={contextValue}>
         <Collapsible
+          ref={findRef}
+          data-atomic-find-reasoning
           className={cn('not-prose mb-4', className)}
           onOpenChange={handleOpenChange}
           open={isOpen}

@@ -1,6 +1,6 @@
 import { IconChevronDown, IconSearch } from '@tabler/icons-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useMemo, useRef } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { useTranslation } from '@/i18n/react-i18next-compat'
+import { apiActivityRowRate, useApiActivityFind } from '@/lib/api-activity-find'
 import { cn } from '@/lib/utils'
 import type { ApiLogEntry, ApiLogFilter } from '@/types/apiServerLog'
 import { endpointLabel } from '@/utils/apiServerLogNormalize'
@@ -27,15 +28,6 @@ const FILTERS: ApiLogFilter[] = [
   'cancelled',
 ]
 
-/** Generation rate for one finished request, or `null` when unknowable. */
-function rowRate(entry: ApiLogEntry): number | null {
-  if (entry.kind !== 'request') return null
-  if (entry.predictedPerSecond) return entry.predictedPerSecond
-  if (!entry.completionTokens || !entry.durationMs) return null
-  const generationMs = Math.max(entry.durationMs - (entry.ttftMs ?? 0), 1)
-  return entry.completionTokens / (generationMs / 1000)
-}
-
 function ApiRequestRow({
   entry,
   selected,
@@ -45,7 +37,7 @@ function ApiRequestRow({
   selected: boolean
   onSelect: () => void
 }) {
-  const rate = rowRate(entry)
+  const rate = apiActivityRowRate(entry)
   const preview =
     entry.kind === 'request'
       ? (entry.replyPreview ?? entry.promptPreview)
@@ -64,29 +56,29 @@ function ApiRequestRow({
         <StatusDot
           tone={entry.kind === 'request' ? REQUEST_TONE[entry.status] : 'idle'}
         />
-        <span className="truncate font-mono text-xs text-foreground">
+        <span data-atomic-find-api-field="0" className="truncate font-mono text-xs text-foreground">
           {entry.kind === 'request'
             ? endpointLabel(entry.endpoint)
             : entry.title}
         </span>
-        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
+        <span data-atomic-find-api-field={entry.kind === 'request' ? 1 : undefined} className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
           {entry.kind === 'request' && entry.durationMs !== undefined
             ? formatMs(entry.durationMs)
             : ''}
         </span>
       </div>
       <div className="flex w-full items-center gap-2 pl-4">
-        <span className="truncate text-xs text-muted-foreground">
+        <span data-atomic-find-api-field={entry.kind === 'request' ? 2 : 1} className="truncate text-xs text-muted-foreground">
           {entry.kind === 'request' ? (entry.model ?? '—') : entry.detail}
         </span>
         <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
-          {rate ? `${rate.toFixed(1)} tok/s` : ''}
+          <span data-atomic-find-api-field={entry.kind === 'request' ? 3 : undefined}>{rate ? `${rate.toFixed(1)} tok/s` : ''}</span>
           {'  '}
-          {formatTime(entry.startedAt)}
+          <span data-atomic-find-api-field={entry.kind === 'request' ? 4 : 2}>{formatTime(entry.startedAt)}</span>
         </span>
       </div>
       {preview && entry.kind === 'request' && (
-        <p className="line-clamp-1 pl-4 text-xs text-muted-foreground/80">
+        <p data-atomic-find-api-field="5" className="line-clamp-1 pl-4 text-xs text-muted-foreground/80">
           {preview}
         </p>
       )}
@@ -124,6 +116,10 @@ export function ApiRequestList({
     estimateSize: () => 64,
     overscan: 8,
   })
+  const revealIndex = useCallback((index: number) => {
+    virtualizer.scrollToIndex(index, { align: 'center' })
+  }, [virtualizer])
+  useApiActivityFind(scrollRef, entries, revealIndex)
   const items = virtualizer.getVirtualItems()
 
   const filterLabel = useMemo(
@@ -193,6 +189,7 @@ export function ApiRequestList({
                   key={entry.id}
                   ref={virtualizer.measureElement}
                   data-index={item.index}
+                  data-atomic-find-api-row={entry.id}
                   style={{
                     position: 'absolute',
                     top: 0,

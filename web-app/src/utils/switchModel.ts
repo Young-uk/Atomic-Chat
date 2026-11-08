@@ -1,4 +1,5 @@
 import { toast } from 'sonner'
+import { controlLocalEngine, localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
 import { MODEL_LOAD_CANCELLED_CODE } from '@janhq/core'
 import { modelStopKey, useAppState } from '@/hooks/useAppState'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
@@ -678,9 +679,22 @@ export async function switchToModel(params: {
   serviceHub: ServiceHub
   isAutoStart?: boolean
 }): Promise<void> {
+  // Managed custom endpoints participate in the same latest-intent sequence.
+  const mySeq = ++switchSeq
+  const providerState = useModelProvider.getState()
+  const endpoint = providerState.providers.find(provider => provider.provider === params.providerName)
+  const target = localEngineTarget(endpoint, { id: params.modelId })
+  if (target && IS_TAURI && !IS_IOS && !IS_ANDROID) {
+    // The transport registers these endpoints on send. Do not restart the proxy or rewrite
+    // an old thread's saved model merely because the global picker changed.
+    pendingExplicitSwitch = null
+    providerState.selectModelProvider(params.providerName, params.modelId)
+    setLastUsedModel(params.providerName, params.modelId)
+    localEngineCoordinator.startSelected(target)
+    return
+  }
   // Claim a slot in the queue. `mySeq` lets us detect if a newer switch was
   // enqueued behind us while we waited for earlier ones to finish.
-  const mySeq = ++switchSeq
   const prior = activeSwitchPromise
 
   const isExplicit = !params.isAutoStart
@@ -706,11 +720,27 @@ export async function switchToModel(params: {
       return
     }
 
+    if (IS_TAURI && IS_MACOS && isLocalEngineProvider(params.providerName) &&
+        providerState.providers.some(provider => provider.models.some(model => localEngineTarget(provider, model)))) {
+      await localEngineCoordinator.settled()
+      if (mySeq !== switchSeq) return
+      const snapshot = await controlLocalEngine('status', 'dstar')
+      if (mySeq !== switchSeq) return
+      if ((snapshot.engine && snapshot.status !== 'stopped') || snapshot.owned || snapshot.desiredEngine || snapshot.status === 'external') {
+        const error = new Error(i18n.t('endpoints:localEngine.errors.managedEngineRunning'))
+        recordAutoStartFailure(params.providerName, params.modelId, 'MANAGED_ENGINE_RUNNING')
+        clearFailedSelection(params.providerName, params.modelId)
+        reportModelLoadError(error, params.providerName)
+        throw error
+      }
+    }
+
     if (await isTargetModelAlreadyServing(params)) {
       const activeModels = await params.serviceHub
         .models()
         .getActiveModels()
         .catch(() => [] as string[])
+      if (mySeq !== switchSeq) return
 
       useAppState.getState().setServerStatus('running')
       // getActiveModels() is local-engine only; preserve any cloud model that
@@ -1072,6 +1102,8 @@ async function doSwitchToModel(
       )
     }
 
+    if (isSuperseded()) return
+
     // 6. Publish active model(s). For local engines we query the engine; for
     //    cloud we mark the target model as the single active one so the UI
     //    reflects it (engine query would return empty).
@@ -1082,6 +1114,8 @@ async function doSwitchToModel(
     } else {
       setActiveModels([modelId])
     }
+
+    if (isSuperseded()) return
 
     // 7. Synchronise the rest of global state (dropdown, thread, localStorage).
     syncModelSelection(providerName, modelId)

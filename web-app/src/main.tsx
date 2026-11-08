@@ -1,7 +1,7 @@
-import { isDstarEndpoint, preloadDstar } from '@/services/dstar'
 // Dev-only fresh-install mode (`make dev-fresh`). MUST be the first import:
 // it wipes/restores localStorage before any zustand store module rehydrates.
 import './lib/freshInstallBoot'
+import { installLocalEngineSelection } from '@/lib/local-engine-selection'
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
@@ -207,12 +207,10 @@ if (!useGeneralSetting.getState().preloadModelOnStartup) {
   }
 }
 
-// Dstar is listed as a custom endpoint, so the native model preload skips it.
-if (IS_TAURI && !IS_IOS && !IS_ANDROID && useGeneralSetting.getState().preloadModelOnStartup) {
-  const { providers, selectedProvider } = useModelProvider.getState()
-  if (providers.some(provider => provider.provider === selectedProvider && isDstarEndpoint(provider.base_url))) {
-    void preloadDstar().catch(error => console.warn('Dstar startup preload failed', error))
-  }
+// Custom local endpoints keep the existing picker and persisted selection.
+if (IS_TAURI && !IS_IOS && !IS_ANDROID) {
+  const disposeLocalEngineSelection = installLocalEngineSelection()
+  import.meta.hot?.dispose(disposeLocalEngineSelection)
 }
 
 // Tauri webviews ignore the HTML5 `download` attribute, so streamdown's

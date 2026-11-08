@@ -1,3 +1,4 @@
+import { useFindDisclosure } from '@/lib/find-reveal'
 import { useState } from 'react'
 import { CircleAlert, ChevronRight, ListChecks, Loader2 } from 'lucide-react'
 
@@ -57,6 +58,7 @@ export function ToolActivityGroup({
   // A live turn stays one stable row. The user can opt into the detailed
   // timeline, but new tool calls never expand it and shove the answer around.
   const [open, setOpen] = useState(false)
+  const findRef = useFindDisclosure(open, setOpen)
 
   const summary = loadingModel
     ? t('activity.loadingModel')
@@ -96,6 +98,7 @@ export function ToolActivityGroup({
 
   return (
     <Collapsible
+      ref={findRef}
       open={hasDetails ? open : false}
       onOpenChange={hasDetails ? setOpen : undefined}
       className="group/activity not-prose"
@@ -141,6 +144,7 @@ export function ToolActivityGroup({
           {tools.map((tool) => (
             <ToolRenderer
               key={tool.key}
+              findKey={tool.key}
               toolName={tool.toolName}
               presentation={tool.presentation}
               state={tool.state}

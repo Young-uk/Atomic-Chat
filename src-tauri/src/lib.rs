@@ -112,6 +112,7 @@ pub fn run() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let app_builder = app_builder.invoke_handler(tauri::generate_handler![
         core::dstar::dstar_control,
+        core::dstar::managed_engine_control,
         // FS commands - Deperecate soon
         core::filesystem::commands::join_path,
         core::filesystem::commands::mkdir,

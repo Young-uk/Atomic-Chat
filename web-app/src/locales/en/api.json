@@ -168,7 +168,15 @@
     "inFlight": "in progress",
     "failed": "failed",
     "setupHint": "Choose an agent or create an endpoint. We’ll walk you through it.",
-    "guideMe": "Guide me"
+    "guideMe": "Guide me",
+    "listenerLabel": "Local API listener",
+    "listenerRunning": "Local API listener is running",
+    "apiProvider": "Configured API provider",
+    "routeHint": "The API routes each request by its model ID. This provider setting is separate from the chat engine and does not confirm that its backend is running.",
+    "chatEngine": "Selected chat engine",
+    "engineUnknown": "Engine status has not been confirmed.",
+    "reportedEngine": "Last reported engine: {{engine}} ({{status}})",
+    "listenerStopped": "Local API listener is stopped"
   },
   "agents": {
     "title": "Agents & tools",

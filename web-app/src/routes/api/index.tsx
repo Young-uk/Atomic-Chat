@@ -6,6 +6,7 @@ import { ServerActivityPanel } from '@/containers/server/ServerActivityPanel'
 import { ServerAgents } from '@/containers/server/ServerAgents'
 import { ServerButton, ServerPage } from '@/containers/server/ServerPageParts'
 import { ServerSetupGuide } from '@/containers/server/ServerSetupGuide'
+import { ServerEngineIdentity } from '@/containers/server/ServerEngineIdentity'
 import { useServedModel } from '@/containers/server/useServedModel'
 import { useAppState } from '@/hooks/useAppState'
 import {
@@ -48,13 +49,13 @@ export function ServerOverviewPage() {
         <div className="sp-ready-strip">
           <div>
             <strong>
-              {setupDone
-                ? t('api:overview.readyTitle')
-                : t('api:overview.stoppedTitle')}
+              {setupDone && running
+                ? t('api:overview.listenerRunning')
+                : t(setupDone ? 'api:overview.listenerStopped' : 'api:overview.stoppedTitle')}
             </strong>
             <p>
               {setupDone
-                ? [model ?? t('api:strip.noModel'), engine]
+                ? [t('api:overview.apiProvider'), model ?? t('api:strip.noModel'), engine]
                     .filter(Boolean)
                     .join(' · ')
                 : t('api:overview.setupHint')}
@@ -66,6 +67,7 @@ export function ServerOverviewPage() {
           </ServerButton>
         </div>
       )}
+      {setupDone && <ServerEngineIdentity />}
       <ServerAgents />
       <ServerActivityPanel />
     </ServerPage>

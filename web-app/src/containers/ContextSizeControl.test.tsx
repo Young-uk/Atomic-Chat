@@ -15,6 +15,12 @@ const syncActiveModelsFromEngines = vi.fn()
 const tokenCountState = vi.hoisted(() => ({ value: 164 }))
 const dstarState = vi.hoisted(() => ({
   isDstar: false,
+  isStrata: false,
+  isManagedLocal: undefined as boolean | undefined,
+  providerId: undefined as string | undefined,
+  usageScope: undefined as string | undefined,
+  runtimeScope: undefined as string | undefined,
+  requireUsageScope: undefined as boolean | undefined,
   maxTokens: 65536 as number | undefined,
   modelId: 'qwen-test',
 }))
@@ -423,4 +429,95 @@ describe('Dstar context usage', () => {
     expect(screen.getByText(/^50\.0% \(16\.1K \/ 32\.3K\)$/)).toBeInTheDocument()
   })
 
+})
+
+
+describe('Strata scoped cache usage', () => {
+  beforeEach(() => {
+    seedServiceHub({ models: { stopModel, startModel, getActiveModels } as unknown as ModelsService })
+    useInferenceProgress.setState({ byThread: {}, contextByThread: {} })
+    setSelectedModel('custom-strata')
+    Object.assign(dstarState, { isDstar: false, isStrata: true, isManagedLocal: true,
+      providerId: 'custom-strata', modelId: 'qwen-test', usageScope: 'config-a', runtimeScope: 'runtime-a', requireUsageScope: true, maxTokens: 65536 })
+  })
+  const message = (input: unknown, cached: unknown, overrides = {}) => ({ role: 'assistant', metadata: {
+    modelId: 'qwen-test', providerId: 'custom-strata', contextUsageScope: 'config-a', finishReason: 'stop',
+    usage: { inputTokens: 999999, outputTokens: 100, totalTokens: 999999 },
+    contextUsage: { inputTokens: input, cachedInputTokens: cached, outputTokens: 10 }, ...overrides,
+  } }) as ThreadMessage
+  const open = (messages: ThreadMessage[]) => {
+    render(<ContextSizeControl messages={messages} threadId="strata" />)
+    fireEvent.click(screen.getByRole('button', { name: /Context usage:/ }))
+  }
+  it('shows final request ratio and arithmetic mean, including a measured zero', () => {
+    open([message(100, 0), message(1000, 1000), message(10000, 5000)])
+    expect(screen.getByText('50.0%')).toBeInTheDocument()
+    expect(screen.getByText('50.0% (5.0K / 10.0K)')).toBeInTheDocument()
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument()
+  })
+  it.each([undefined, -1, 1001, 1.5, NaN, '500'])('omits unknown or invalid cache count %s', cached => {
+    open([message(1000, cached)])
+    expect(screen.queryByText('Last request cache hit rate')).not.toBeInTheDocument()
+    expect(screen.queryByText('Average cache hit rate in this chat')).not.toBeInTheDocument()
+  })
+  it('does not infer a cache ratio from missing or invalid input count', () => {
+    open([message(undefined, 0), message(-1, 0), message(0, 0), message(1.5, 1)])
+    expect(screen.queryByText('Average cache hit rate in this chat')).not.toBeInTheDocument()
+  })
+  it('ignores old, cancelled, other provider/model/runtime measurements and unscoped live occupancy', () => {
+    useInferenceProgress.setState({ byThread: { strata: { requestId: 'old', startedAt: 0, phase: 'reading', total: 50000 } },
+      contextByThread: { strata: { tokens: 50000, modelId: 'qwen-test', estimated: false } } })
+    open([message(100, 100, { contextUsageScope: undefined }), message(100, 100, { finishReason: 'abort' }),
+      message(100, 100, { modelId: 'other' }), message(100, 100, { providerId: 'other' }),
+      message(100, 100, { contextUsageScope: 'config-b' })])
+    expect(screen.getByRole('button', { name: 'Context usage: —' })).toBeInTheDocument()
+    expect(screen.queryByText('Last request cache hit rate')).not.toBeInTheDocument()
+  })
+  it('keeps historical ratios after restart but rejects old live occupancy', () => {
+    useInferenceProgress.setState({ byThread: { strata: { requestId: 'old', startedAt: 0, phase: 'reading', total: 50000,
+      usageScope: 'config-a', runtimeScope: 'old-runtime' } }, contextByThread: { strata: {
+      tokens: 50000, estimated: false, modelId: 'qwen-test', usageScope: 'config-a', runtimeScope: 'old-runtime',
+    } } })
+    open([message(1000, 500)])
+    expect(screen.getByText('50.0% (500 / 1.0K)')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Context usage: 1.5%' }).title).toContain('Last reported request')
+  })
+  it('hides measurements when the identity probe fails', () => {
+    const view = render(<ContextSizeControl messages={[message(1000, 500)]} />)
+    expect(screen.getByRole('button', { name: /1.5%/ })).toBeInTheDocument()
+    dstarState.usageScope = undefined
+    dstarState.maxTokens = undefined
+    view.rerender(<ContextSizeControl messages={[message(1000, 500)]} />)
+    expect(screen.getByRole('button', { name: 'Context usage: —' })).toBeInTheDocument()
+  })
+})
+
+describe('verified Dstar cache identity', () => {
+  beforeEach(() => {
+    seedServiceHub({ models: { stopModel, startModel, getActiveModels } as unknown as ModelsService })
+    useInferenceProgress.setState({ byThread: {}, contextByThread: {} })
+    setSelectedModel('custom-dstar')
+    Object.assign(dstarState, { isDstar: true, isStrata: false, isManagedLocal: true,
+      modelId: 'qwen-test', providerId: 'custom-dstar', usageScope: 'verified-iq3', runtimeScope: undefined,
+      requireUsageScope: true, maxTokens: 65536 })
+  })
+  const measured = (scope?: string) => ({ role: 'assistant', metadata: {
+    modelId: 'qwen-test', providerId: 'custom-dstar', contextUsageScope: scope,
+    usage: { inputTokens: 1000, outputTokens: 10, cachedInputTokens: 1000 },
+    contextUsage: { inputTokens: 1000, outputTokens: 10, cachedInputTokens: scope === 'verified-iq3' ? 0 : 1000 },
+  } }) as ThreadMessage
+  it('does not mix legacy or another quant with new verified IQ3 ratios', () => {
+    render(<ContextSizeControl messages={[measured(), measured('legacy-dstar'), measured('verified-iq2'), measured('verified-iq3')]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Context usage:/ }))
+    expect(screen.getByText('0.0%')).toBeInTheDocument()
+    expect(screen.getByText('0.0% (0 / 1.0K)')).toBeInTheDocument()
+  })
+  it('keeps verified IQ3 measurements out of an ambiguous legacy display', () => {
+    dstarState.requireUsageScope = false
+    dstarState.usageScope = 'legacy-dstar'
+    render(<ContextSizeControl messages={[measured(), measured('verified-iq3')]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Context usage:/ }))
+    expect(screen.getByText('100.0%')).toBeInTheDocument()
+    expect(screen.getByText('100.0% (1.0K / 1.0K)')).toBeInTheDocument()
+  })
 })

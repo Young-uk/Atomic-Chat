@@ -1,3 +1,6 @@
+import { useModelProvider } from '@/hooks/useModelProvider'
+import { localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
+import i18n from '@/i18n/setup'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import type {
   AgentApprovalDecision,
@@ -14,16 +17,48 @@ import type {
 
 export type AgentEventHandler = (event: AgentEvent) => void
 
-export function runAgentTurn(
+const preparingManagedRuns = new Map<string, AbortController>()
+
+export async function runAgentTurn(
   request: AgentTurnRequest,
   onEvent: AgentEventHandler
 ): Promise<void> {
-  const channel = new Channel<AgentEvent>()
-  channel.onmessage = onEvent
-  return invoke<void>('agent_run_turn', { request, onEvent: channel })
+  const provider = request.provider ? useModelProvider.getState().getProviderByName(request.provider) : undefined
+  const target = localEngineTarget(provider, { id: request.model_id })
+  let release: (() => void) | undefined
+  const abort = new AbortController()
+  try {
+    if (target && IS_TAURI && !IS_IOS && !IS_ANDROID) {
+      preparingManagedRuns.set(request.run_id, abort)
+      release = await localEngineCoordinator.acquire(target, request.session_id, abort.signal).catch(error => {
+        if (abort.signal.aborted) throw error
+        const code = error instanceof Error ? error.message : String(error)
+        throw new Error(i18n.t(`endpoints:localEngine.errors.${code}`, { defaultValue: i18n.t('endpoints:localEngine.errors.engineFailed') }))
+      })
+      abort.signal.throwIfAborted()
+    }
+    preparingManagedRuns.delete(request.run_id)
+    const channel = new Channel<AgentEvent>()
+    channel.onmessage = onEvent
+    await invoke<void>('agent_run_turn', { request, onEvent: channel })
+  } catch (error) {
+    if (abort.signal.aborted) {
+      onEvent({ type: 'turn_finished', reason: 'cancelled', step_count: 0 })
+      return
+    }
+    throw error
+  } finally {
+    preparingManagedRuns.delete(request.run_id)
+    release?.()
+  }
 }
 
 export function cancelAgentTurn(runId: string): Promise<void> {
+  const preparation = preparingManagedRuns.get(runId)
+  if (preparation) {
+    preparation.abort()
+    return Promise.resolve()
+  }
   return invoke<void>('agent_cancel_turn', { runId })
 }
 

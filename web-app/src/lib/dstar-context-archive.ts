@@ -23,14 +23,16 @@ async function readRecords(threadId: string): Promise<ArchiveRecord[]> {
   return values.map(v => JSON.parse(v) as ArchiveRecord)
     .filter(r => r.version === 1 && r.threadId === threadId && Array.isArray(r.source))
 }
-export function archiveStore(): ContextArchiveStore {
+export function archiveStore(runtimeScope?: string): ContextArchiveStore {
+  const records = async (threadId: string) => (await readRecords(threadId))
+    .filter(record => runtimeScope === undefined || record.runtimeScope === runtimeScope)
   return {
-    save: async record => { await invoke('context_archive', { threadId: record.threadId, name: filename(record), data: JSON.stringify(record) }) },
-    loadPending: async threadId => (await readRecords(threadId)).filter(r => !r.summary?.trim() && r.checkpoint?.version === 1)
+    save: async record => { await invoke('context_archive', { threadId: record.threadId, name: filename(record), data: JSON.stringify({ ...record, ...(runtimeScope ? { runtimeScope } : {}) }) }) },
+    loadPending: async threadId => (await records(threadId)).filter(r => !r.summary?.trim() && r.checkpoint?.version === 1)
       .sort((a, b) => b.source.length - a.source.length || (b.createdAt ?? 0) - (a.createdAt ?? 0))[0],
-    loadCandidates: async threadId => (await readRecords(threadId)).filter(r => r.summary?.trim())
+    loadCandidates: async threadId => (await records(threadId)).filter(r => r.summary?.trim())
       .sort((a, b) => b.source.length - a.source.length || (b.createdAt ?? 0) - (a.createdAt ?? 0)),
-    load: async threadId => (await readRecords(threadId)).filter(r => r.summary?.trim())
+    load: async threadId => (await records(threadId)).filter(r => r.summary?.trim())
       .sort((a, b) => b.source.length - a.source.length || (b.createdAt ?? 0) - (a.createdAt ?? 0))[0],
   }
 }

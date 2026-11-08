@@ -8,6 +8,9 @@ import { setFontSize, setTheme, settle, withTranslations } from '@/test/layout'
 
 const dstarLayout = vi.hoisted(() => ({
   isDstar: false,
+  isStrata: false,
+  isManagedLocal: undefined as boolean | undefined,
+  usageScope: undefined as string | undefined,
   modelId: 'qwen-test',
   maxTokens: 65536,
 }))
@@ -144,6 +147,34 @@ describe('read-only Dstar context gauge geometry', () => {
             width - 16
           )
           expect(visibleLineCount(trigger.querySelector('span')!)).toBe(1)
+        })
+      }
+})
+
+
+describe('Strata cache readout geometry', () => {
+  for (const width of [390, 1024, 1280])
+    for (const font of ['16px', '20px'])
+      for (const theme of ['light', 'dark'] as const) {
+        it(`${width}px / ${font} / ${theme}: cache labels wrap before numeric readouts`, async () => {
+          Object.assign(dstarLayout, { isDstar: false, isStrata: true, isManagedLocal: true, usageScope: 'epoch-a' })
+          await page.viewport(width, 800)
+          setFontSize(font)
+          setTheme(theme)
+          render(withTranslations(<div style={{ position: 'fixed', top: 24, right: 24 }}>
+            <ContextSizeControl messages={[{ role: 'assistant', metadata: {
+              modelId: 'qwen-test', contextUsageScope: 'epoch-a',
+              usage: { inputTokens: 65536, outputTokens: 1000 },
+              contextUsage: { inputTokens: 65536, cachedInputTokens: 65536, outputTokens: 1000 },
+            } }] as ThreadMessage[]} />
+          </div>))
+          fireEvent.click(screen.getByRole('button', { name: /Context usage:/ }))
+          const panel = await screen.findByTestId('context-size-popover')
+          await settle(panel)
+          expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth + 1)
+          expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(width - 16)
+          expect(visibleLineCount(screen.getByText('100.0% (65.5K / 65.5K)'))).toBe(1)
+          expect(visibleLineCount(screen.getByText('100.0%'))).toBe(1)
         })
       }
 })

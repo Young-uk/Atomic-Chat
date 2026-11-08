@@ -41,11 +41,13 @@ export function toolIcon(
 
 /** One readable action; raw parameters and errors remain in the disclosure. */
 export function ToolRenderer({
+  findKey,
   toolName,
   presentation,
   state,
   onRetry,
 }: {
+  findKey?: string
   toolName: string
   presentation: ToolPresentation
   state: ToolUIPart['state']
@@ -66,7 +68,7 @@ export function ToolRenderer({
   const label = toolActivityLabel(toolName, presentation, state, t)
 
   return (
-    <Tool state={state} className="group/tool">
+    <Tool data-atomic-find-tool={findKey} state={state} className="group/tool">
       <CollapsibleTrigger
         title={label}
         aria-label={label}

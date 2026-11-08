@@ -8,6 +8,8 @@ pub mod chat_exec;
 pub mod downloads;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod dstar;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod managed_engines;
 #[cfg(feature = "e2e")]
 pub mod e2e;
 pub mod extensions;

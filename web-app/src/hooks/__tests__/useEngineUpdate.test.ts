@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   clearLegacyEngineUpdateOffers,
@@ -64,6 +64,8 @@ const hold = (...entries: EngineVersions[]) =>
   })
 
 describe('useEngineUpdate', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
@@ -98,6 +100,46 @@ describe('useEngineUpdate', () => {
       releaseNotesUrl:
         'https://github.com/ggml-org/llama.cpp/releases/tag/b11500',
     })
+  })
+
+  it('keeps the Personal audio.cpp update prompt out of chat without changing its manual offer', async () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+    const audio = versions('audio-cpp', {
+      kind: 'engine-build',
+      active_choice: 'core',
+      update: {
+        needed: true,
+        target: { version: 'v0.9.3-abf1872f', variant: 'macos-arm64' },
+        apply: 'swap',
+      },
+    })
+    hold(audio)
+    const { result, unmount } = renderHook(() => useEngineUpdate())
+    expect(result.current.offer).toBeNull()
+    await act(() => result.current.applyUpdate())
+    expect(updateEngineWithProgress).not.toHaveBeenCalled()
+    const { engineUpdateOfferFrom } = await import('@/lib/engineUpdateOffer')
+    expect(engineUpdateOfferFrom(audio)?.targetVersion).toBe('v0.9.3-abf1872f')
+    unmount()
+
+    // Remounting or a newer release must not bring back the unsolicited pill.
+    hold(versions('audio-cpp', { kind: 'engine-build' }))
+    expect(renderHook(() => useEngineUpdate()).result.current.offer).toBeNull()
+  })
+
+  it('still offers audio.cpp updates in standard builds', () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'false')
+    hold(versions('audio-cpp', { kind: 'engine-build' }))
+    expect(renderHook(() => useEngineUpdate()).result.current.offer?.provider).toBe('audio-cpp')
+  })
+
+  it('does not hide other engine updates behind suppressed Personal audio.cpp offers', () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+    hold(
+      versions('audio-cpp', { kind: 'engine-build' }),
+      versions('foundry-local', { kind: 'managed' })
+    )
+    expect(renderHook(() => useEngineUpdate()).result.current.offer?.provider).toBe('foundry-local')
   })
 
   it('never turns a blocked update into an offer', () => {

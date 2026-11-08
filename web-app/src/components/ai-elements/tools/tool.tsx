@@ -1,3 +1,4 @@
+import { useFindDisclosure } from '@/lib/find-reveal'
 import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,8 @@ export const Tool = memo(
       onChange: onOpenChange,
     })
 
+    const findRef = useFindDisclosure(isOpen, setIsOpen)
+
     const handleOpenChange = (newOpen: boolean) => {
       setIsOpen(newOpen)
     }
@@ -64,6 +67,7 @@ export const Tool = memo(
     return (
       <ToolContext.Provider value={{ isOpen, setIsOpen, state }}>
         <Collapsible
+          ref={findRef}
           className={cn('not-prose', className)}
           onOpenChange={handleOpenChange}
           open={isOpen}
@@ -81,6 +85,7 @@ export type ToolContentProps = ComponentProps<typeof CollapsibleContent>
 export const ToolContent = memo(
   ({ className, children, ...props }: ToolContentProps) => (
     <CollapsibleContent
+      data-atomic-find-tool-content
       className={cn(
         'mt-1 mb-3 text-sm relative',
         'data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-muted-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in',
@@ -272,7 +277,7 @@ export const ToolInput = memo(
     const blockLanguage = guessBlockLanguage(compact, blocks[0]?.value)
 
     return (
-      <div className={cn('space-y-2', className)} {...props}>
+      <div data-atomic-find-tool-input className={cn('space-y-2', className)} {...props}>
         <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
           Parameters
         </h4>

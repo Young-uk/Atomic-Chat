@@ -19,6 +19,8 @@ import { CloudMediaModelsCard } from '@/containers/cloud/CloudMediaModelsCard'
 import { CloudModelsCard } from '@/containers/cloud/CloudModelsCard'
 import { EndpointCard } from '@/containers/endpoints/EndpointCard'
 import { DstarControlPanel } from '@/containers/server/DstarControlPanel'
+import { StrataControlPanel } from '@/containers/server/StrataControlPanel'
+import { localEngineTarget, STRATA_MODEL } from '@/services/managed-local-engine'
 import { isDstarEndpoint } from '@/services/dstar'
 import { isPlatformTauri } from '@/lib/platform/utils'
 import {
@@ -492,12 +494,14 @@ function EndpointListItem({
     <EndpointCard
       provider={provider}
       serverControls={
-        IS_MACOS && isPlatformTauri() && isDstarEndpoint(provider.base_url) ? (
+        IS_MACOS && isPlatformTauri() && (isDstarEndpoint(provider.base_url) ||
+          localEngineTarget(provider, { id: STRATA_MODEL })?.engine === 'strata') ? (
           <details className="min-w-0 border-t border-border p-4">
             <summary className="cursor-pointer text-sm font-medium">
               {t('endpoints:dstar.controls')}
             </summary>
-            <DstarControlPanel embedded />
+            {isDstarEndpoint(provider.base_url) ? <DstarControlPanel embedded /> :
+              <StrataControlPanel provider={provider} />}
           </details>
         ) : undefined
       }

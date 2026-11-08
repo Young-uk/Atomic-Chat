@@ -53,6 +53,8 @@ vi.mock('@/hooks/useServiceHub', () => ({ useServiceHub: () => ({}) }))
 import { useApiServerLog } from '@/hooks/useApiServerLog'
 import { useAppState } from '@/hooks/useAppState'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
+import { useModelProvider } from '@/hooks/useModelProvider'
+import { STRATA_MODEL, STRATA_PROVIDER, useLocalEngine } from '@/services/managed-local-engine'
 import { useServerSetup } from '@/hooks/useServerSetup'
 
 import { ServerOverviewPage } from '../index'
@@ -88,7 +90,7 @@ describe('Server → Overview', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('api:guide.chooseTitle')).toBeInTheDocument()
     expect(
-      screen.queryByText('api:overview.readyTitle')
+      screen.queryByText('api:overview.listenerRunning')
     ).not.toBeInTheDocument()
   })
 
@@ -98,13 +100,34 @@ describe('Server → Overview', () => {
     })
     render(<ServerOverviewPage />)
 
-    expect(screen.getByText('api:overview.readyTitle')).toBeInTheDocument()
-    expect(screen.getByText('gemma-4 · MLX')).toBeInTheDocument()
+    expect(screen.getByText('api:overview.listenerRunning')).toBeInTheDocument()
+    expect(screen.getByText('api:overview.apiProvider · gemma-4 · MLX')).toBeInTheDocument()
 
     fireEvent.click(
       screen.getByRole('button', { name: /api:overview\.guideMe/ })
     )
     expect(screen.getByText('api:guide.chooseTitle')).toBeInTheDocument()
+  })
+
+  it('does not advertise a stopped listener as ready after setup', () => {
+    useAppState.setState({ serverStatus: 'stopped' })
+    render(<ServerOverviewPage />)
+    expect(screen.queryByText('api:overview.listenerRunning')).not.toBeInTheDocument()
+    expect(screen.getByText('api:overview.listenerStopped')).toBeInTheDocument()
+  })
+
+  it('keeps the Dstar API choice distinct from a verified Strata chat engine', () => {
+    const defaultModel = { model: 'qwen3.8-flash-next-chat', provider: 'Dstar' }
+    useLocalApiServer.setState({ defaultModelLocalApiServer: defaultModel, lastServerModels: [] })
+    const model = { id: STRATA_MODEL } as Model
+    useModelProvider.setState({ selectedProvider: STRATA_PROVIDER, selectedModel: model, providers: [{ provider: STRATA_PROVIDER, active: true, base_url: 'http://127.0.0.1:18080/v1', models: [model] } as ModelProvider] })
+    useLocalEngine.setState({ target: { engine: 'strata', provider: STRATA_PROVIDER, model: STRATA_MODEL }, phase: 'ready', snapshot: { engine: 'strata', status: 'ready', owned: true, servedModels: [STRATA_MODEL] } }, true)
+    const settings = useLocalApiServer.getState()
+    render(<ServerOverviewPage />)
+    expect(screen.getByText('api:overview.apiProvider · qwen3.8-flash-next-chat · Dstar')).toBeInTheDocument()
+    expect(screen.getByText('api:overview.chatEngine: Strata')).toBeInTheDocument()
+    expect(screen.getByText('endpoints:localEngine.ready')).toBeInTheDocument()
+    expect(useLocalApiServer.getState()).toBe(settings)
   })
 
   it('lists the agents and tools under the strip', () => {

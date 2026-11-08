@@ -36,6 +36,8 @@ export type ArchiveRecord = {
   version: 1
   id: string
   threadId: string
+  /** Provider, endpoint, model and runtime identity; absent in legacy archives. */
+  runtimeScope?: string
   source: UIMessage[]
   previousSummary: string
   /** Stable insertion boundary after retained completed dialogue. */
@@ -71,7 +73,7 @@ export interface ContextArchiveStore {
   loadPending?(threadId: string): Promise<ArchiveRecord | undefined>
 }
 
-const volatileMetadata = new Set(['activityDurationMs', 'finishReason', 'modelId', 'providerId', 'tokenSpeed', 'ttftMs', 'usage', 'contextUsage'])
+const volatileMetadata = new Set(['activityDurationMs', 'finishReason', 'modelId', 'providerId', 'tokenSpeed', 'ttftMs', 'usage', 'contextUsage', 'contextUsageScope'])
 function stable(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString()
   if (Array.isArray(value)) return value.map(stable)

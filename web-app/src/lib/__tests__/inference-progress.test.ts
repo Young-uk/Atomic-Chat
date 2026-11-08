@@ -43,3 +43,12 @@ it('keeps full prompt usage after reading and ignores stale observers', () => {
   current.finish()
   expect(useInferenceProgress.getState().contextByThread?.a.tokens).toBe(32080)
 })
+
+it('carries the runtime scope through live and completed foreground observations', () => {
+  const observer = observeInferenceProgress('scoped', 'model-a', 'runtime-a')
+  observer.push(': atomic-progress {"processed":20,"total":80,"cache":32000}\n')
+  expect(useInferenceProgress.getState().byThread.scoped.usageScope).toBe('runtime-a')
+  expect(useInferenceProgress.getState().contextByThread?.scoped).toMatchObject({ modelId: 'model-a', usageScope: 'runtime-a', tokens: 32080 })
+  observer.finish()
+  expect(useInferenceProgress.getState().contextByThread?.scoped.usageScope).toBe('runtime-a')
+})

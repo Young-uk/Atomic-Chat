@@ -5,6 +5,9 @@ import type { ApiLogEntry, ApiRequestEntry } from '@/types/apiServerLog'
 import { filterEntries } from '@/hooks/useApiServerLog'
 
 import { ApiRequestList } from '../ApiRequestList'
+import { apiActivityFindMatches } from '@/lib/api-activity-find'
+
+const scrollToIndex = vi.hoisted(() => vi.fn())
 
 vi.mock('@/i18n/react-i18next-compat', () => ({
   useTranslation: () => ({
@@ -18,8 +21,9 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
     getTotalSize: () => count * 64,
+    scrollToIndex,
     getVirtualItems: () =>
-      Array.from({ length: count }, (_, index) => ({
+      Array.from({ length: Math.min(count, 3) }, (_, index) => ({
         index,
         key: index,
         start: index * 64,
@@ -76,6 +80,25 @@ describe('ApiRequestList', () => {
     expect(screen.getAllByText('/chat/completions')).toHaveLength(3)
     expect(screen.getByText('llama')).toBeInTheDocument()
     expect(screen.getByText('What is Unsloth?')).toBeInTheDocument()
+  })
+
+  it('finds offscreen loaded rows and only scrolls to reveal them', () => {
+    scrollToIndex.mockClear()
+    const entries = Array.from({ length: 100 }, (_, index) =>
+      request(String(index), { model: `Virtual model ${index}` })
+    )
+    const { container, props, unmount } = renderList({ entries })
+    expect(screen.queryByText('Virtual model 99')).not.toBeInTheDocument()
+    const matches = apiActivityFindMatches(container, 'Virtual model 99')!
+    expect(matches).toHaveLength(1)
+    matches[0].reveal()
+    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(99, { align: 'center' })
+    expect(props.onSelect).not.toHaveBeenCalled()
+    expect(props.onFilterChange).not.toHaveBeenCalled()
+    expect(props.onQueryChange).not.toHaveBeenCalled()
+    unmount()
+    matches[0].reveal()
+    expect(scrollToIndex).toHaveBeenCalledTimes(1)
   })
 
   it('reports the selected row and forwards clicks', () => {

@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useShallow } from 'zustand/react/shallow'
 
+import { controlLocalEngine } from '@/services/managed-local-engine'
 import { controlDstar } from '@/services/dstar'
 import { route } from '@/constants/routes'
 import { useAppState } from '@/hooks/useAppState'
@@ -64,7 +65,7 @@ export function trayRuntimeLabel(
   if (distinct.length > 1) return `${distinct.length} runtimes`
   const [provider] = distinct
   if (!provider) return ''
-  const title = provider === 'dstar' ? 'Dstar' : getProviderTitle(provider)
+  const title = provider === 'dstar' ? 'Dstar' : provider === 'strata' ? 'Strata' : getProviderTitle(provider)
   const version = engines[provider as EngineId]?.active?.version
   return version ? `${title} · ${version}` : title
 }
@@ -106,7 +107,7 @@ export function useTrayStatusSync(): void {
       if (cancelled) return
       try {
         const current = latest.current
-        const [usage, sessions, dstar] = await Promise.all([
+        const [usage, sessions, dstar, managed] = await Promise.all([
           invoke<SystemUsage>('plugin:hardware|get_system_usage').catch(
             () => null
           ),
@@ -114,6 +115,7 @@ export function useTrayStatusSync(): void {
             () => [] as LocalSession[]
           ),
           controlDstar('status').catch(() => null),
+          controlLocalEngine('status', 'strata').catch(() => null),
         ])
 
         // Prefer the sessions the core is serving (authoritative: running inference
@@ -132,11 +134,14 @@ export function useTrayStatusSync(): void {
                 ? dstar.models?.find((model) => model.id === dstar.selection?.model)?.name ?? dstar.servedModels[0]
                 : dstar.servedModels[0]]
             : []
+        const strataModels = managed?.engine === 'strata' && managed.status === 'ready' && managed.servedModels.length > 0
+          ? ['Qwen3.8 Flash Next · IQ2_XS'] : []
         const loadedModels = [
           ...(nonEmbedding.length > 0
             ? nonEmbedding.map((session) => session.model_id)
             : current.activeModels),
           ...dstarModels,
+          ...strataModels,
         ]
         const modelLabel = loadedModels.length > 1
           ? `${loadedModels.length} models loaded`
@@ -155,7 +160,7 @@ export function useTrayStatusSync(): void {
                 return owner ? [owner.provider] : []
               })
         const runtimeLabel = trayRuntimeLabel(
-          [...runtimeProviders, ...(dstarModels.length > 0 ? ['dstar'] : [])],
+          [...runtimeProviders, ...(dstarModels.length > 0 ? ['dstar'] : []), ...(strataModels.length > 0 ? ['strata'] : [])],
           useEngineVersionsStore.getState().engines
         )
 
