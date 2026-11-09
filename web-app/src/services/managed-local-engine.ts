@@ -4,6 +4,7 @@ import { create } from 'zustand'
 export type LocalEngine = 'dstar' | 'strata'
 export type LocalEngineTarget = { engine: LocalEngine; provider: string; model: string }
 export type LocalEngineSnapshot = {
+  maxContext?: number | null
   engine: LocalEngine | null
   desiredEngine?: LocalEngine | null
   status: 'stopped' | 'loading' | 'ready' | 'stopping' | 'error' | 'external'
@@ -57,7 +58,7 @@ export class LocalEngineCoordinator {
   private revision = 0
   private pending = false
   private running: Promise<void> | null = null
-  private refreshing = false
+  private refreshing: Promise<void> | null = null
   private leases = 0
   private requestEngine: LocalEngine | null = null
   private state: LocalEngineState = initialState
@@ -165,11 +166,23 @@ export class LocalEngineCoordinator {
         prepared = true
         this.preparingTransition = false
         let snapshot = await this.control('ensure', target.engine)
+        let inspectionRetries = 0
         while (current()) {
+          // A failed inspection is not a foreign listener. Retry only read-only
+          // status, and require fresh native ownership before granting a lease.
+          if (snapshot.error === 'processInspectionFailed' && snapshot.owned &&
+              snapshot.engine === target.engine && inspectionRetries++ < 2 && Date.now() < deadline) {
+            this.update({ target, phase: 'loading', snapshot })
+            await this.pause()
+            if (!current()) return
+            snapshot = await this.control('status', target.engine)
+            continue
+          }
           if (snapshot.error || snapshot.status === 'error' || snapshot.status === 'external') {
             throw new Error(snapshot.error || (snapshot.status === 'external' ? 'foreignEngine' : 'engineFailed'))
           }
           if (snapshot.engine === target.engine && snapshot.status === 'ready') {
+            if (!snapshot.owned) throw new Error('foreignEngine')
             if (!snapshot.servedModels.includes(target.model)) throw new Error('modelNotServed')
             this.update({ target, phase: 'ready', snapshot })
             return
@@ -196,27 +209,36 @@ export class LocalEngineCoordinator {
     return operation
   }
 
-  async refresh(): Promise<void> {
-    if (this.state.phase === 'error' || this.running || this.pending || this.refreshing || !this.target || this.leases || this.busy()) return
+  async refresh(exceptChatId?: string): Promise<void> {
+    if (this.refreshing) return this.refreshing
+    if ((this.state.phase === 'error' && this.state.error !== 'processInspectionFailed') || this.running || this.pending || !this.target || this.leases || this.busy(exceptChatId)) return
     const target = this.target
     const revision = this.revision
-    this.refreshing = true
-    try {
-      const snapshot = await this.control('status', target.engine)
-      if (revision !== this.revision || this.running || this.pending) return
-      if (snapshot.error || snapshot.status === 'error' || snapshot.status === 'external') {
-        this.update({ target, phase: 'error', snapshot, error: snapshot.error || 'foreignEngine' })
-      } else if (snapshot.engine === target.engine && snapshot.status === 'ready') {
-        this.update({ target, phase: snapshot.servedModels.includes(target.model) ? 'ready' : 'error', snapshot,
-          error: snapshot.servedModels.includes(target.model) ? undefined : 'modelNotServed' })
-      } else if (snapshot.engine === target.engine && (snapshot.status === 'loading' || snapshot.status === 'stopping')) {
-        this.update({ target, phase: snapshot.status, snapshot })
-      } else if (snapshot.status === 'stopped' || snapshot.engine !== target.engine) {
-        this.update({ target, phase: 'idle', snapshot })
+    const work = async () => {
+      try {
+        const snapshot = await this.control('status', target.engine)
+        if (revision !== this.revision || this.running || this.pending) return
+        if (snapshot.error || snapshot.status === 'error' || snapshot.status === 'external') {
+          this.update({ target, phase: 'error', snapshot, error: snapshot.error || 'foreignEngine' })
+        } else if (snapshot.engine === target.engine && snapshot.status === 'ready' && !snapshot.owned) {
+          this.update({ target, phase: 'error', snapshot, error: 'foreignEngine' })
+        } else if (snapshot.engine === target.engine && snapshot.status === 'ready') {
+          this.update({ target, phase: snapshot.servedModels.includes(target.model) ? 'ready' : 'error', snapshot,
+            error: snapshot.servedModels.includes(target.model) ? undefined : 'modelNotServed' })
+        } else if (snapshot.engine === target.engine && (snapshot.status === 'loading' || snapshot.status === 'stopping')) {
+          this.update({ target, phase: snapshot.status, snapshot })
+        } else if (snapshot.status === 'stopped' || snapshot.engine !== target.engine) {
+          this.update({ target, phase: 'idle', snapshot })
+        }
+      } catch (error) {
+        if (revision === this.revision && !this.running && !this.pending) this.update({ target, phase: 'error', error: error instanceof Error ? error.message : String(error) })
       }
-    } catch (error) {
-      if (revision === this.revision && !this.running && !this.pending) this.update({ target, phase: 'error', error: error instanceof Error ? error.message : String(error) })
-    } finally { this.refreshing = false }
+    }
+    const operation = work().finally(() => {
+      if (this.refreshing === operation) this.refreshing = null
+    })
+    this.refreshing = operation
+    return operation
   }
 
   cancel(): void {
@@ -265,6 +287,11 @@ export class LocalEngineCoordinator {
     if (this.busy(chatId) || (this.leases && this.requestEngine !== target.engine)) throw new Error('engineBusy')
     const revision = this.revision
     if (this.state.phase === 'stopping') throw new Error('engineTransition')
+    if (this.state.phase === 'error' && this.state.error === 'processInspectionFailed') {
+      await waitForEngine(this.refresh(chatId), signal)
+      signal?.throwIfAborted()
+      if (revision !== this.revision) throw new Error('engineSelectionChanged')
+    }
     if (this.state.phase === 'error') throw new Error(this.state.error || 'engineFailed')
     // Revalidate before every HTTP request; an idle child may have exited.
     if (!this.running) this.pending = true

@@ -413,3 +413,74 @@ describe('explicit endpoint recovery reconciliation', () => {
     expect(coordinator.reconcileReady(strata, snapshot(strata))).toBe(true)
   })
 })
+
+describe('transient ownership inspection recovery', () => {
+  it.each([dstar, strata])('rechecks $engine status without restarting after a transient inspection failure', async target => {
+    const control = vi.fn().mockResolvedValueOnce({ ...snapshot(target, 'error'), error: 'processInspectionFailed', servedModels: [] })
+      .mockResolvedValue(snapshot(target))
+    const states: LocalEngineState[] = []
+    const coordinator = new LocalEngineCoordinator(control, state => states.push(state), async () => {})
+    coordinator.selectEngineTarget(target)
+    await coordinator.settled()
+    expect(states.at(-1)?.phase).toBe('ready')
+    expect(control.mock.calls).toEqual([['ensure', target.engine], ['status', target.engine]])
+  })
+
+  it.each([dstar, strata])('allows $engine background status polling to recover the inspection error', async target => {
+    const control = vi.fn().mockResolvedValue(snapshot(target))
+    const states: LocalEngineState[] = []
+    const coordinator = new LocalEngineCoordinator(control, state => states.push(state))
+    coordinator.selectEngineTarget(target); await coordinator.settled()
+    control.mockResolvedValueOnce({ ...snapshot(target, 'error'), error: 'processInspectionFailed', servedModels: [] })
+    await coordinator.refresh()
+    expect(states.at(-1)?.error).toBe('processInspectionFailed')
+    await coordinator.refresh()
+    expect(states.at(-1)?.phase).toBe('ready')
+    expect(control.mock.calls.filter(([action]) => action === 'ensure')).toHaveLength(1)
+  })
+
+  it.each([dstar, strata])('revalidates a retry from the current $engine chat instead of replaying a latched error', async target => {
+    const control = vi.fn().mockResolvedValue({ ...snapshot(target, 'error'), error: 'processInspectionFailed', servedModels: [] })
+    const states: LocalEngineState[] = []
+    const coordinator = new LocalEngineCoordinator(control, state => states.push(state), async () => {})
+    coordinator.selectEngineTarget(target); await coordinator.settled()
+    expect(control).toHaveBeenCalledTimes(3)
+    coordinator.configureBusy(chatId => chatId !== 'current-chat')
+    control.mockResolvedValue(snapshot(target))
+    const release = await coordinator.acquire(target, 'current-chat')
+    expect(states.at(-1)?.phase).toBe('ready')
+    expect(control.mock.calls[3]).toEqual(['status', target.engine])
+    release()
+  })
+
+  it.each([{ owned: false }, { error: 'foreignEngine', status: 'external' as const },
+    { error: 'engineSummaryRecoveryRequired', status: 'error' as const }])('does not turn an unverified or sticky snapshot into readiness: %j', async extra => {
+    const control = vi.fn().mockResolvedValue({ ...snapshot(strata, 'error'), error: 'processInspectionFailed', servedModels: [] })
+    const states: LocalEngineState[] = []
+    const coordinator = new LocalEngineCoordinator(control, state => states.push(state), async () => {})
+    coordinator.selectEngineTarget(strata); await coordinator.settled()
+    control.mockResolvedValue({ ...snapshot(strata), ...extra })
+    await coordinator.refresh()
+    expect(states.at(-1)?.phase).toBe('error')
+    await expect(coordinator.acquire(strata)).rejects.toThrow()
+  })
+})
+
+it.each([dstar, strata])('joins an in-flight $engine ownership recheck before retrying the chat', async target => {
+  const control = vi.fn().mockResolvedValue({ ...snapshot(target, 'error'), error: 'processInspectionFailed' })
+  const coordinator = new LocalEngineCoordinator(control, vi.fn(), async () => {})
+  coordinator.selectEngineTarget(target); await coordinator.settled()
+  const pending = deferred<LocalEngineSnapshot>()
+  control.mockReturnValueOnce(pending.promise).mockResolvedValue(snapshot(target))
+  const poll = coordinator.refresh()
+  let acquired = false
+  const request = coordinator.acquire(target).then(release => { acquired = true; return release })
+  await flush()
+  expect(acquired).toBe(false)
+  expect(control).toHaveBeenCalledTimes(4)
+  pending.resolve(snapshot(target))
+  await poll
+  const release = await request
+  expect(acquired).toBe(true)
+  release()
+})

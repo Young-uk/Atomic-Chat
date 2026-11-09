@@ -82,7 +82,7 @@
       "unreadableFiles": "Model files cannot be read",
       "incompleteFiles": "Download is incomplete",
       "invalidFiles": "Not a valid GGUF file",
-      "invalidContext": "Enter a context size from 512 to 524288 tokens",
+      "invalidContext": "Enter a whole context size of at least 512 tokens within the engine’s supported range",
       "unknownModel": "Choose an installed model",
       "alreadyRunning": "Stop the current model before starting another",
       "portInUse": "Port 8010 is already in use; no other process was stopped",
@@ -118,7 +118,7 @@
       "engineFailed": "The engine could not start. Check the runtime and model files, then try again.",
       "otherLocalEngine": "Unload the current local model before starting this engine.",
       "managedEngineRunning": "Stop Dstar or Strata in the chat model selector before loading another local model.",
-      "invalidStrataContext": "Enter a whole number from 16384 to 65536 tokens.",
+      "invalidStrataContext": "Enter a whole number of at least 16384 tokens within the engine’s supported range.",
       "strataSettingsWriteFailed": "The context setting could not be saved. Check available disk space and try again.",
       "strataContextPinMismatch": "The Strata runtime has changed. Context changes are blocked until this runtime is verified.",
       "strataContextPinCalculationFailed": "The Strata runtime configuration could not be verified. Try again after the current work finishes.",
@@ -129,6 +129,10 @@
     "savedContext": "Saved: {{context}} tokens",
     "activeContext": "Running: {{context}} tokens",
     "pendingContext": "Pending: {{context}} tokens. Apply by starting or restarting Strata.",
-    "strataContextHint": "16,384–65,536 tokens for the conversation. Larger contexts use more memory. Summary memory is managed separately."
+    "strataContextHint": "Choose at least 16,384 tokens. Summary capacity follows the configured context. Larger contexts use more memory.",
+    "contextSlider": "Context size slider",
+    "modelContextMax": "Model maximum: {{tokens}} tokens",
+    "modelContextUnknown": "Model maximum could not be read",
+    "contextExtended": "Manual extension beyond model window"
   }
 }

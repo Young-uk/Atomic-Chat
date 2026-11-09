@@ -23,6 +23,7 @@ export async function readSummaryChoice(response: Response, signal: AbortSignal,
     if (![processed, total, cache].every(Number.isSafeInteger)) return
     const p = processed as number, t = total as number, c = cache as number
     if (t <= 0 || c < 0 || p < (inclusive ? c : 0) || p > t || (inclusive && c > t)) return
+    if (input.phase === 'generating') return
     report({ phase: 'reading', processed: p - (inclusive ? c : 0), total: t - (inclusive ? c : 0), cache: c })
   }
   const event = () => {

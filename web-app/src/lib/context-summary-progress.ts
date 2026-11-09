@@ -8,6 +8,8 @@ export type SummaryInputProgress = {
   cache?: number
 }
 export type SummaryProgress = {
+  method?: 'clone' | 'segments'
+  fallbackReason?: 'images' | 'unsupported'
   input?: SummaryInputProgress
   phase: 'queued' | 'paused' | 'summarizing' | 'saving' | 'ready' | 'failed'
   startedAt: number

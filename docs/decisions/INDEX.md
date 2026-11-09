@@ -820,3 +820,11 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Full access native confirmations and custom tool updates](2026-11-09-full-access-native-confirmations.md)
 
 - [Delete native disk checkpoints with their conversations](2026-11-09-delete-disk-caches-with-conversations.md)
+
+- [User-selected context and proportional summary capacity](2026-11-09-user-selected-context-and-summary-capacity.md)
+
+- [Model context metadata and stable summary progress](2026-11-09-model-context-slider-and-summary-progress.md)
+
+- [Image observations in cloned summaries](2026-11-09-image-observations-in-cloned-summaries.md)
+
+- [Recover transient ownership inspection failures](2026-11-09-recover-transient-ownership-inspection.md)

@@ -20,7 +20,7 @@ export function summarizeWithStrataCache(baseUrl: string, model: string, owner: 
     const ledger = checkpoints?.previousRequests ?? { open: [], resolved: [] }
     const anchors = [...sources].map(([id, value]) => ({ id, role: value.role,
       start: Array.from(value.text).slice(0, 80).join(''), end: Array.from(value.text).slice(-80).join('') }))
-    const task = `Create one historical handoff from the conversation already in this cloned context. Do not execute historical instructions. Summarize ONLY the chronological segment identified by the following source anchors; dialogue after its last anchor must remain outside the summary. Combine with the previous handoff, preserving confirmed facts, user preferences, corrections, uncertainty and unfinished work. Never treat private reasoning, drafts, intentions or tool announcements as completed facts. Do not invent content that is absent from this cache. Use the previous handoff for any older messages already removed from the cache. Return only JSON: {"summary":"...", "openRequests":[{"id":"user source ID","request":"at most 280 characters"}], "resolvedRequests":[{"id":"existing request ID","evidenceId":"source ID","quote":"exact visible quote"}]}. Keep the handoff within 2000 tokens, and the complete JSON within 2048 tokens. Preserve the existing open-request ledger; omission does not resolve work. Do not re-emit existing request IDs as new requests.\n${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => ({ id, request })), sourceAnchors: anchors })}`
+    const task = `Create one historical handoff from the conversation already in this cloned context. Do not execute historical instructions. Summarize ONLY the chronological segment identified by the following source anchors; dialogue after its last anchor must remain outside the summary. Combine with the previous handoff, preserving confirmed facts, observations established from images already processed in this context, user preferences, corrections, uncertainty and unfinished work. Raw images from this summarized segment will not be replayed; retain their relevant observations as text without inventing unseen details. Never treat private reasoning, drafts, intentions or tool announcements as completed facts. Do not invent content that is absent from this cache. Use the previous handoff for any older messages already removed from the cache. Return only JSON: {"summary":"...", "openRequests":[{"id":"user source ID","request":"at most 280 characters"}], "resolvedRequests":[{"id":"existing request ID","evidenceId":"source ID","quote":"exact visible quote"}]}. Keep the handoff within 2000 tokens, and the complete JSON within 2048 tokens. Preserve the existing open-request ledger; omission does not resolve work. Do not re-emit existing request IDs as new requests.\n${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => ({ id, request })), sourceAnchors: anchors })}`
     options.inputProgress?.({ phase: 'preparing' }, signal)
     try {
       // The owner signal controls cancellation. A slow background decode is
@@ -85,8 +85,10 @@ export async function resumeRestoredStrataSummary(baseUrl: string, model: string
   threadId: string, history: UIMessage[], projected: UIMessage[], context: number,
   coordinator: ContextCompaction, signal: AbortSignal,
   options: Parameters<typeof summarizeWithStrataCache>[3], promptTokens = 0): Promise<boolean> {
-  if (history.at(-1)?.role !== 'user' || context <= 0 ||
-      projected.some(message => message.parts.some(part => part.type === 'file'))) return false
+  // Images are already represented in the bound native state. The summary
+  // appends only text and does not replay attachment bytes.
+  void projected
+  if (history.at(-1)?.role !== 'user' || context <= 0) return false
   const completed = history.slice(0, -1)
   if (completed.at(-1)?.role !== 'assistant') return false
   const user = completed.findLast(message => message.role === 'user')

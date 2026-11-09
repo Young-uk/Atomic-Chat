@@ -33,6 +33,8 @@ export function ContextSummaryProgress({ threadId }: { threadId: string }) {
   const reading = input?.phase === 'reading' && hasCounts && input.processed! < input.total!
   const percentage = reading ? Math.floor(input.processed! / input.total! * 1000) / 10 : undefined
   const fields = [t('contextSummary.elapsed', { time: elapsed })]
+  if (progress.method) fields.push(t(`contextSummary.method_${progress.method}`))
+  if (progress.fallbackReason) fields.push(t(`contextSummary.fallback_${progress.fallbackReason}`))
   if (Number.isSafeInteger(input?.request) && input!.request! > 0)
     fields.push(t('contextSummary.request', { count: input!.request }))
   if (input?.phase === 'preparing') fields.push(t('contextSummary.inputPreparing'))

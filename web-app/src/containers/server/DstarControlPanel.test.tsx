@@ -63,7 +63,7 @@ const base: DstarSnapshot = {
   owned: false,
   selection: { model: 'iq3', context: 65536 },
   models: [
-    { id: 'iq3', name: 'Qwen IQ3', available: true, bytes: 16 },
+    { id: 'iq3', name: 'Qwen IQ3', available: true, bytes: 16, maxContext: 262144 },
     {
       id: 'q2',
       name: 'Qwen Q2',
@@ -239,4 +239,22 @@ describe('Dstar local control panel', () => {
     expect(mock.control).toHaveBeenCalledTimes(1)
     expect(view.container).toBeEmptyDOMElement()
   })
+  it('accepts a user context above the former 512K UI cap', async () => {
+    render(<DstarControlPanel />); await flush()
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1048576' } })
+    expect(screen.getByRole('button', { name: 'endpoints:dstar.start' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'endpoints:dstar.start' })); await flush()
+    expect(mock.control).toHaveBeenCalledWith('start', { model: 'iq3', context: 1048576 })
+  })
+
+})
+
+it('reads the selected model maximum and synchronizes slider edits with the numeric field', async () => {
+  vi.stubGlobal('IS_MACOS', true)
+  mock.control.mockResolvedValue(base)
+  render(<DstarControlPanel />); await flush()
+  const slider = screen.getByRole('slider')
+  expect(slider).toHaveAttribute('max', '262144')
+  fireEvent.change(slider, { target: { value: '131072' } })
+  expect(screen.getByRole('spinbutton')).toHaveValue(131072)
 })

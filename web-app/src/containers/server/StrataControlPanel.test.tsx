@@ -127,7 +127,7 @@ it('loads the saved context and does not overwrite a pending edit during polling
   fireEvent.click(screen.getByRole('button', { name: 'endpoints:localEngine.retry' })); await flush()
   expect(controlLocalEngine).toHaveBeenCalledWith('ensure', 'strata', 49152)
 })
-it.each(['', '16383', '65537', '32768.5'])('rejects invalid context %s without starting', async value => {
+it.each(['', '16383', '2147483647', '32768.5'])('rejects invalid context %s without starting', async value => {
   render(<StrataControlPanel provider={provider} />); await flush()
   fireEvent.change(screen.getByRole('spinbutton'), { target: { value } })
   expect(screen.getByRole('spinbutton')).toHaveAttribute('aria-invalid', 'true')
@@ -205,4 +205,24 @@ it('does not restore an older saved context when a pre-apply poll arrives late',
   await act(async () => { finishOldPoll({ ...stopped, servedModels: [], strataContext: 65536 }); await Promise.resolve() })
   expect(screen.getByRole('spinbutton')).toHaveValue(32768)
   expect(screen.queryByRole('button', { name: 'endpoints:dstar.restart' })).not.toBeInTheDocument()
+})
+
+it.each([65537, 131072, 1048576])('accepts a user context above the former 64K cap: %s', async context => {
+  render(<StrataControlPanel provider={provider} />); await flush()
+  fireEvent.change(screen.getByRole('spinbutton'), { target: { value: String(context) } })
+  expect(screen.getByRole('spinbutton')).toHaveAttribute('aria-invalid', 'false')
+  fireEvent.click(screen.getByRole('button', { name: 'endpoints:localEngine.retry' })); await flush()
+  expect(controlLocalEngine).toHaveBeenLastCalledWith('ensure', 'strata', context)
+})
+
+it('keeps the slider and context input synchronized using model metadata', async () => {
+  vi.mocked(controlLocalEngine).mockResolvedValue({ ...stopped, servedModels: [], maxContext: 262144, context: 65536 })
+  render(<StrataControlPanel provider={provider} />); await flush()
+  const slider = screen.getByRole('slider')
+  expect(slider).toHaveAttribute('max', '262144')
+  fireEvent.change(slider, { target: { value: '131072' } })
+  expect(screen.getByRole('spinbutton')).toHaveValue(131072)
+  fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '98304' } })
+  expect(slider).toHaveValue('98304')
+  expect(controlLocalEngine).toHaveBeenCalledTimes(1)
 })

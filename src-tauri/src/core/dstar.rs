@@ -47,6 +47,7 @@ impl Default for Selection {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelChoice {
+    max_context: Option<u32>,
     id: String,
     name: String,
     available: bool,
@@ -276,6 +277,7 @@ fn choices(root: &Path) -> Vec<ModelChoice> {
             let result = payload_ready(&first)
                 .and_then(|a| payload_ready(&second.ok_or("missingFiles")?).map(|b| a + b));
             ModelChoice {
+                max_context: managed_engines::gguf_context::read(&first),
                 id: id.into(),
                 name: format!("Qwen3.8 Flash Next · {tag}"),
                 available: result.is_ok(),
@@ -293,6 +295,7 @@ fn choices(root: &Path) -> Vec<ModelChoice> {
         hybrid.join("Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-Q2_0-00002-of-00002.gguf");
     let readiness = payload_ready(&first).and_then(|a| payload_ready(&second).map(|b| a + b));
     result.push(ModelChoice {
+        max_context: managed_engines::gguf_context::read(&first),
         id: "shefowl-hybrid".into(),
         name: "Qwen3.8 Flash Next · shefowl512E · IQ3_XXS/Q2_0".into(),
         available: readiness.is_ok(),
@@ -305,6 +308,7 @@ fn choices(root: &Path) -> Vec<ModelChoice> {
     let second = official.join("Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf");
     let readiness = payload_ready(&first).and_then(|a| payload_ready(&second).map(|b| a + b));
     result.push(ModelChoice {
+        max_context: managed_engines::gguf_context::read(&first),
         id: "ista-iq2-xs".into(),
         name: "Qwen3.8 Flash Next · ISTA · IQ2_XS".into(),
         available: readiness.is_ok(),
@@ -315,7 +319,7 @@ fn choices(root: &Path) -> Vec<ModelChoice> {
 }
 
 fn validate(selection: &Selection, models: &[ModelChoice]) -> Result<(), String> {
-    if !(512..=524_288).contains(&selection.context) {
+    if !(512..=managed_engines::MAX_LOCAL_CONTEXT).contains(&selection.context) {
         return Err("invalidContext".into());
     }
     let model = models
@@ -880,6 +884,7 @@ impl Actor {
             "stopped"
         };
         managed_engines::Snapshot {
+            max_context: self.env.strata_model_context(),
             strata_context: self.strata_context,
             active_context: self.owned.as_ref().and_then(|owned| owned.strata_context),
             engine: if current.is_some() || external {
@@ -1366,7 +1371,7 @@ mod tests {
                     "ensure".into(),
                     Some(Engine::Strata),
                     None,
-                    Some(65537)
+                    Some(managed_engines::MAX_LOCAL_CONTEXT + 1)
                 )
                 .await
                 .unwrap_err(),
@@ -2152,6 +2157,7 @@ mod tests {
     #[test]
     fn selection_does_not_allow_commands_or_unbounded_contexts() {
         let list = vec![ModelChoice {
+            max_context: None,
             id: "iq3".into(),
             name: "test".into(),
             available: true,
@@ -2175,5 +2181,42 @@ mod tests {
             &list
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod context_limit_tests {
+    use super::*;
+    #[test]
+    fn accepts_large_explicit_contexts_but_rejects_native_position_overflow() {
+        let models = vec![ModelChoice {
+            max_context: None,
+            id: "iq3".into(),
+            name: "Qwen IQ3".into(),
+            available: true,
+            reason: None,
+            bytes: 1,
+        }];
+        for context in [65_536, 131_072, 1_048_576] {
+            assert!(validate(
+                &Selection {
+                    model: "iq3".into(),
+                    context
+                },
+                &models
+            )
+            .is_ok());
+        }
+        assert_eq!(
+            validate(
+                &Selection {
+                    model: "iq3".into(),
+                    context: managed_engines::MAX_LOCAL_CONTEXT + 1
+                },
+                &models
+            )
+            .unwrap_err(),
+            "invalidContext"
+        );
     }
 }

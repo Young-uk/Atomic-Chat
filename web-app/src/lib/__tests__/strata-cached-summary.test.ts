@@ -255,3 +255,29 @@ it('does not adopt an asynchronously planned clone after cancellation or an edit
   await coordinator.prepareCachedAdoption(edited, select, new AbortController().signal)
   expect(select).not.toHaveBeenCalled()
 })
+
+it.each(['http://127.0.0.1:18080/v1', 'http://127.0.0.1:8010/v1'])('clones image-bearing history without replaying image bytes on %s', async baseUrl => {
+  const messages = history()
+  messages[0].parts.push({ type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,IMAGE_BYTES' })
+  const pending: UIMessage = { id: 'pending', role: 'user', parts: [{ type: 'text', text: 'Next' }] }
+  const coordinator = new ContextCompaction('thread', { load: async () => undefined, save: async () => {} })
+  const requests: Array<{ url: string; body?: Record<string, unknown> }> = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(init.body as string) : undefined
+    requests.push({ url, body })
+    if (url.endsWith('/status')) return Response.json({ loaded: true, atomic_summary: {
+      restored_cache_owner: 'thread/u9', restored_cache_hash: await strataHistoryHash(messages),
+    } })
+    if (url.endsWith('/summary-token-count')) return Response.json({ input_tokens: 900 })
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+      summary: 'The screenshot showed the confirmed result.', openRequests: [], resolvedRequests: [],
+    }) } }] })
+  }))
+  expect(await resumeRestoredStrataSummary(baseUrl, 'm', 'thread', [...messages, pending], [...messages, pending],
+    1000, coordinator, new AbortController().signal, {})).toBe(true)
+  const task = requests.find(request => request.url.endsWith('/completions'))!.body!
+  expect(task.atomic_summary_clone).toBe('thread/u9')
+  expect(task.messages).toHaveLength(1)
+  expect(JSON.stringify(task)).not.toContain('IMAGE_BYTES')
+  expect(coordinator.apply([...messages, pending]).some(message => message.id === 'u0')).toBe(false)
+})

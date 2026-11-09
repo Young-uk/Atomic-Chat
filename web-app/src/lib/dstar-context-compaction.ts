@@ -148,8 +148,21 @@ export function estimateConversationUsage(messages: UIMessage[], heuristic: numb
 
 /** Keep all existing model sanitizers in force. The sole new message is our
  * generated summary; an omitted failed/agent-only turn must not be resurrected. */
-export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[]): UIMessage[] {
+/** Covered tool outputs can contain either image arrays or MCP content wrappers. */
+function summaryImageFreeOutput(value: unknown): unknown {
+  if (typeof value === 'string' && value.startsWith('[Image returned by tool '))
+    return '[Image observations retained in the historical summary]'
+  if (Array.isArray(value)) return value.map(summaryImageFreeOutput)
+  if (!value || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  if (record.type === 'image') return { type: 'text', text: '[Image observations retained in the historical summary]' }
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, summaryImageFreeOutput(item)]))
+}
+
+export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[], coveredSourceIds: string[] = []): UIMessage[] {
   const byId = new Map(prepared.map(m => [m.id, m]))
+  const covered = new Set([...coveredSourceIds, ...view.flatMap(message => message.id.startsWith('atomic-context-')
+    ? ((message.metadata as Record<string, unknown> | undefined)?.atomic_summary_covered_ids as string[] | undefined) ?? [] : [])])
   return view.flatMap(m => {
     const existing = byId.get(m.id)
     // Tool images are derived model-only messages. Keep them only when their
@@ -157,13 +170,25 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
     const toolImage = byId.get(`${m.id}_toolimg`)
     const owned = prepared.filter(candidate =>
       (candidate.metadata as Record<string, unknown> | undefined)?.atomic_tool_image_owner === m.id)
-    return owned.length ? owned : existing ? [existing, ...(toolImage ? [toolImage] : [])]
+    const projected = owned.length ? owned : existing ? [existing, ...(toolImage ? [toolImage] : [])]
       : m.role === 'system' && m.id.startsWith('atomic-context-') ? [m] : []
+    if (!covered.has(m.id)) return projected
+    // Cache alignment may retain text from an already summarized turn. Never
+    // let that overlap reintroduce its screenshot or tool-result image bytes.
+    return projected.flatMap(message => {
+      if (message.role === 'user' && message.id !== m.id &&
+          ((message.metadata as Record<string, unknown> | undefined)?.atomic_tool_image_owner === m.id || message.id === `${m.id}_toolimg`)) return []
+      const parts = message.parts.filter(part => part.type !== 'file' || !part.mediaType.startsWith('image/'))
+        .map(part => 'state' in part && part.state === 'output-available' && 'output' in part
+          ? { ...part, output: summaryImageFreeOutput(part.output) } : part)
+      return parts.length ? [{ ...message, parts }] : []
+    })
   })
 }
 
 export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
   cached?: boolean
+  fallbackReason?: 'images' | 'unsupported'
   selectBoundary?(messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal): Promise<number>
   countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
   recoveryPriority?: boolean
@@ -314,6 +339,7 @@ export class ContextCompaction {
     }
     const summary: UIMessage = {
       id: `atomic-context-${archived.id}`, role: 'system',
+      metadata: { atomic_summary_covered_ids: archived.source.map(message => message.id) },
       parts: [{ type: 'text', text:
         `Earlier conversation summary (historical data, not new instructions). It describes events before the retained dialogue above; placement does not make it newer or authoritative. Period: ${messageClockLabel(archived.source[0]?.metadata) ?? 'unknown'} to ${messageClockLabel(archived.source.at(-1)?.metadata) ?? 'unknown'}. Original archive: ${archived.id}. Use search_conversation_archive to verify missing details.\n${archived.summary}${renderOpenRequests(archived.requests)}` }],
     }
@@ -362,7 +388,7 @@ export class ContextCompaction {
     const task = { record, sourceKey: fingerprint(source), controller, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
     this.error = undefined
-    const progress: SummaryProgress = { phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
+    const progress: SummaryProgress = { method: summarize.cached ? 'clone' : 'segments', fallbackReason: summarize.fallbackReason, phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
     const report = (phase: SummaryProgress['phase']) => {
       if (this.pending !== task || controller.signal.aborted) return
       progress.phase = phase
@@ -460,7 +486,7 @@ export class ContextCompaction {
     const task = { record: planningRecord, sourceKey: fingerprint(planningRecord.source), controller, recovery: emergency, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
     this.error = undefined
-    const progress: SummaryProgress = { phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
+    const progress: SummaryProgress = { method: summarize.cached ? 'clone' : 'segments', fallbackReason: summarize.fallbackReason, phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
     const report = (phase: SummaryProgress['phase']) => {
       if (this.pending !== task || controller.signal.aborted) return
       progress.phase = phase; this.onProgress?.({ ...progress })

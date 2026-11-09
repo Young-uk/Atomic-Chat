@@ -4,6 +4,9 @@
 #[path = "atomic_child_path.rs"]
 mod atomic_child_path;
 
+#[path = "gguf_context.rs"]
+pub(super) mod gguf_context;
+
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -24,6 +27,7 @@ pub enum Engine {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    pub max_context: Option<u32>,
     pub strata_context: u32,
     pub active_context: Option<u32>,
     pub engine: Option<Engine>,
@@ -35,11 +39,19 @@ pub struct Snapshot {
     pub error: Option<String>,
 }
 
-// Stay within the existing experimental 64K memory envelope. The summary
-// state-bank contract requires at least 16K; these limits are not stability claims.
+// Reserve the native signed-position headroom; actual RAM admission remains
+// owned by the engine. The summary contract still requires at least 16K.
 pub(super) const DEFAULT_STRATA_CONTEXT: u32 = 65_536;
+pub(super) const MAX_LOCAL_CONTEXT: u32 = i32::MAX as u32 - 8192 - 128;
+
+fn strata_summary_budget(context: u32) -> u64 {
+    // Keep the validated 64K allowance. Each extra native cell contributes
+    // 14,208 bytes across the twelve mutable attention layers; fixed recurrent
+    // state, alignment and descriptor headroom remain covered by the base.
+    1_300_000_000 + u64::from(context.saturating_sub(DEFAULT_STRATA_CONTEXT)) * 14_208
+}
 pub(super) fn validate_strata_context(context: u32) -> Result<(), String> {
-    if (16_384..=DEFAULT_STRATA_CONTEXT).contains(&context) {
+    if (16_384..=MAX_LOCAL_CONTEXT).contains(&context) {
         Ok(())
     } else {
         Err("invalidStrataContext".into())
@@ -67,7 +79,12 @@ from serve.server import prepare_summary_qualification_pins
 import copy
 baseline = copy.deepcopy(cfg)
 index = baseline['args'].index('--max-context') + 1
+context = int(cfg['args'][index])
+expected_budget = 1300000000 + max(0, context - 65536) * 14208
+if cfg.get('atomic_summary_state_bank_max_bytes') != expected_budget:
+    raise ValueError('strataContextPinMismatch')
 baseline['args'][index] = '65536'
+baseline['atomic_summary_state_bank_max_bytes'] = 1300000000
 observed = prepare_summary_qualification_pins(baseline, offline=True)
 for key, value in observed.items():
     if value != baseline.get(key):
@@ -103,6 +120,14 @@ impl Environment {
             #[cfg(test)]
             mock_strata: None,
         }
+    }
+
+    pub fn strata_model_context(&self) -> Option<u32> {
+        gguf_context::read(
+            &self
+                .dstar_root
+                .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"),
+        )
     }
 
     pub fn load_strata_context(&self) -> u32 {
@@ -256,8 +281,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-thread-cache-v31/serve/server.py",
-            "feature-integration/engine-cached-summary-v24/strata",
+            "feature-integration/runtime-image-summary-v34/serve/server.py",
+            "feature-integration/engine-image-summary-v34/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -282,7 +307,7 @@ impl Environment {
             .dstar_root
             .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf");
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-cached-summary-v24/strata"),
+            "exe": root.join("feature-integration/engine-image-summary-v34/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -292,7 +317,7 @@ impl Environment {
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
-            "cwd": root.join("feature-integration/runtime-thread-cache-v31"),
+            "cwd": root.join("feature-integration/runtime-image-summary-v34"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
@@ -304,13 +329,13 @@ impl Environment {
             "atomic_summary_foreground_weight": 8,
             "atomic_summary_state_bank_enabled": true,
             "atomic_summary_clone_enabled": true,
-            "atomic_summary_state_bank_max_bytes": 1300000000,
+            "atomic_summary_state_bank_max_bytes": strata_summary_budget(context),
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0",
-            "atomic_summary_expected_backend_sha256": "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33",
+            "atomic_summary_expected_native_sha256": "cc8a0002024dc5cc2ddba0c57938390354b654028b789f330d0bda2d27252052",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:401f2352597b8d474e478ec358050f3036d38d040eaa1d73c5dddd8bd86a8612",
+            "atomic_summary_expected_backend_sha256": "6613de82d4eaecb3a932e2f4621f0dbca646e9304593d47aa642d4932a8ac709",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -335,7 +360,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-thread-cache-v31"),
+                    .join("feature-integration/runtime-image-summary-v34"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -488,7 +513,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-thread-cache-v31"),
+                        .join("feature-integration/runtime-image-summary-v34"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -637,17 +662,21 @@ fn socket_inspection_diagnostics_ok(stderr: &[u8]) -> bool {
     };
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
-        let Some(path) = line.strip_prefix("lsof: WARNING: can't stat() smbfs file system /Volumes/") else {
+        let Some(path) =
+            line.strip_prefix("lsof: WARNING: can't stat() smbfs file system /Volumes/")
+        else {
             return false;
         };
         if path.is_empty() || lines.next() != Some("      Output information may be incomplete.") {
             return false;
         }
-        let Some(device) = lines.next()
+        let Some(device) = lines
+            .next()
             .and_then(|line| line.strip_prefix("      assuming \"dev="))
-            .and_then(|line| line.strip_suffix("\" from mount table")) else {
-                return false;
-            };
+            .and_then(|line| line.strip_suffix("\" from mount table"))
+        else {
+            return false;
+        };
         if device.is_empty() || !device.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return false;
         }
@@ -664,19 +693,56 @@ async fn lsof(args: &[String]) -> Result<String, String> {
             .output(),
     )
     .await
-    .map_err(|_| "processInspectionFailed".to_string())?
-    .map_err(|_| "processInspectionFailed".to_string())?;
+    .map_err(|_| {
+        log::warn!("[atomic-engine] socket inspection failed: kind=timeout");
+        "processInspectionFailed".to_string()
+    })?
+    .map_err(|error| {
+        log::warn!(
+            "[atomic-engine] socket inspection failed: kind=spawn io={:?}",
+            error.kind()
+        );
+        "processInspectionFailed".to_string()
+    })?;
     // lsof's exit 1 with no diagnostics means the filter matched no files.
     if (!output.status.success() && output.status.code() != Some(1))
         || !socket_inspection_diagnostics_ok(&output.stderr)
     {
+        log::warn!(
+            "[atomic-engine] socket inspection failed: kind=result exit={:?} diagnostic_bytes={}",
+            output.status.code(),
+            output.stderr.len()
+        );
         return Err("processInspectionFailed".into());
     }
     String::from_utf8(output.stdout).map_err(|_| "processInspectionFailed".into())
 }
 
 pub(super) async fn owns_listener(root: u32, port: u16) -> Result<bool, String> {
-    let owned = owned_pids(root)?;
+    // Never reuse an old positive observation. One transient OS inspection
+    // failure gets one entirely fresh process-tree and socket inspection.
+    retry_listener_inspection(|| inspect_listener(root, port)).await
+}
+
+async fn retry_listener_inspection<F, Fut>(mut inspect: F) -> Result<bool, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<bool, String>>,
+{
+    match inspect().await {
+        Err(_) => {
+            tokio::task::yield_now().await;
+            inspect().await
+        }
+        result => result,
+    }
+}
+
+async fn inspect_listener(root: u32, port: u16) -> Result<bool, String> {
+    let owned = owned_pids(root).map_err(|error| {
+        log::warn!("[atomic-engine] socket inspection failed: kind=process-tree root={root}");
+        error
+    })?;
     let output = lsof(&[
         "-nP".into(),
         format!("-iTCP:{port}"),
@@ -942,13 +1008,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn summary_budget_scales_with_context_without_a_fixed_ceiling() {
+        assert_eq!(strata_summary_budget(16_384), 1_300_000_000);
+        assert_eq!(strata_summary_budget(65_536), 1_300_000_000);
+        assert_eq!(strata_summary_budget(131_072), 2_231_135_488);
+        assert!(strata_summary_budget(1_048_576) > strata_summary_budget(524_288));
+        assert!(strata_summary_budget(MAX_LOCAL_CONTEXT) < 9_007_199_254_740_991);
+        assert!(validate_strata_context(MAX_LOCAL_CONTEXT).is_ok());
+        assert!(validate_strata_context(MAX_LOCAL_CONTEXT + 1).is_err());
+    }
+
+    #[test]
     fn strata_context_storage_is_separate_bounded_and_recovers_corruption() {
         let root = tempfile::tempdir().unwrap();
         let env = Environment::personal(root.path().into());
         let dstar = br#"{"model":"iq4","context":32768}"#;
         fs::write(root.path().join("atomic-settings.json"), dstar).unwrap();
         assert_eq!(env.load_strata_context(), DEFAULT_STRATA_CONTEXT);
-        for context in [16_384, 32_768, 65_536] {
+        for context in [16_384, 32_768, 65_536, 65_537, 131_072, 524_288, 1_048_576] {
             env.save_strata_context(context).unwrap();
             assert_eq!(env.load_strata_context(), context);
             let args = env.strata_config(context)["args"]
@@ -958,12 +1035,13 @@ mod tests {
             let index = args.iter().position(|arg| arg == "--max-context").unwrap();
             assert_eq!(args[index + 1], context.to_string());
         }
-        for context in [0, 16_383, 65_537, u32::MAX] {
+        let saved_context = env.load_strata_context();
+        for context in [0, 16_383, MAX_LOCAL_CONTEXT + 1, u32::MAX] {
             assert_eq!(
                 env.save_strata_context(context).unwrap_err(),
                 "invalidStrataContext"
             );
-            assert_eq!(env.load_strata_context(), DEFAULT_STRATA_CONTEXT);
+            assert_eq!(env.load_strata_context(), saved_context);
         }
         for invalid in [
             "broken",
@@ -1194,7 +1272,11 @@ mod tests {
         ] {
             assert!(!socket_inspection_diagnostics_ok(invalid));
         }
-        let with_error = [warning.as_slice(), b"lsof: can't inspect process: permission denied\n"].concat();
+        let with_error = [
+            warning.as_slice(),
+            b"lsof: can't inspect process: permission denied\n",
+        ]
+        .concat();
         assert!(!socket_inspection_diagnostics_ok(&with_error));
     }
 
@@ -1226,14 +1308,14 @@ mod tests {
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-cached-summary-v24/strata")
+                .join("feature-integration/engine-image-summary-v34/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-thread-cache-v31")
+                .join("feature-integration/runtime-image-summary-v34")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1254,7 +1336,10 @@ mod tests {
         assert_eq!(config["atomic_summary_state_bank_enabled"], true);
         assert_eq!(config["atomic_summary_state_bank_max_bytes"], 1300000000);
         assert_eq!(config["atomic_summary_clone_enabled"], true);
-        assert_eq!(config["env"]["STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS"], "8192");
+        assert_eq!(
+            config["env"]["STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS"],
+            "8192"
+        );
         assert_eq!(
             config["atomic_summary_state_bank_provenance"],
             "experimental-user-validation"
@@ -1273,15 +1358,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883"
+            "cc8a0002024dc5cc2ddba0c57938390354b654028b789f330d0bda2d27252052"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0"
+            "strata-stat-v2:401f2352597b8d474e478ec358050f3036d38d040eaa1d73c5dddd8bd86a8612"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33"
+            "6613de82d4eaecb3a932e2f4621f0dbca646e9304593d47aa642d4932a8ac709"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();
@@ -1293,6 +1378,35 @@ mod tests {
             assert!(args
                 .windows(2)
                 .any(|window| window[0] == pair[0] && window[1] == pair[1]));
+        }
+    }
+}
+
+#[cfg(test)]
+mod listener_retry_tests {
+    use super::retry_listener_inspection;
+    #[tokio::test]
+    async fn rechecks_uncertainty_but_never_promotes_it_or_retries_a_foreign_listener() {
+        for (results, expected, count) in [
+            (vec![Err("timeout".into()), Ok(true)], Ok(true), 2),
+            (vec![Err("timeout".into()), Ok(false)], Ok(false), 2),
+            (vec![Ok(false)], Ok(false), 1),
+            (vec![Ok(true)], Ok(true), 1),
+            (
+                vec![Err("timeout".into()), Err("still unavailable".into())],
+                Err("still unavailable".into()),
+                2,
+            ),
+        ] {
+            let mut attempts = 0;
+            let mut results = results.into_iter();
+            let result = retry_listener_inspection(|| {
+                attempts += 1;
+                std::future::ready(results.next().unwrap())
+            })
+            .await;
+            assert_eq!(result, expected);
+            assert_eq!(attempts, count);
         }
     }
 }

@@ -1614,11 +1614,12 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       ? undefined
       : systemWithSkills
 
-    const cacheBoundaryPlanner = (modelView: UIMessage[]) =>
+    const cacheBoundaryPlanner = (modelView: UIMessage[], summarizedThrough = 0) =>
       (owner: string, history: UIMessage[], boundary: number, archived: number, signal: AbortSignal) =>
         planStrataHistoryBoundary(provider.base_url!, modelId!, owner, history, boundary, archived, signal,
           retained => {
-            const projected = projectCompactedMessages(retained, modelView)
+            const projected = projectCompactedMessages(retained, modelView,
+              history.slice(0, summarizedThrough).map(message => message.id))
             const wire = convertToModelMessages(chatExecOutputsForModel(applyPolicies(projected, history)))
             return historyPlanMessages(dropSystemForTools && systemWithSkills
               ? foldSystemIntoFirstUserMessage(wire, systemWithSkills)
@@ -1641,7 +1642,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             const cacheUser = completed.findLast(message => message.role === 'user')
             if (cacheUser) {
               await compaction.prepareCachedAdoption(original,
-                (history, boundary, archived, signal) => cacheBoundaryPlanner(preparedMessages)(
+                (history, boundary, archived, signal) => cacheBoundaryPlanner(preparedMessages, boundary)(
                   `${snapshotThreadId}/${cacheUser.id}`, history, boundary, archived, signal),
                 options.abortSignal ?? new AbortController().signal)
             }
@@ -1694,17 +1695,18 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const cacheUser = history.findLast(message => message.role === 'user')
-          if (runtime?.summaryClone && cacheUser && !modelView.some(message => message.parts.some(part => part.type === 'file'))) {
+          if (runtime?.summaryClone && cacheUser) {
             void bindStrataHistory(provider.base_url!, `${snapshotThreadId}/${cacheUser.id}`, history).catch(() => {
               console.warn('[context-compaction] disk clone history receipt unavailable')
             })
           }
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
-          coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            runtime?.summaryClone && !modelView.some(message => message.parts.some(part => part.type === 'file')) && history.findLast(message => message.role === 'user')
+          const summaryAdapter = runtime?.summaryClone && cacheUser
               ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
                 { selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
-              : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) }), undefined,
+              : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
+          if (!summaryAdapter.cached) summaryAdapter.fallbackReason = 'unsupported'
+          coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)), summaryAdapter, undefined,
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)
               const wire = applyPolicies(retainedView, history)

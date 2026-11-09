@@ -349,6 +349,10 @@
     "sections_other": "{{count}} sections processed",
     "archived": "Original messages saved in the conversation archive.",
     "retained": "Original messages retained.",
-    "background": "Runs in the background. Waiting for the server is included."
+    "background": "Runs in the background. Waiting for the server is included.",
+    "method_clone": "Cached conversation clone",
+    "method_segments": "Segmented summary",
+    "fallback_images": "Image input: text-only clone unavailable",
+    "fallback_unsupported": "Clone not supported by this runtime"
   }
 }

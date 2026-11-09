@@ -32,3 +32,18 @@ it('ignores invalid progress and honours owner cancellation', async () => {
   await expect(readSummaryChoice(stream(': atomic-progress {"processed":1,"total":100,"cache":0}\n\n' + completed), owner.signal,
     () => owner.abort())).rejects.toMatchObject({ name: 'AbortError' })
 })
+
+it('keeps summary generation stable when delayed input heartbeats follow output', async () => {
+  const observed: SummaryInputProgress[] = []
+  const before = useInferenceProgress.getState()
+  const text = ': atomic-progress {"processed":100,"total":100,"cache":20}\n\n' +
+    'data: {"choices":[{"delta":{"content":"summary"}}]}\n\n' +
+    ': atomic-progress {"processed":100,"total":100,"cache":20}\n\n' +
+    'data: {"prompt_progress":{"processed":120,"total":120,"cache":20},"choices":[{"delta":{}}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+  await readSummaryChoice(stream(text), new AbortController().signal, p => { if (p) observed.push(p) })
+  const decoding = observed.findIndex(p => p.phase === 'generating')
+  expect(decoding).toBeGreaterThanOrEqual(0)
+  expect(observed.slice(decoding).every(p => p.phase === 'generating')).toBe(true)
+  expect(useInferenceProgress.getState()).toBe(before)
+})

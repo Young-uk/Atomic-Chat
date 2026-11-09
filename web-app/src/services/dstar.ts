@@ -18,6 +18,7 @@ export type DstarSnapshot = {
     name: string
     available: boolean
     reason?: string
+    maxContext?: number | null
     bytes: number
   }[]
   servedModels: string[]

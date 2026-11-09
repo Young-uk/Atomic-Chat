@@ -1,3 +1,5 @@
+import { ModelContextSlider } from '@/components/ModelContextSlider'
+import { MAX_LOCAL_CONTEXT_TOKENS } from '@/lib/local-context-size'
 import { useEffect, useRef, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -56,7 +58,7 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
   const owned = snapshot?.engine === 'strata' && snapshot.owned
   const transitioning = snapshot?.status === 'loading' || snapshot?.status === 'stopping'
   const context = Number(draft)
-  const validContext = draft !== undefined && Number.isInteger(context) && context >= 16384 && context <= 65536
+  const validContext = draft !== undefined && Number.isInteger(context) && context >= 16384 && context <= MAX_LOCAL_CONTEXT_TOKENS
   const dirty = validContext && (context !== (snapshot?.strataContext ?? 65536) || (owned && snapshot?.activeContext != null && context !== snapshot.activeContext))
   const run = async (action: 'ensure' | 'stop') => {
     if (inAction.current || isLocalEngineBusy() || !snapshot || snapshot.status === 'external' ||
@@ -116,7 +118,8 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
       </div>
       {snapshot && <div className="mt-3 min-w-0">
         <label className="block text-sm" htmlFor="strata-context">{t('endpoints:dstar.context')}</label>
-        <input id="strata-context" type="number" min={16384} max={65536} step={1}
+        <div className="mt-1 grid min-w-0 grid-cols-[minmax(7rem,0.4fr)_minmax(0,1fr)] items-center gap-3">
+        <input id="strata-context" type="number" min={16384} max={MAX_LOCAL_CONTEXT_TOKENS} step={1}
           value={draft ?? ''} aria-invalid={draft !== undefined && !validContext}
           disabled={busy || chatBusy || transitioning || engineTransition || snapshot.status === 'external'}
           onChange={event => {
@@ -124,6 +127,10 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
             setDraft(event.target.value)
           }}
           className="mt-1 w-full min-w-0 rounded-md border border-border bg-secondary px-3 py-2" />
+        <ModelContextSlider value={context} max={snapshot.maxContext} min={16384}
+          disabled={busy || chatBusy || transitioning || engineTransition || snapshot.status === 'external'}
+          onChange={value => { draftEdited.current = value !== (snapshot.strataContext ?? 65536); setDraft(String(value)) }} />
+        </div>
         <p className="mt-2 break-words text-sm text-muted-foreground">{t('endpoints:localEngine.savedContext', { context: snapshot.strataContext ?? 65536 })}</p>
         {owned && snapshot.activeContext != null && <p className="mt-1 break-words text-sm text-muted-foreground">{t('endpoints:localEngine.activeContext', { context: snapshot.activeContext })}</p>}
         {dirty && <p className="mt-1 break-words text-sm text-muted-foreground">{t('endpoints:localEngine.pendingContext', { context })}</p>}

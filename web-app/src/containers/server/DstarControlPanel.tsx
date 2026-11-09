@@ -1,3 +1,5 @@
+import { ModelContextSlider } from '@/components/ModelContextSlider'
+import { MAX_LOCAL_CONTEXT_TOKENS } from '@/lib/local-context-size'
 import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
@@ -157,7 +159,7 @@ export function DstarControlPanel({
     draft &&
     Number.isInteger(draft.context) &&
     draft.context >= 512 &&
-    draft.context <= 524288
+    draft.context <= MAX_LOCAL_CONTEXT_TOKENS
   const chatOptions = (provider?.models ?? []).filter((model) =>
     snapshot?.servedModels.includes(model.id)
   )
@@ -290,11 +292,12 @@ export function DstarControlPanel({
               />
             </ServerField>
             <ServerField label={t('endpoints:dstar.context')}>
+              <div className="grid min-w-0 grid-cols-[minmax(7rem,0.4fr)_minmax(0,1fr)] items-center gap-3">
               <input
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2"
+                className="w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2"
                 type="number"
                 min={512}
-                max={524288}
+                max={MAX_LOCAL_CONTEXT_TOKENS}
                 step={512}
                 value={draft.context}
                 disabled={
@@ -304,6 +307,11 @@ export function DstarControlPanel({
                   setDraft({ ...draft, context: Number(event.target.value) })
                 }
               />
+              <ModelContextSlider value={draft.context} min={512}
+                max={snapshot.models.find(model => model.id === draft.model)?.maxContext}
+                disabled={busy || transitioning || snapshot.status === 'external'}
+                onChange={context => setDraft({ ...draft, context })} />
+              </div>
             </ServerField>
           </div>
           {dirty && snapshot.owned && (

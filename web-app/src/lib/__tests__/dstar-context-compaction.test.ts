@@ -406,3 +406,32 @@ it('settles the background owner before promoting an explicitly urgent recovery 
   expect(urgent).toHaveBeenCalledTimes(1)
   expect(c.error).toBeUndefined()
 })
+
+it('does not replay covered screenshots in cache overlap, while keeping recent images and raw UI history', () => {
+  const screenshot: UIMessage = { id: 'old', role: 'user', parts: [
+    { type: 'text', text: 'Confirmed screenshot observation' },
+    { type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,OLD_IMAGE' },
+  ] }
+  const recent: UIMessage = { id: 'recent', role: 'user', parts: [
+    { type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,RECENT_IMAGE' },
+  ] }
+  const memory: UIMessage = { id: 'atomic-context-test', role: 'system', metadata: { atomic_summary_covered_ids: ['old', 'tool'] },
+    parts: [{ type: 'text', text: 'Text handoff' }] }
+  const tool: UIMessage = { id: 'tool', role: 'assistant', parts: [{ type: 'dynamic-tool', toolName: 'capture', toolCallId: 'capture',
+    state: 'output-available', input: {}, output: { content: [{ type: 'image', mimeType: 'image/png', data: 'TOOL_IMAGE' }] } }] }
+  const original = structuredClone([screenshot, tool, recent])
+  const derived: UIMessage = { id: 'tool_toolimg', role: 'user', metadata: { atomic_tool_image_owner: 'tool' }, parts: [
+    { type: 'text', text: 'Image result(s) from the preceding tool call(s):' },
+    { type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,DERIVED_IMAGE' },
+  ] }
+  // Current prepared views contain owned text segments plus separate image rows.
+  const owned = { ...tool, metadata: { atomic_tool_image_owner: 'tool' } }
+  const projected = projectCompactedMessages([screenshot, tool, memory, recent], [screenshot, owned, derived, recent])
+  expect(JSON.stringify(projected)).not.toContain('OLD_IMAGE')
+  expect(JSON.stringify(projected)).not.toContain('TOOL_IMAGE')
+  expect(JSON.stringify(projected)).not.toContain('DERIVED_IMAGE')
+  expect(projected.some(message => message.id === 'tool_toolimg')).toBe(false)
+  expect(JSON.stringify(projected)).toContain('RECENT_IMAGE')
+  expect(JSON.stringify(projected)).toContain('Confirmed screenshot observation')
+  expect([screenshot, tool, recent]).toEqual(original)
+})

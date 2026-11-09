@@ -94,3 +94,11 @@ it('distinguishes input completion before the first generated token', () => {
   expect(screen.getByText('Preparing summary generation')).toBeInTheDocument()
   expect(screen.queryByRole('progressbar')).toBeNull()
 })
+
+it('explains when image input requires segmented summary instead of a text cache clone', () => {
+  useContextSummaryProgress.setState({ byThread: { a: { phase: 'summarizing', startedAt: Date.now(), completed: 0, archived: true,
+    method: 'segments', fallbackReason: 'images' } } })
+  render(withTranslations(<ContextSummaryProgress threadId="a" />))
+  expect(screen.getByText('Segmented summary')).toBeInTheDocument()
+  expect(screen.getByText('Image input: text-only clone unavailable')).toBeInTheDocument()
+})

@@ -31,6 +31,8 @@ export function observeInferenceProgress(threadId: string, modelId?: string, usa
     useInferenceProgress.setState(({ byThread }) => {
       const current = byThread[threadId]
       if (!current || current.requestId !== requestId) return { byThread }
+      if ((current.phase === 'generating' || current.phase === 'thinking') &&
+          (patch.phase === 'reading' || patch.phase === 'preparing')) return { byThread }
       return { byThread: { ...byThread, [threadId]: {
         ...current, ...patch,
       } } }
