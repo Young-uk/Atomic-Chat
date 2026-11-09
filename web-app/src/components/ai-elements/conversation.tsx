@@ -21,16 +21,49 @@ export const Conversation = memo(
 
 Conversation.displayName = 'Conversation'
 
+/** The library observes content growth, but queue/composer changes resize the
+ * viewport without changing content. Keep its existing bottom-follow intent;
+ * a reader who scrolled into history must not be pulled down by a resize. */
+function ConversationViewportFollow() {
+  const { scrollRef, scrollToBottom, state } = useStickToBottomContext()
+  useEffect(() => {
+    const viewport = scrollRef.current
+    if (!viewport) return
+    let height = viewport.clientHeight
+    let following = !state.escapedFromLock
+    const trackIntent = () => {
+      // Browser clamping after a viewport resize is not a user scroll escape.
+      if (viewport.clientHeight === height) following = !state.escapedFromLock
+    }
+    const observer = new ResizeObserver(() => {
+      const nextHeight = viewport.clientHeight
+      if (nextHeight === height) return
+      height = nextHeight
+      if (following) void scrollToBottom({ animation: 'instant' })
+    })
+    viewport.addEventListener('scroll', trackIntent, { passive: true })
+    observer.observe(viewport)
+    return () => {
+      observer.disconnect()
+      viewport.removeEventListener('scroll', trackIntent)
+    }
+  }, [scrollRef, scrollToBottom, state])
+  return null
+}
+
 export type ConversationContentProps = ComponentProps<
   typeof StickToBottom.Content
 >
 
 export const ConversationContent = memo(
   ({ className, ...props }: ConversationContentProps) => (
+    <>
+    <ConversationViewportFollow />
     <StickToBottom.Content
       className={cn('flex flex-col gap-x-8 gap-y-2 px-2', className)}
       {...props}
     />
+    </>
   )
 )
 

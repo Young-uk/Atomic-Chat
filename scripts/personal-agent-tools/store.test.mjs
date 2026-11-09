@@ -221,8 +221,9 @@ test('scheduled inference explicitly receives the schedule local time zone', asy
   const tools = new PersonalTools({ directory: store.directory, store })
   try {
     await tools.infer('Synthetic reminder', new AbortController().signal, { schedule: { tz: 'Asia/Seoul' }, inferenceTarget: { endpoint: 'http://127.0.0.1:8010/v1', model: 'qwen3.8-flash-next-chat' } })
+    assert.equal(sent.atomic_background_task, true)
     assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
-    assert.match(sent.messages[0].content, /Use the local execution time/)
+    assert.match(sent.messages[0].content, /Use the scheduled delivery time/)
     await tools.infer('Synthetic one-shot reminder', new AbortController().signal, { timezone: 'Asia/Seoul', inferenceTarget: { endpoint: 'http://127.0.0.1:8010/v1', model: 'qwen3.8-flash-next-chat' } })
     assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
   } finally { globalThis.fetch = originalFetch; await tools.shutdown() }
@@ -259,4 +260,78 @@ test('scheduled timeout records its cause rather than an opaque aborted error', 
     assert.equal(result.runs[0].delivery.status, 'skipped')
     assert.equal(result.status, 'failed')
   } finally { await tools.shutdown() }
+})
+
+
+test('prepares five minutes early, holds delivery until due, and survives restart', async () => {
+  let now = Date.parse('2026-11-02T00:00:00Z')
+  const store = await fresh(() => now)
+  await store.task('create', { prompt: 'Reminder', at: '2026-11-02T00:06:00Z' })
+  let count = 0
+  const tools = new PersonalTools({ directory: store.directory, store, infer: async () => { count++; return 'Ready' } })
+  await tools.tick()
+  assert.equal(count, 0)
+  now += 60000
+  await tools.tick()
+  assert.equal(count, 1)
+  assert.equal((await store.delivery('pending')).length, 0)
+  const restored = new PersonalStore(store.directory, () => now)
+  await restored.reconcileStartup()
+  now += 300000
+  const pending = await restored.delivery('pending')
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].result, 'Ready')
+  await tools.tick()
+  assert.equal(count, 1)
+})
+
+test('due tick publishes preparing notice while the same generation continues', async () => {
+  let now = Date.parse('2026-11-02T00:00:00Z')
+  const store = await fresh(() => now)
+  await store.task('create', { prompt: 'Reminder', at: '2026-11-02T00:05:00Z' })
+  let finish
+  let count = 0
+  const tools = new PersonalTools({ directory: store.directory, store, infer: () => { count++; return new Promise(resolve => { finish = resolve }) } })
+  const work = tools.tick()
+  while (!finish) await new Promise(resolve => setImmediate(resolve))
+  now += 300000
+  await tools.tick()
+  const pending = await store.delivery('pending')
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].placeholder, true)
+  assert.equal(count, 1)
+  finish('Final reminder')
+  await work
+  const result = await store.delivery('pending')
+  assert.equal(result.length, 1)
+  assert.equal(result[0].result, 'Final reminder')
+  assert.equal((await store.delivery('record', { taskId: pending[0].taskId, runId: pending[0].id })).status, 'skipped')
+})
+
+test('failed early preparation waits until due for one fallback attempt', async () => {
+  let now = Date.parse('2026-11-02T00:00:00Z')
+  const store = await fresh(() => now)
+  await store.task('create', { prompt: 'Reminder', at: '2026-11-02T00:05:00Z' })
+  let calls = 0
+  const tools = new PersonalTools({ directory: store.directory, store, infer: async () => { if (++calls === 1) throw Error('offline'); return 'Ready' } })
+  await tools.tick()
+  await tools.tick()
+  assert.equal(calls, 1)
+  now += 300000
+  await tools.tick()
+  assert.equal(calls, 2)
+  assert.equal((await store.delivery('pending'))[0].result, 'Ready')
+})
+
+
+test('cancelling a prepared reminder removes its undelivered outbox entry', async () => {
+  let now = Date.parse('2026-11-02T00:00:00Z')
+  const store = await fresh(() => now)
+  const task = await store.task('create', { prompt: 'Reminder', at: '2026-11-02T00:05:00Z' })
+  const tools = new PersonalTools({ directory: store.directory, store, infer: async () => 'Ready' })
+  await tools.tick()
+  assert.equal((await store.task('get', { id: task.id })).status, 'prepared')
+  await store.task('cancel', { id: task.id })
+  now += 300000
+  assert.equal((await store.delivery('pending')).length, 0)
 })

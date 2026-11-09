@@ -105,6 +105,7 @@ export class PersonalStore {
       if (action === 'cancel') {
         if (!task) throw new Error('Task not found')
         task.status = 'cancelled'
+        for (const run of task.runs) if (['pending', 'failed'].includes(run.delivery?.status)) run.delivery.status = 'cancelled'
         return publicTask(task)
       }
       if (action === 'acknowledge') {
@@ -144,12 +145,26 @@ export class PersonalStore {
     })
   }
 
+  publishDue() {
+    return this.transact(state => {
+      for (const task of state.tasks) {
+        if (!['scheduled', 'running'].includes(task.status) || task.dueAt > this.now() ||
+            task.runs.some(run => run.dueAt === task.dueAt && run.placeholder)) continue
+        task.runs.push({ id: randomUUID(), dueAt: task.dueAt, startedAt: null,
+          finishedAt: this.now(), placeholder: true, result: 'Scheduled time reached · Preparing the message', error: null,
+          delivery: { status: 'pending', attempts: 0 } })
+      }
+    })
+  }
+
   claimDue() {
     return this.transact(state => {
-      const task = state.tasks.find(item => item.status === 'scheduled' && item.dueAt <= this.now())
+      const task = state.tasks.find(item => item.status === 'scheduled' && item.dueAt <= this.now() + 300000 &&
+        (!item.preparationAttempted || item.dueAt <= this.now()))
       if (!task) return null
       task.status = 'running'
       task.startedAt = this.now()
+      task.preparationAttempted = true
       return structuredClone(task)
     })
   }
@@ -158,6 +173,19 @@ export class PersonalStore {
     return this.transact(state => {
       const task = state.tasks.find(item => item.id === id)
       if (!task) return
+      // A failed early attempt gets exactly one due-time fallback, never an
+      // early delivery or a tight retry loop.
+      if (error && task.dueAt > this.now() && task.status !== 'cancelled') {
+        task.preparationError = error
+        task.status = 'scheduled'
+        return
+      }
+      // A generated answer supersedes an undelivered preparing notice.
+      for (const previous of task.runs) {
+        if (!previous.placeholder || previous.dueAt !== task.dueAt || previous.delivery.status !== 'pending') continue
+        if (error) previous.result = 'Scheduled time reached · The message could not be prepared'
+        else previous.delivery.status = 'skipped'
+      }
       const run = { id: randomUUID(), dueAt: task.dueAt, startedAt: task.startedAt ?? null, finishedAt: this.now(), result, error,
         delivery: error ? { status: 'skipped', attempts: 0, reason: 'generation_failed' } : { status: 'pending', attempts: 0 } }
       task.runs.push(run)
@@ -167,11 +195,13 @@ export class PersonalStore {
       // A failed occurrence is history, not cancellation of the recurrence.
       // Skip missed intervals rather than flooding the model with catch-up work.
       if (task.schedule || task.intervalSeconds) {
-        const now = this.now()
+        const now = Math.max(this.now(), task.dueAt)
+        task.preparationAttempted = false
+        delete task.preparationError
         task.dueAt = task.schedule ? resolveScheduledFor(task.schedule, now) :
           task.dueAt + Math.max(1, Math.floor((now - task.dueAt) / (task.intervalSeconds * 1000)) + 1) * task.intervalSeconds * 1000
         task.status = 'scheduled'
-      } else task.status = error ? 'failed' : 'completed'
+      } else task.status = error ? 'failed' : task.dueAt > this.now() ? 'prepared' : 'completed'
     })
   }
 
@@ -179,9 +209,12 @@ export class PersonalStore {
   // notification must neither rerun the model nor erase a generated result.
   delivery(action, args = {}) {
     return this.transact(state => {
-      if (action === 'pending') return state.tasks.flatMap(task => task.runs
-        .filter(run => run.delivery && ['pending', 'failed'].includes(run.delivery.status))
+      if (action === 'pending') {
+        for (const task of state.tasks) if (task.status === 'prepared' && task.dueAt <= this.now()) task.status = 'completed'
+        return state.tasks.flatMap(task => task.runs
+        .filter(run => run.dueAt <= this.now() && run.delivery && ['pending', 'failed'].includes(run.delivery.status))
         .map(run => ({ taskId: task.id, threadId: task.originThreadId, ...run }))).slice(0, 50)
+      }
       const task = state.tasks.find(task => task.id === args.taskId)
       const run = task?.runs.find(run => run.id === args.runId)
       if (!run?.delivery) throw new Error('Scheduled result not found')

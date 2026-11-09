@@ -60,7 +60,7 @@ export function PersonalTaskDeliveryProvider() {
       finally { polling = false }
     }
     void poll()
-    const timer = setInterval(() => void poll(), 5000)
+    const timer = setInterval(() => void poll(), 1000)
     return () => { disposed = true; clearInterval(timer) }
   }, [active, service])
   return null

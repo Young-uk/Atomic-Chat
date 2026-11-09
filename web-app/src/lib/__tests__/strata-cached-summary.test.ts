@@ -29,6 +29,7 @@ it('sends only source anchors and one task to the bound clone, preserving the ve
   const init = fetcher.mock.calls[0][1] as RequestInit
   const body = JSON.parse(init.body as string)
   expect(body.atomic_summary_clone).toBe('thread/turn')
+  expect(body.temperature).toBe(1)
   expect(body.messages).toHaveLength(1)
   expect(body.messages[0].content).not.toContain('raw evidence must not be replayed')
   expect(body.messages[0].content).not.toContain('q'.repeat(300))
@@ -280,4 +281,31 @@ it.each(['http://127.0.0.1:18080/v1', 'http://127.0.0.1:8010/v1'])('clones image
   expect(task.messages).toHaveLength(1)
   expect(JSON.stringify(task)).not.toContain('IMAGE_BYTES')
   expect(coordinator.apply([...messages, pending]).some(message => message.id === 'u0')).toBe(false)
+})
+
+
+it('waits for memory and resumes the same cached summary without replaying history', async () => {
+  vi.useFakeTimers()
+  try {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: { code: 'atomic_summary_admission_refused', message: 'Summary is waiting for normal memory pressure, stable swap and available RAM; originals retained' } }, { status: 409 }))
+      .mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ summary: 'Ready handoff', openRequests: [], resolvedRequests: [] }) } }] }))
+    vi.stubGlobal('fetch', fetcher)
+    const phases: string[] = []
+    const save = vi.fn(async () => {})
+    const work = summarizeWithStrataCache('http://local/v1', 'm', 'thread/turn', { inputProgress: value => { if (value) phases.push(value.phase) } })('', '', new AbortController().signal, undefined, { save, requestSources: history() })
+    await vi.waitFor(() => expect(phases).toContain('waiting-memory'))
+    await vi.advanceTimersByTimeAsync(10001)
+    expect(await work).toBe('Ready handoff')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(save).toHaveBeenCalledTimes(1)
+  } finally { vi.useRealTimers() }
+})
+
+it('marks urgent cached recovery without ordinary background admission', async () => {
+  const fetcher = vi.fn().mockResolvedValue(Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ summary: 'Recovered handoff', openRequests: [], resolvedRequests: [] }) } }] }))
+  vi.stubGlobal('fetch', fetcher)
+  const result = await summarizeWithStrataCache('http://local/v1', 'm', 'thread/turn', { recovery: true })('', '', new AbortController().signal, undefined, { save: async () => {}, requestSources: history() })
+  expect(result).toBe('Recovered handoff')
+  expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ atomic_summary_clone: 'thread/turn', atomic_summary_recovery: true })
 })

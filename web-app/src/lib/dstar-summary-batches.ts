@@ -53,7 +53,7 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
       try {
         const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery ? { atomic_summary_recovery: true } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 0, max_tokens: 2048, messages: wire(system, payload, instruction) }),
+          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery ? { atomic_summary_recovery: true } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 1, max_tokens: 2048, messages: wire(system, payload, instruction) }),
         })
         if (!response.ok) {
           if (response.status === 409) {

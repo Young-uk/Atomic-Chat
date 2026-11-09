@@ -1099,3 +1099,15 @@ describe('custom endpoint progress observation', () => {
     expect(useInferenceProgress.getState().byThread['progress-test']).toBeUndefined()
   })
 })
+
+
+describe('managed final wire token budget', () => {
+  it('blocks an oversized tool continuation before starting native streaming', async () => {
+    mockedInvoke.mockClear()
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ input_tokens: 66029, context_length: 65536, reserved_tokens: 1032 }))
+    const wire = createLocalStreamingFetch(fetcher, { think: false, atomic_output_reserve: 1024 }, undefined, undefined, undefined, 'http://127.0.0.1:18080/v1')
+    await expect(wire('http://localhost:1337/v1/chat/completions', { method: 'POST', body: JSON.stringify({ messages: [{ role: 'tool', content: 'result' }] }) })).rejects.toThrow('exceeds the available context size')
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ think: false, atomic_output_reserve: 1024, messages: [{ role: 'tool', content: 'result' }] })
+    expect(mockedInvoke).not.toHaveBeenCalledWith('stream_local_http', expect.anything())
+  })
+})

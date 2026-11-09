@@ -203,18 +203,33 @@ export function createSpeechQueue(
             let settled = false
             let lastTime = player.currentTime
             let lastAdvance = Date.now()
+            let recoveries = 0
+            let recovering = false
+            const resumeOutput = () => {
+              if (settled || signal.aborted || recovering || recoveries >= 2 ||
+                  player.ended || player.error || player.currentTime <= 0 || !player.paused) return
+              recovering = true
+              recoveries++
+              lastAdvance = Date.now()
+              // Reuse the media element and its position: never replay a sentence.
+              void player.play().catch(() => {}).finally(() => { recovering = false })
+            }
+            const devices = navigator.mediaDevices
+            devices?.addEventListener('devicechange', resumeOutput)
             const watchdog = window.setInterval(() => {
               if (player.currentTime > lastTime) {
                 lastTime = player.currentTime
                 lastAdvance = Date.now()
               } else if (Date.now() - lastAdvance >= 5000) {
-                finish(new Error('Speech playback stopped advancing.'))
+                if (!recovering && player.currentTime > 0 && player.paused && !player.error && recoveries < 2) resumeOutput()
+                else finish(new Error('Speech playback stopped advancing.'))
               }
             }, 500)
             const finish = (error?: unknown) => {
               if (settled) return
               settled = true
               window.clearInterval(watchdog)
+              devices?.removeEventListener('devicechange', resumeOutput)
               player.onplaying = player.onwaiting = player.onended = player.onerror = null
               if (finishPlayback) signal.removeEventListener('abort', finishPlayback)
               if (error) {

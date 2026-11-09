@@ -3,7 +3,7 @@ import { MessageStatus, ContentType, ChatCompletionRole, type ThreadMessage } fr
 import { desktopNotificationsEnabled, requestNotificationPermission } from './notifications'
 
 export type ScheduledDelivery = {
-  taskId: string; id: string; threadId?: string; finishedAt: number
+  taskId: string; id: string; threadId?: string; finishedAt: number; dueAt?: number
   result?: string; error?: string
 }
 
@@ -11,9 +11,10 @@ export type ScheduledDelivery = {
  * acknowledging the outbox safe to replay without another chat message. */
 export function scheduledResultMessage(row: ScheduledDelivery): ThreadMessage {
   if (!row.threadId) throw new Error('Scheduled result has no originating conversation')
+  const deliveredAt = Math.max(row.finishedAt, row.dueAt ?? row.finishedAt)
   return { id: `scheduled-${row.id}`, object: 'thread.message', thread_id: row.threadId,
     role: ChatCompletionRole.Assistant, status: MessageStatus.Ready,
-    created_at: row.finishedAt, completed_at: row.finishedAt,
+    created_at: deliveredAt, completed_at: deliveredAt,
     content: [{ type: ContentType.Text, text: { value: row.result || row.error || 'Scheduled task returned no result', annotations: [] } }],
     metadata: { personal_task_id: row.taskId, personal_task_run_id: row.id, scheduled: true } }
 }

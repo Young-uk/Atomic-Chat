@@ -1,3 +1,5 @@
+import { assertManagedPromptFits } from './managed-prompt-budget'
+import { localEngineTarget } from '@/services/managed-local-engine'
 import { usesAppendOnlyDstarEffort } from '@/lib/dstar-effort'
 import { observeInferenceProgress } from '@/lib/inference-progress'
 /**
@@ -467,7 +469,8 @@ export function createLocalStreamingFetch(
     body: Record<string, unknown>
   ) => Record<string, unknown> | Promise<Record<string, unknown>>,
   progressThreadId?: string,
-  resumableBaseUrl?: string
+  resumableBaseUrl?: string,
+  tokenCountBaseUrl?: string
 ): typeof httpFetch {
   const normalFetch = createCustomFetch(fallbackFetch, parameters)
 
@@ -500,6 +503,12 @@ export function createLocalStreamingFetch(
       if (merged) {
         bodyStr = JSON.stringify(shapeBody ? await shapeBody(merged) : merged)
       }
+    }
+
+    // Count the final serialized body, after all provider overrides. This also
+    // runs for every tool continuation; never infer its size from old usage.
+    if (tokenCountBaseUrl && urlStr.endsWith('/chat/completions') && bodyStr) {
+      bodyStr = await assertManagedPromptFits(tokenCountBaseUrl, bodyStr, fallbackFetch, init?.signal ?? undefined)
     }
 
     const hdrs: Record<string, string> = {}
@@ -1670,7 +1679,8 @@ export class ModelFactory {
       includeUsage: true,
       // Use the IPC-channel streaming fetch (see OpenAI factory rationale).
       fetch: createLocalStreamingFetch(httpFetch, parameters, undefined, progressThreadId,
-        usesAppendOnlyDstarEffort(provider.base_url, modelId) ? provider.base_url : undefined),
+        usesAppendOnlyDstarEffort(provider.base_url, modelId) ? provider.base_url : undefined,
+        import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && localEngineTarget(provider, { id: modelId }) ? provider.base_url : undefined),
     })
 
     // Some OpenAI-compatible providers (MiniMax, DeepSeek, Moonshot, NVIDIA

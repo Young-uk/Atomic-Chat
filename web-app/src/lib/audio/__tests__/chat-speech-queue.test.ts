@@ -133,3 +133,29 @@ describe('speech queue shutdown', () => {
     expect(fixture.toast).toHaveBeenCalledTimes(1)
   })
 })
+
+
+describe('speech output route recovery', () => {
+  it('resumes an interrupted clip at its current position without regenerating', async () => {
+    vi.useFakeTimers()
+    fixture.generate.mockResolvedValue({ id: 'route-clip', state: 'completed', output: { path: '/clip.wav' } })
+    const q = queue()
+    q.enqueue([{ text: 'Resume this sentence.' }])
+    await flush()
+    const player = document.querySelector('audio')!
+    player.currentTime = 7.64
+    Object.defineProperty(player, 'paused', { configurable: true, value: true })
+    vi.mocked(HTMLMediaElement.prototype.play).mockImplementationOnce(async () => {
+      Object.defineProperty(player, 'paused', { configurable: true, value: false })
+    })
+    await vi.advanceTimersByTimeAsync(5500)
+    expect(player.currentTime).toBe(7.64)
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2)
+    expect(q.stopped).toBe(false)
+    player.dispatchEvent(new Event('ended'))
+    await flush()
+    expect(fixture.generate).toHaveBeenCalledTimes(1)
+    expect(fixture.toast).not.toHaveBeenCalled()
+    expect(document.querySelector('audio')).toBeNull()
+  })
+})

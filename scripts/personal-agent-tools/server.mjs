@@ -38,7 +38,7 @@ export const TOOLS = [
 ]
 
 export class PersonalTools {
-  constructor({ directory, endpoint, model, browser, store, infer, notify, taskTimeoutMs = 180000 } = {}) {
+  constructor({ directory, endpoint, model, browser, store, infer, notify, taskTimeoutMs = null } = {}) {
     if (!directory) throw new Error('A persistent personal tools directory is required')
     const url = new URL(endpoint ?? 'http://127.0.0.1:8010/v1')
     if (!['127.0.0.1','localhost','[::1]'].includes(url.hostname) || url.protocol !== 'http:') throw new Error('Scheduled inference requires a loopback HTTP endpoint')
@@ -51,9 +51,10 @@ export class PersonalTools {
       const { endpoint, model } = await resolveTarget({ target: task.inferenceTarget ?? await threadTarget(process.env.ATOMIC_PERSONAL_WORKSPACE, task.originThreadId), endpoint: this.endpoint, model: this.model, signal })
       const timeZone = task.timezone ?? task.schedule?.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone
       const executedAt = new Date()
+      const deliveryAt = new Date(task.dueAt ?? executedAt.getTime())
       const localTime = new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'full', timeStyle: 'long', hourCycle: 'h23' }).format(executedAt)
-      const instructions = (task.assistantInstructions ?? '').replace(/\{\{\s*current_date\s*\}\}/gi, executedAt.toLocaleDateString('en-US', { timeZone, dateStyle: 'long' }))
-      const response = await fetch(`${endpoint}/chat/completions`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, atomic_summary: true, think: false, messages: [{ role: 'system', content: `${instructions}\n\nThis is a scheduled text-only task. Retain the assistant voice, language and formality specified above. No tools or fresh external data are available. Clearly state information you cannot verify. Return the reminder itself as a concise final answer. Current execution time: ${localTime} (${timeZone}). UTC reference: ${executedAt.toISOString()}. Use the local execution time for dates and times in the reminder` }, { role: 'user', content: prompt }], max_tokens: 1024, stream: false }) })
+      const instructions = (task.assistantInstructions ?? '').replace(/\{\{\s*current_date\s*\}\}/gi, deliveryAt.toLocaleDateString('en-US', { timeZone, dateStyle: 'long' }))
+      const response = await fetch(`${endpoint}/chat/completions`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, atomic_summary: true, atomic_background_task: true, think: false, messages: [{ role: 'system', content: `${instructions}\n\nThis is a scheduled text-only task. Retain the assistant voice, language and formality specified above. No tools or fresh external data are available. Clearly state information you cannot verify. Return the reminder itself as a concise final answer. Scheduled delivery time: ${deliveryAt.toISOString()}. This text may be prepared up to five minutes early; do not describe preparation time as delivery time. Current execution time: ${localTime} (${timeZone}). UTC reference: ${executedAt.toISOString()}. Use the scheduled delivery time in the stated local timezone for dates and times in the reminder` }, { role: 'user', content: prompt }], max_tokens: 1024, stream: false }) })
       if (!response.ok) throw new Error(`Scheduled inference failed: HTTP ${response.status}`)
       const result = await response.json()
       const text = result.choices?.[0]?.message?.content
@@ -211,6 +212,7 @@ export class PersonalTools {
   async tick() {
     await this.featureReady
     void this.memory.maintain()
+    await this.store.publishDue()
     if (this.ticking) return
     this.ticking = true
     try {
@@ -218,7 +220,9 @@ export class PersonalTools {
       if (!task) return
       const controller = new AbortController()
       this.controllers.set(task.id, controller)
-      const timeout = setTimeout(() => controller.abort(new Error('Scheduled generation timed out while waiting for the local model; sleep or background-slot contention may have delayed it. No notification was delivered.')), this.taskTimeoutMs)
+      // Normal scheduled work has no wall-clock cutoff. Tests/admin callers may
+      // still opt into a deadline; cancellation and engine failures remain effective.
+      const timeout = this.taskTimeoutMs == null ? null : setTimeout(() => controller.abort(new Error('Scheduled generation timed out while waiting for the local model; sleep or background-slot contention may have delayed it. No notification was delivered.')), this.taskTimeoutMs)
       try {
         const result = await this.infer(task.prompt, controller.signal, task)
         await this.store.finish(task.id, result)

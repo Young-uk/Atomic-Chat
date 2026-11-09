@@ -18,6 +18,7 @@ import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA, isToolSnapshot, rep
 import { useMessages } from '@/hooks/useMessages'
 import { trackThreadMessageWrite, waitForThreadMessageWrites } from './thread-message-sync'
 import { usesAppendOnlyDstarEffort, withDstarEffortUpdates } from './dstar-effort'
+import { stableModelToolMessages } from './stable-model-tool-json'
 import { renderInstructions } from './instructionTemplate'
 import { withMessageClocksForModel } from './messageClock'
 import { capturePersonalMemory, isPersonalMemorySnapshot, PERSONAL_MEMORY_METADATA, withPersonalMemorySnapshots } from './personal-memory-context'
@@ -1397,6 +1398,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // `mapUserInlineAttachments` folds document text into the message before
     // the strip runs, and `extractAudioInputParts` ran earlier against the
     // untouched `options.messages`, so neither loses anything.
+    // Managed local cache identities must survive durable JSON object ordering.
+    // Use one projection for generation, cache planning and summary estimates.
+    const modelToolMessages = (messages: UIMessage[]) => {
+      const projected = chatExecOutputsForModel(messages)
+      return runtime || localEngineTarget(provider, selectedModel)
+        ? stableModelToolMessages(projected) : projected
+    }
     let preparedMessages = stripUnsupportedFileParts(
       this.mapUserInlineAttachments(messagesToConvert)
     )
@@ -1514,7 +1522,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
                 const wire = applyPolicies(projected, history)
                 publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope, estimated: true,
                   tokens: estimatePromptTokensHeuristic({ system: systemWithSkills,
-                    messages: convertToModelMessages(chatExecOutputsForModel(wire)),
+                    messages: convertToModelMessages(modelToolMessages(wire)),
                     tools: activeTools, omitInlineMediaFromTextEstimate: true }) })
               }
             } catch {
@@ -1620,7 +1628,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           retained => {
             const projected = projectCompactedMessages(retained, modelView,
               history.slice(0, summarizedThrough).map(message => message.id))
-            const wire = convertToModelMessages(chatExecOutputsForModel(applyPolicies(projected, history)))
+            const wire = convertToModelMessages(modelToolMessages(applyPolicies(projected, history)))
             return historyPlanMessages(dropSystemForTools && systemWithSkills
               ? foldSystemIntoFirstUserMessage(wire, systemWithSkills)
               : [...(effectiveSystemMessage ? [{ role: 'system' as const, content: effectiveSystemMessage }] : []), ...wire])
@@ -1652,34 +1660,38 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             original, projectCompactedMessages(startupView, preparedMessages), compactionContext, compaction, options.abortSignal ?? new AbortController().signal,
             { selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
             estimatePromptTokensHeuristic({ system: systemWithSkills,
-              messages: convertToModelMessages(chatExecOutputsForModel(projectCompactedMessages(startupView, preparedMessages))),
+              messages: convertToModelMessages(modelToolMessages(projectCompactedMessages(startupView, preparedMessages))),
               tools: activeTools }) + Math.min((getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048))
         }
         // Tool continuations use the same active summary as their opening
         // request. A newly completed summary waits for the next user turn.
         preparedMessages = projectCompactedMessages(
           compaction.apply(original, options.messages.at(-1)?.role === 'user'), preparedMessages)
-        const estimated = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(preparedMessages)), tools: activeTools })
+        const estimated = estimatePromptTokensHeuristic({ messages: convertToModelMessages(modelToolMessages(preparedMessages)), tools: activeTools })
         // Do not race the answer with a newly scheduled summary. Only the final
         // successful assistant response may schedule it, never a tool step.
         const coordinator = compaction
         // Recovery snapshots include the pending question, but the boundary
         // always retains that entire newest turn rather than summarizing it.
         this.contextRecovery = (error) => {
-          summaryAdmission?.assertAllowed()
           // An exact server rejection carries the tokenizer evidence. Preserve
           // that undercount through every projected recovery view.
           const exact = /Prompt has (\d+) tokens plus (\d+) reserved output tokens/.exec(String(error))
           const baseline = estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
             messages: finalModelMessages, tools: activeTools })
           const correction = exact ? Math.max(0, Number(exact[1]) - baseline) : 0
-          return coordinator.recover(original, compactionContext,
-          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, recovery: true, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) }), options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
+          const cacheUser = (original.at(-1)?.role === 'user' ? original.slice(0, -1) : original).findLast(message => message.role === 'user')
+          const recoverySummary = runtime?.summaryClone && cacheUser
+            ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${cacheUser.id}`, {
+              recovery: true, selectBoundary: cacheBoundaryPlanner(preparedMessages),
+              inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
+            : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, recovery: true, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
+          return coordinator.recover(original, compactionContext, recoverySummary, options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
             const retained = projectCompactedMessages(view, preparedMessages)
             const wire = applyPolicies(retained, original)
             // Use the foreground envelope, including fixed instructions/tools
             // and output reserve; raw-history savings alone cannot prove fit.
-            const projected = convertToModelMessages(chatExecOutputsForModel(wire))
+            const projected = convertToModelMessages(modelToolMessages(wire))
             if (continueContent) projected.push({ role: 'assistant', content: continueContent })
             return estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
               messages: dropSystemForTools && systemWithSkills
@@ -1700,7 +1712,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               console.warn('[context-compaction] disk clone history receipt unavailable')
             })
           }
-          const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
+          const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(modelToolMessages(modelView)), tools: activeTools })
           const summaryAdapter = runtime?.summaryClone && cacheUser
               ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
                 { selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
@@ -1713,7 +1725,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               // Reserve room for historical memory and unresolved work. These
               // are added after the background summary finishes.
               return estimatePromptTokensHeuristic({ system: systemWithSkills,
-                messages: convertToModelMessages(chatExecOutputsForModel(wire)), tools: activeTools }) +
+                messages: convertToModelMessages(modelToolMessages(wire)), tools: activeTools }) +
                 Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
             })
         }
@@ -1723,7 +1735,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       preparedMessages = applyPolicies(preparedMessages, catalogHistory)
     }
     const baseMessages = convertToModelMessages(
-      chatExecOutputsForModel(preparedMessages)
+      modelToolMessages(preparedMessages)
     )
 
     // If continuing a truncated response, append the partial assistant content as a

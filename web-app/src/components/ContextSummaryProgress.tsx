@@ -37,7 +37,10 @@ export function ContextSummaryProgress({ threadId }: { threadId: string }) {
   if (progress.fallbackReason) fields.push(t(`contextSummary.fallback_${progress.fallbackReason}`))
   if (Number.isSafeInteger(input?.request) && input!.request! > 0)
     fields.push(t('contextSummary.request', { count: input!.request }))
-  if (input?.phase === 'preparing') fields.push(t('contextSummary.inputPreparing'))
+  if (input?.phase === 'saving-state') fields.push(t('contextSummary.savingState'))
+  else if (input?.phase === 'restoring-state') fields.push(t('contextSummary.restoringState'))
+  else if (input?.phase === 'waiting-memory') fields.push(t('contextSummary.waitingMemory'))
+  else if (input?.phase === 'preparing') fields.push(t('contextSummary.inputPreparing'))
   else if (input?.phase === 'generating' || (hasCounts && input.processed === input.total)) {
     fields.push(hasCounts
       ? t('contextSummary.inputCompleteTokens', { tokens: input.total!.toLocaleString() })

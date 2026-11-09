@@ -2119,7 +2119,7 @@ function ThreadDetail() {
       refreshKey={agentRun?.finishedAtMs ?? 0}
       isGenerating={requestActive}
     >
-      <div ref={conversationFindRef} className="flex flex-1 flex-col overflow-hidden min-w-0">
+      <div ref={conversationFindRef} className="flex min-h-0 flex-1 flex-col overflow-hidden min-w-0">
         <HeaderPage>
           <div className="flex items-center justify-end w-full pr-2">
             {/* The model is picked from the composer; the header keeps the
@@ -2127,10 +2127,10 @@ function ThreadDetail() {
             {chatMessages.length > 0 && <HeaderContextSize />}
           </div>
         </HeaderPage>
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex flex-1 flex-col h-full overflow-hidden min-w-0">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col h-full overflow-hidden min-w-0">
             {/* Messages Area */}
-            <div className="flex-1 relative">
+            <div className="min-h-0 flex-1 relative">
               <Conversation className="absolute inset-0 text-start">
                 <ConversationContent
                   className={cn('mx-auto w-full max-w-3xl md:w-4/5 xl:w-4/6')}
@@ -2345,7 +2345,7 @@ function ThreadDetail() {
             </div>
 
             {/* Chat Input - Fixed at bottom */}
-            <div className="py-4 mx-auto w-full md:w-4/5 xl:w-4/6">
+            <div className="shrink-0 py-4 mx-auto w-full md:w-4/5 xl:w-4/6">
               <MessageQueue threadId={threadId} onSendNow={handleQueuedSendNow} />
               <ChatInput
                 threadId={threadId}

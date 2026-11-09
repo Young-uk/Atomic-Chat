@@ -832,3 +832,12 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Preserve reviewed disk sessions across compatible upgrades](2026-11-09-reviewed-disk-session-upgrades.md)
 
 - [Personal inference follows the originating local runtime](2026-11-09-personal-inference-routing.md) — Snapshot scheduled-task routing and remove Dstar-only assumptions from memory inference.
+
+- [Background input blocks and scheduled task progress](2026-11-09-background-input-and-scheduled-progress.md) — Remove idle throttling and default scheduled deadlines while preserving foreground fairness.
+
+- [Stable model tool JSON across native persistence](2026-11-09-stable-tool-json-for-disk-cache.md) — Preserve model cache identity through Rust JSON map ordering.
+
+- [Exact managed prompt budgets](2026-11-10-exact-managed-prompt-budget.md) — final wire tokenizer admission for Dstar and Strata.
+
+- [Scheduled preparation](2026-11-10-scheduled-preparation.md) — prepare early and deliver at the occurrence.
+- [Disk recovery and speech output](2026-11-10-disk-recovery-and-speech-output.md) — preserve main state during urgent summary recovery and resume interrupted speech.
