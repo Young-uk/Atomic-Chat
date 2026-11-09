@@ -29,7 +29,7 @@ required. Source availability is not full feature parity or installed-app QA.
 - `personal_memory`: explicit cross-chat notes, preferences, procedures and open
   requests with source references; search/list/update/forget. This does not replace
   Chat's summary, archive search, recent context or unresolved-work ledger.
-- `personal_tasks`: persistent one-shot and interval text tasks, local Dstar
+- `personal_tasks`: persistent one-shot and interval text tasks, originating managed Dstar or Strata
   background slot, results, cancellation and desktop notification. No unattended
   tool actions. Missed work is visible and is not automatically replayed.
   Cron expressions and IANA timezones use the ported Agent scheduling helpers;
@@ -156,3 +156,5 @@ Sleep may delay execution. This service does not keep Dstar running or bypass
 native tool approvals. Results remain in the durable delivery outbox until Chat
 reconnects. External channels and unattended tool workflows are not enabled by
 this service.
+
+Scheduled tasks capture the originating conversation’s verified local endpoint and model when created. They do not switch engines when that saved runtime is unavailable. Older pending tasks resolve their originating conversation at execution; failed or missed tasks are never replayed automatically. Memory query rewriting and maintenance use the sole available local background-capable runtime; ambiguous runtimes fail explicitly. No engine is started automatically.

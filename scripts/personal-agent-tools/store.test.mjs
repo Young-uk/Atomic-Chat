@@ -12,12 +12,13 @@ const fresh = async now => new PersonalStore(await mkdtemp(join(tmpdir(), 'atomi
 test('scheduled voice and origin survive restart while delivery failures never rerun inference', async () => {
   let now = Date.parse('2026-11-02T00:00:00Z')
   const store = await fresh(() => now)
-  const created = await store.task('create', { prompt: 'Synthetic reminder', at: '2026-11-02T00:01:00Z', originThreadId: 'synthetic-thread', assistantInstructions: 'Use formal English and call the user Captain.' })
+  const created = await store.task('create', { prompt: 'Synthetic reminder', at: '2026-11-02T00:01:00Z', originThreadId: 'synthetic-thread', inferenceTarget: { endpoint: 'http://127.0.0.1:18080/v1', model: 'ista-iq3-xxs' }, assistantInstructions: 'Use formal English and call the user Captain.' })
   assert.equal(created.assistantInstructions, undefined)
   now += 60000
   let calls = 0
   const tools = new PersonalTools({ directory: store.directory, store, infer: async (_prompt, _signal, task) => {
     calls++
+    assert.deepEqual(task.inferenceTarget, { endpoint: 'http://127.0.0.1:18080/v1', model: 'ista-iq3-xxs' })
     assert.equal(task.assistantInstructions, 'Use formal English and call the user Captain.')
     return 'Captain, your reminder is ready.'
   } })
@@ -212,17 +213,17 @@ test('scheduled inference explicitly receives the schedule local time zone', asy
   const originalFetch = globalThis.fetch
   let sent
   globalThis.fetch = async (url, options) => {
-    if (String(url).endsWith('/models')) return new Response(JSON.stringify({ atomic_summary_slot: true }))
+    if (String(url).endsWith('/models')) return new Response(JSON.stringify({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat' }] }))
     sent = JSON.parse(options.body)
     return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'Synthetic reminder' } }] }))
   }
   const store = await fresh()
   const tools = new PersonalTools({ directory: store.directory, store })
   try {
-    await tools.infer('Synthetic reminder', new AbortController().signal, { schedule: { tz: 'Asia/Seoul' } })
+    await tools.infer('Synthetic reminder', new AbortController().signal, { schedule: { tz: 'Asia/Seoul' }, inferenceTarget: { endpoint: 'http://127.0.0.1:8010/v1', model: 'qwen3.8-flash-next-chat' } })
     assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
     assert.match(sent.messages[0].content, /Use the local execution time/)
-    await tools.infer('Synthetic one-shot reminder', new AbortController().signal, { timezone: 'Asia/Seoul' })
+    await tools.infer('Synthetic one-shot reminder', new AbortController().signal, { timezone: 'Asia/Seoul', inferenceTarget: { endpoint: 'http://127.0.0.1:8010/v1', model: 'qwen3.8-flash-next-chat' } })
     assert.match(sent.messages[0].content, /Current execution time: .*\(Asia\/Seoul\)/)
   } finally { globalThis.fetch = originalFetch; await tools.shutdown() }
 })

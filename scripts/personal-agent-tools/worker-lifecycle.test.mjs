@@ -11,7 +11,7 @@ test('a holding service preserves one scheduled run after the app disconnects', 
   let calls = 0
   const endpoint = createServer((req, res) => {
     res.setHeader('content-type', 'application/json')
-    if (req.url === '/v1/models') return res.end(JSON.stringify({ atomic_summary_slot: true, data: [] }))
+    if (req.url === '/v1/models') return res.end(JSON.stringify({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat' }] }))
     calls++
     req.resume()
     res.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'Synthetic reminder' } }] }))

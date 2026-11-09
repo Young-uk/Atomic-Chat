@@ -93,6 +93,7 @@ export class PersonalStore {
         if (!Number.isFinite(dueAt)) throw invalid('invalid_start_time', 'The schedule does not resolve to a valid timestamp.')
         if (dueAt <= now) throw invalid('start_time_passed', 'The requested start time has passed. No task was created. Do not retry this timestamp or invent a replacement; ask for a new start time. For an authorized relative repeat, omit at and use intervalSeconds.', { requestedTime: new Date(dueAt).toISOString(), overdueSeconds: Math.ceil((now - dueAt) / 1000) })
         const task = { id: randomUUID(), prompt: bounded(args.prompt, 12000, 'prompt'), dueAt, intervalSeconds, ...(schedule ? { schedule } : {}), status: 'scheduled', createdAt: this.now(), runs: [] }
+        if (args.inferenceTarget) task.inferenceTarget = { ...args.inferenceTarget }
         if (args.timezone) task.timezone = args.timezone
         if (args.originThreadId) task.originThreadId = bounded(args.originThreadId, 200, 'originThreadId')
         if (args.assistantInstructions) task.assistantInstructions = bounded(args.assistantInstructions, 100000, 'assistantInstructions')
