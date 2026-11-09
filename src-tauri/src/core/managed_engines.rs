@@ -281,7 +281,7 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-image-summary-v34/serve/server.py",
+            "feature-integration/runtime-cache-upgrade-v36/serve/server.py",
             "feature-integration/engine-image-summary-v34/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
@@ -317,13 +317,24 @@ impl Environment {
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
-            "cwd": root.join("feature-integration/runtime-image-summary-v34"),
+            "cwd": root.join("feature-integration/runtime-cache-upgrade-v36"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
             "log": root.join("strata-atomic.log"),
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
-            "atomic_disk_session_previous_backend_sha256": "d011acf0ee6a13ddf08ede2967e0cd345a6c327358b1426997c5fb89173bcf1b",
+            "atomic_disk_session_previous_backend_sha256": "6613de82d4eaecb3a932e2f4621f0dbca646e9304593d47aa642d4932a8ac709",
+            // This exact 64K transition changes clone admission, not the native
+            // session-file format. Other models/contexts receive no bridge.
+            "atomic_disk_session_reviewed_upgrades": if context == DEFAULT_STRATA_CONTEXT { serde_json::json!([{
+                "current_native": "cc8a0002024dc5cc2ddba0c57938390354b654028b789f330d0bda2d27252052",
+                "current_model": "strata-stat-v2:401f2352597b8d474e478ec358050f3036d38d040eaa1d73c5dddd8bd86a8612",
+                "previous": {
+                    "atomic_summary_expected_native_sha256": "5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883",
+                    "atomic_summary_expected_model_fingerprint": "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0",
+                    "atomic_summary_expected_backend_sha256": "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33"
+                }
+            }]) } else { serde_json::json!([]) },
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
@@ -335,7 +346,7 @@ impl Environment {
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "cc8a0002024dc5cc2ddba0c57938390354b654028b789f330d0bda2d27252052",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:401f2352597b8d474e478ec358050f3036d38d040eaa1d73c5dddd8bd86a8612",
-            "atomic_summary_expected_backend_sha256": "6613de82d4eaecb3a932e2f4621f0dbca646e9304593d47aa642d4932a8ac709",
+            "atomic_summary_expected_backend_sha256": "cfa50288478eeaffe129a8484e05e1c21c6b11617efb253be0b65088bd2287ee",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -360,7 +371,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-image-summary-v34"),
+                    .join("feature-integration/runtime-cache-upgrade-v36"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -513,7 +524,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-image-summary-v34"),
+                        .join("feature-integration/runtime-cache-upgrade-v36"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1008,6 +1019,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disk_upgrade_bridge_is_scoped_to_the_reviewed_native_model_and_context() {
+        let env = Environment::personal(PathBuf::from("/home/test/dstar"));
+        let cfg = env.strata_config(DEFAULT_STRATA_CONTEXT);
+        let upgrades = cfg["atomic_disk_session_reviewed_upgrades"]
+            .as_array()
+            .unwrap();
+        assert_eq!(upgrades.len(), 1);
+        assert_eq!(
+            upgrades[0]["current_native"],
+            cfg["atomic_summary_expected_native_sha256"]
+        );
+        assert_eq!(
+            upgrades[0]["current_model"],
+            cfg["atomic_summary_expected_model_fingerprint"]
+        );
+        assert_ne!(
+            upgrades[0]["previous"]["atomic_summary_expected_native_sha256"],
+            cfg["atomic_summary_expected_native_sha256"]
+        );
+        for context in [16_384, 65_537, 131_072, 262_144] {
+            assert!(
+                env.strata_config(context)["atomic_disk_session_reviewed_upgrades"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn summary_budget_scales_with_context_without_a_fixed_ceiling() {
         assert_eq!(strata_summary_budget(16_384), 1_300_000_000);
         assert_eq!(strata_summary_budget(65_536), 1_300_000_000);
@@ -1315,7 +1356,7 @@ mod tests {
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-image-summary-v34")
+                .join("feature-integration/runtime-cache-upgrade-v36")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1366,7 +1407,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "6613de82d4eaecb3a932e2f4621f0dbca646e9304593d47aa642d4932a8ac709"
+            "cfa50288478eeaffe129a8484e05e1c21c6b11617efb253be0b65088bd2287ee"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

@@ -828,3 +828,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Image observations in cloned summaries](2026-11-09-image-observations-in-cloned-summaries.md)
 
 - [Recover transient ownership inspection failures](2026-11-09-recover-transient-ownership-inspection.md)
+
+- [Preserve reviewed disk sessions across compatible upgrades](2026-11-09-reviewed-disk-session-upgrades.md)

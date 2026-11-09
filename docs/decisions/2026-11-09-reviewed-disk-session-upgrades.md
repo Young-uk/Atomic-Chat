@@ -1,0 +1,9 @@
+# Preserve disk sessions across reviewed compatible upgrades
+
+The v35 installation changed Strata's native executable and Python qualification identity. Clean shutdown had saved a 57,596-token, 1,054,918,516-byte session, but the new runtime refused its outer identity before invoking the native reader. The active request consequently read all 36,762 prompt tokens. The cache was present; upgrade admission caused the miss.
+
+Native session serialization and reader versions did not change in the image-clone update. The native reader independently verifies model/config fingerprints, format version, integrity and tensor geometry before device writes. Preserve those checks. Add only an explicit reviewed source/destination qualification-pair bridge to the outer disk-session manifest admission. Bind the destination to its exact native checksum and model/config fingerprint; unknown destinations, other models/contexts and unlisted sources remain ineligible. Restrict the current native transition to the reviewed 64K configuration. Keep the existing backend-only bridge for v34 sessions whose native/model identity already matches.
+
+Do not rewrite the existing manifest or claim a legacy session has clone provenance. Normal binding requirements and native restoration validation remain mandatory. A later successful clean save publishes the current identity. Report qualification mismatch and reviewed-upgrade acceptance explicitly in logs.
+
+Prepare the fix in a separate runtime. Do not edit the active runtime, stop its request, restore an old snapshot into live inference, delete caches or run model generation for validation. Validate exact-pair admission, negative model/context/source cases, native-reader failure propagation, existing cache lifecycle tests and GUI qualification projections. A read-only real-manifest/header check proves admission eligibility; it does not substitute for an actual native restore test.
