@@ -1,5 +1,4 @@
 import { stripChatSpeechStyles } from '@/lib/audio/chatSpeechStyle'
-import { InferenceProgress } from '@/components/InferenceProgress'
 import { useInferenceProgress } from '@/lib/inference-progress'
 import {
   memo,
@@ -603,7 +602,7 @@ export const MessageItem = memo(
     )
 
     return (
-      <div className="w-full mb-4">
+      <div className={cn('w-full', isRequestActive ? 'mb-0' : 'mb-4')}>
         {message.role === 'user' && messageClockLabel(message.metadata) && (
           <div className="mb-1 flex min-w-0 justify-end">
             <span
@@ -632,9 +631,7 @@ export const MessageItem = memo(
           }
         })}
 
-        {isRequestActive && hasLiveInference && inferenceThreadId && (
-          <InferenceProgress threadId={inferenceThreadId} />
-        )}
+        {/* Request-scoped progress is owned once by the composer. */}
 
         {isEditing && !firstTextBlockKey && renderEditor('inline-editor')}
 
@@ -673,8 +670,10 @@ export const MessageItem = memo(
           </div>
         )}
 
+        {/* Completed replies own the action row. Mounting an empty row during
+            streaming reserves its margin and minimum height above progress. */}
         {/* Message actions for assistant messages (non-tool) */}
-        {message.role === 'assistant' && (
+        {message.role === 'assistant' && !isRequestActive && (
           <div
             className="mt-3 flex min-h-6 flex-wrap items-center gap-2 text-xs text-muted-foreground"
             data-testid="assistant-message-actions"

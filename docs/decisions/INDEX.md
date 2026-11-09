@@ -794,3 +794,11 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Keep desktop overlay interactions on the current app](2026-11-09-desktop-overlay-interaction.md)
 
 - [Preserve Strata prompt prefixes across Rust persistence](2026-11-09-stable-strata-tool-result-wire-order.md)
+
+- [Strata retained history cache and urgent summary priority](2026-11-09-strata-retained-history-cache.md)
+
+- [Reboot-stable Strata context verification](2026-11-09-reboot-stable-strata-context-pins.md)
+
+- **2026-11-09** — [Prepare Strata summary resources before first inference](2026-11-09-prepare-strata-summary-resources-before-first-inference.md)
+
+- **2026-11-09** — [Recheck summary admission and stream owned input progress](2026-11-09-recheck-summary-admission-and-stream-owned-input-progress.md)

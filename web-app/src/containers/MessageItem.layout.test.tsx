@@ -1,3 +1,4 @@
+import { InferenceProgress } from '@/components/InferenceProgress'
 import { useInferenceProgress } from '@/lib/inference-progress'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { page } from '@vitest/browser/context'
@@ -233,9 +234,13 @@ describe('Live reasoning geometry (Chromium)', () => {
           rowHeight,
           0
         )
-        expect(
-          screen.getByTestId('lifecycle-anchor').getBoundingClientRect().top
-        ).toBeCloseTo(anchor, 0)
+        // Progress stays adjacent while the turn is active. Completion may
+        // append reply actions, but must not move either existing trace row.
+        if (phase.active) {
+          expect(screen.getByTestId('lifecycle-anchor').getBoundingClientRect().top).toBeCloseTo(anchor, 0)
+        } else {
+          expect(screen.getByTestId('assistant-message-actions')).toBeVisible()
+        }
         expect(viewport(container).getBoundingClientRect().height).toBe(0)
 
         for (const trigger of [thinking, activity]) {
@@ -512,22 +517,25 @@ for (const width of [1024, 1280]) {
 }
 
 
-it.each([['16px', false], ['20px', false], ['16px', true], ['20px', true]] as const)(
-  'shows one live indicator alongside reasoning details at %s (dark: %s)',
-  async (fontSize, dark) => {
+it.each((['reading', 'thinking', 'generating'] as const).flatMap(phase => [16, 20].flatMap(size => [false, true].map(dark => ({ phase, size, dark })))))(
+  'shows one composer indicator after summary/tool continuation: $phase $size dark=$dark',
+  async ({ phase, size, dark }) => {
+    const fontSize = `${size}px` as '16px' | '20px'
     setFontSize(fontSize)
     setTheme(dark ? 'dark' : 'light')
     useInferenceProgress.setState({ byThread: { overlap: {
-      requestId: 'overlap', startedAt: Date.now() - 33000, phase: 'thinking',
+      requestId: 'overlap', startedAt: Date.now() - 33000, phase, processed: 6144, total: 44877, cache: 13843,
     } } })
     render(withTranslations(<div style={{ width: 320 }} data-testid="overlap-column">
       <MessageItem message={{ id: 'overlap', role: 'assistant', parts: [
         { type: 'reasoning', text: 'Inspect this reasoning without a second live clock.', state: 'streaming' },
       ] }} isFirstMessage={false} isLastMessage status="streaming" inferenceThreadId="overlap" />
+      <InferenceProgress threadId="overlap" />
     </div>))
     const column = screen.getByTestId('overlap-column')
     await settle(column)
     expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(phase === 'reading' ? 1 : 0)
     expect(screen.getByRole('button', { name: 'Reasoning details' })).toBeVisible()
     expect(screen.queryByText(/^Working/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Thinking for/)).not.toBeInTheDocument()
@@ -577,5 +585,34 @@ it.each([1024, 1280].flatMap((width) => ['16px', '20px'].map((fontSize) => ({ wi
       await settle(container)
       expect(Math.abs(firstInkTop() - initialTop)).toBeLessThanOrEqual(1)
     }
+  }
+)
+
+it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].flatMap(dark => [false, true].map(answering => ({ width, size, dark, answering }))))))(
+  'keeps live progress next to visible content: $width $size dark=$dark answering=$answering',
+  async ({ width, size, dark, answering }) => {
+    await page.viewport(width, 800)
+    setFontSize(`${size}px` as '16px' | '20px')
+    setTheme(dark ? 'dark' : 'light')
+    useInferenceProgress.setState({ byThread: { spacing: {
+      requestId: 'spacing', startedAt: Date.now(), phase: answering ? 'generating' : 'thinking',
+    } } })
+    const message: UIMessage = { id: 'spacing', role: 'assistant', parts: [
+      { type: 'reasoning', text: 'Inspect the result.', state: 'done' },
+      ...(answering ? [{ type: 'text' as const, text: 'The response is arriving.' }] : []),
+    ] }
+    const { container } = render(withTranslations(
+      <div className="flex flex-col gap-y-2" style={{ width: width - 304 }}>
+        <MessageItem message={message} isFirstMessage={false} isLastMessage status="submitted" requestActive inferenceThreadId="spacing" />
+        <InferenceProgress threadId="spacing" />
+      </div>
+    ))
+    await settle(container)
+    const anchor = answering ? screen.getByText('The response is arriving.') : screen.getByRole('button', { name: 'Reasoning details' })
+    const gap = screen.getByRole('status').getBoundingClientRect().top - anchor.getBoundingClientRect().bottom
+    expect(gap).toBeLessThanOrEqual(size * 3)
+    expect(container.querySelector('[data-testid="assistant-message-actions"]')).toBeNull()
+    expectNoHorizontalOverflow(container)
+    useInferenceProgress.setState({ byThread: {} })
   }
 )

@@ -385,3 +385,24 @@ it('excludes screenshot bytes from summary evidence and usage estimates without 
   // The retry must send the view that passed recovery, even with adoption off.
   expect(c.apply(messages, false)).toEqual(verified)
 })
+
+
+it('settles the background owner before promoting an explicitly urgent recovery adapter', async () => {
+  const c = new ContextCompaction('promotion', storage())
+  let released = false
+  const background = vi.fn(async (_previous, _evidence, signal: AbortSignal) =>
+    new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => {
+      released = true
+      reject(signal.reason)
+    }, { once: true })))
+  c.schedule(history(), 2000, 2000, background)
+  await settle()
+  const urgent = Object.assign(vi.fn(async () => {
+    expect(released).toBe(true)
+    return 'Verified recovery handoff'
+  }), { recoveryPriority: true })
+  await c.recover(history(), 2000, urgent)
+  expect(background).toHaveBeenCalledTimes(1)
+  expect(urgent).toHaveBeenCalledTimes(1)
+  expect(c.error).toBeUndefined()
+})

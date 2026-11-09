@@ -1596,7 +1596,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             messages: finalModelMessages, tools: activeTools })
           const correction = exact ? Math.max(0, Number(exact[1]) - baseline) : 0
           return coordinator.recover(original, compactionContext,
-          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission }), options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
+          summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, recovery: true, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) }), options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
             const retained = projectCompactedMessages(view, preparedMessages)
             const wire = applyPolicies(retained, original)
             // Use the foreground envelope, including fixed instructions/tools
@@ -1618,7 +1618,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
           coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission }), undefined,
+            summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) }), undefined,
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)
               const wire = applyPolicies(retainedView, history)

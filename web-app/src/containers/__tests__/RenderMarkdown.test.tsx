@@ -585,3 +585,10 @@ describe('RenderMarkdown', () => {
     })
   })
 })
+
+it.each([false, true])('preserves draw ranges in the answer renderer while streaming=%s', isStreaming => {
+  const text = 'Each draw has 조 1~5, each with numbers 000000~999999. Total 1,000만 매 (판매점/인터넷 각각 500만매).'
+  const { container } = render(<RenderMarkdown content={text} isStreaming={isStreaming} />)
+  expect(container.querySelector('.markdown')).toHaveTextContent(text)
+  expect(container.querySelector('del')).toBeNull()
+})

@@ -26,13 +26,46 @@ export function ContextSummaryProgress({ threadId }: { threadId: string }) {
   if (!progress || (progress.phase === 'ready' && now - (progress.finishedAt ?? now) >= 5000)) return null
   const seconds = Math.max(0, Math.floor(((progress.finishedAt ?? now) - progress.startedAt) / 1000))
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  const input = ['queued', 'paused', 'summarizing'].includes(progress.phase) ? progress.input : undefined
+  const hasCounts = input && Number.isSafeInteger(input.processed) && Number.isSafeInteger(input.total) &&
+    input.total! > 0 && input.processed! >= 0 && input.processed! <= input.total!
+  // Percentages describe unread input only, never summary output completion.
+  const reading = input?.phase === 'reading' && hasCounts && input.processed! < input.total!
+  const percentage = reading ? Math.floor(input.processed! / input.total! * 1000) / 10 : undefined
+  const fields = [t('contextSummary.elapsed', { time: elapsed })]
+  if (Number.isSafeInteger(input?.request) && input!.request! > 0)
+    fields.push(t('contextSummary.request', { count: input!.request }))
+  if (input?.phase === 'preparing') fields.push(t('contextSummary.inputPreparing'))
+  else if (input?.phase === 'generating' || (hasCounts && input.processed === input.total)) {
+    fields.push(hasCounts
+      ? t('contextSummary.inputCompleteTokens', { tokens: input.total!.toLocaleString() })
+      : t('contextSummary.inputComplete'))
+    fields.push(t(input?.phase === 'generating' ? 'contextSummary.generating' : 'contextSummary.generationPreparing'))
+  } else if (input?.phase === 'reading') {
+    fields.push(`${t('inferenceProgress.reading')}${percentage !== undefined ? ` ${percentage}%` : ''}`)
+    if (hasCounts) fields.push(t('inferenceProgress.tokens', {
+      processed: input.processed!.toLocaleString(), total: input.total!.toLocaleString(),
+    }))
+  }
+  if (Number.isSafeInteger(input?.cache) && input!.cache! > 0)
+    fields.push(t('inferenceProgress.cached', { tokens: input!.cache!.toLocaleString() }))
   const Icon = progress.phase === 'ready' ? Check : progress.phase === 'failed' ? AlertCircle : progress.phase === 'paused' ? Pause : Loader2
   return (
     <details className="my-2 min-w-0 max-w-full text-xs text-muted-foreground">
       <summary className="flex min-w-0 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1">
-        <Icon aria-hidden="true" className={`size-3.5 shrink-0 ${progress.finishedAt || progress.phase === 'paused' ? '' : 'animate-spin'}`} />
+        <span className="flex size-4 shrink-0 items-center justify-center overflow-hidden" aria-hidden="true">
+          <Icon className={`size-3.5 ${progress.finishedAt || progress.phase === 'paused' ? '' : 'animate-spin'}`} />
+        </span>
         <span role="status" aria-live="polite" className="min-w-0 break-words">{t(`contextSummary.${progress.phase}`)}</span>
-        <span className="shrink-0 tabular-nums">{elapsed}</span>
+        {fields.map((field, index) => <span key={index} className="inline-flex min-w-0 items-baseline gap-x-2 tabular-nums">
+          <span aria-hidden="true" className="shrink-0">·</span>
+          <span className="min-w-0 break-words">{field}</span>
+        </span>)}
+        {percentage !== undefined && <span role="progressbar" aria-label={t('inferenceProgress.reading')}
+          aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage}
+          className="h-1.5 basis-full overflow-hidden rounded-full bg-muted">
+          <span className="block h-full bg-primary transition-[width]" style={{ width: `${percentage}%` }} />
+        </span>}
       </summary>
       <div className="mt-1 min-w-0 space-y-1 break-words pl-5">
         <p>{t('contextSummary.sections', { count: progress.completed })}</p>

@@ -20,7 +20,18 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Streamdown } from 'streamdown'
+import { Streamdown, defaultRemarkPlugins } from 'streamdown'
+import remarkGfm from 'remark-gfm'
+
+// Reasoning uses its own renderer. Match the answer renderer's single-tilde
+// policy so conversational tildes and numeric ranges stay literal here too.
+// Keep explicit ~~strikethrough~~ and all other default plugins unchanged.
+const REASONING_GFM: NonNullable<ComponentProps<typeof Streamdown>['remarkPlugins']>[number] =
+  [remarkGfm, { singleTilde: false }]
+const REASONING_REMARK_PLUGINS = Object.values({
+  ...defaultRemarkPlugins,
+  gfm: REASONING_GFM,
+})
 
 type ReasoningContextValue = {
   isStreaming: boolean
@@ -296,7 +307,7 @@ export const ReasoningContent = memo(
         dotted border. */}
         <div className="markdown ml-2 border-l border-border/60 pl-4">
           {showMarkdown ? (
-            <Streamdown animate={false} {...props}>
+            <Streamdown animate={false} remarkPlugins={REASONING_REMARK_PLUGINS} {...props}>
               {normalizedChildren}
             </Streamdown>
           ) : (

@@ -104,7 +104,7 @@
     "ready": "{{engine}} is ready",
     "error": "{{engine}} could not start",
     "retry": "Start",
-    "strataCaution": "Strata IQ3_XXS is an experimental engine with high memory requirements. Available features depend on the server’s reported capabilities. The separate 16K summary state is experimental and needs a foreground conversation first. Low memory can defer summarization. Stability has not yet been verified on this Mac.",
+    "strataCaution": "Strata IQ3_XXS is an experimental engine with high memory requirements. Available features depend on the server’s reported capabilities. The separate 16K summary state is experimental. Low memory can defer summarization. Stability has not yet been verified on this Mac.",
     "selectDstar": "Choose Dstar in the chat model selector before using these controls.",
     "errors": {
       "engineSummaryRecoveryRequired": "The previous summary failed to restore model state. Stop this engine, then start it again.",

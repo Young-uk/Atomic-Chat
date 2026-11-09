@@ -23,13 +23,13 @@ export type SummaryPriorityScheduler = {
 }
 export type SummaryStateBank = {
   context: 16384
-  coldStart: false
-  requiresForegroundWarmup: true
   maxStateBytes: number
   sharedWeights: true
   serializedCompute: true
   experimental: true
-} & ({ protocol: 4 } | {
+} & ({ coldStart: false; requiresForegroundWarmup: true } | {
+  coldStart: true; requiresForegroundWarmup: false; resourcePreparation: 'native-on-admission-v1'
+}) & ({ protocol: 4 } | {
   protocol: 5
   continuationTextOnly: false
   foregroundPreparation: 'legacy-first-token-v1'
@@ -44,6 +44,7 @@ export type LocalModelCapabilities = {
   runtimeScope?: string
   archiveScope?: string
   summarySlot: boolean
+  summaryStreamProgress?: boolean
   summaryTokenCounting: boolean
   summaryContext: number
   summaryQualifiedEnvelope?: SummaryQualifiedEnvelope
@@ -121,8 +122,14 @@ function summaryStateBank(
   const protocol = body.atomic_summary_protocol
   const priority = protocol === 5
   const scheduler = priority ? summaryPriorityScheduler(body.atomic_summary_scheduler) : undefined
-  if ((protocol !== 4 && protocol !== 5) || body.atomic_summary_cold_start !== false ||
-      body.atomic_summary_requires_foreground_warmup !== true ||
+  // Cold support is an explicit native resource-preparation contract. The
+  // legacy state-bank protocol still requires foreground warm-up.
+  const cold = body.atomic_summary_cold_start === true &&
+    body.atomic_summary_requires_foreground_warmup === false &&
+    body.atomic_summary_resource_preparation === 'native-on-admission-v1'
+  const warm = body.atomic_summary_cold_start === false &&
+    body.atomic_summary_requires_foreground_warmup === true
+  if ((protocol !== 4 && protocol !== 5) || (!cold && !warm) ||
       body.atomic_summary_isolation !== (priority ? 'shared-weights-priority-v1' : 'shared-weights-state-bank-v1') ||
       body.atomic_summary_context !== 16384 ||
       body.atomic_summary_shared_weights !== true || body.atomic_summary_serialized_compute !== true ||
@@ -130,7 +137,10 @@ function summaryStateBank(
       body.atomic_summary_state_bank_provenance !== 'experimental-user-validation' ||
       body.atomic_summary_qualified_envelope !== null || !maxStateBytes ||
       !contextLength || contextLength < 16384) return undefined
-  const common = { context: 16384, coldStart: false, requiresForegroundWarmup: true,
+  const preparation = cold
+    ? { coldStart: true, requiresForegroundWarmup: false, resourcePreparation: 'native-on-admission-v1' } as const
+    : { coldStart: false, requiresForegroundWarmup: true } as const
+  const common = { context: 16384, ...preparation,
     maxStateBytes, sharedWeights: true, serializedCompute: true, experimental: true } as const
   if (protocol === 4) return { protocol: 4, ...common }
   if (!scheduler || body.atomic_summary_continuation_text_only !== false ||
@@ -199,6 +209,7 @@ export async function probeLocalModelCapabilities(
         ? JSON.stringify([provider.provider, provider.base_url!.replace(/\/$/, ''), model.id, fingerprint])
         : undefined,
       summarySlot,
+      summaryStreamProgress: summarySlot && (target.engine === 'dstar' || body.atomic_summary_stream_progress === true),
       summaryTokenCounting: summarySlot && summaryContext === 16384 && body.atomic_summary_token_count === true,
       summaryContext,
       summaryQualifiedEnvelope,

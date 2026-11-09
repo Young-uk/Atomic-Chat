@@ -4,7 +4,7 @@ import { useInferenceProgress } from '@/lib/inference-progress'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 
 /** Request-scoped status stays visible through prefill, reasoning and decoding. */
-export function InferenceProgress({ threadId, hasAssistantIndicator = false }: { threadId: string; hasAssistantIndicator?: boolean }) {
+export function InferenceProgress({ threadId }: { threadId: string }) {
   const progress = useInferenceProgress((state) => state.byThread[threadId])
   const { t } = useTranslation('chat')
   const [now, setNow] = useState(Date.now)
@@ -14,7 +14,7 @@ export function InferenceProgress({ threadId, hasAssistantIndicator = false }: {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [progress?.requestId])
-  if (!progress || (hasAssistantIndicator && (progress.phase === 'thinking' || progress.phase === 'generating'))) return null
+  if (!progress) return null
   const seconds = Math.max(0, Math.floor((now - progress.startedAt) / 1000))
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
   const hasCounts = progress.phase === 'reading' && Number.isSafeInteger(progress.processed) &&
@@ -31,12 +31,14 @@ export function InferenceProgress({ threadId, hasAssistantIndicator = false }: {
         </span>
         <span className="min-w-0 break-words">{t(`inferenceProgress.${progress.phase}`)}</span>
         {percentage !== undefined && <span className="shrink-0 tabular-nums">{percentage}%</span>}
-        <span className="shrink-0 tabular-nums">{elapsed}</span>
+        <span className="inline-flex min-w-0 items-baseline gap-x-2 tabular-nums">
+          <span aria-hidden="true">·</span><span>{t('inferenceProgress.elapsed', { time: elapsed })}</span>
+        </span>
       </div>
       {hasCounts && <div className="mt-1 min-w-0 break-words tabular-nums">
         {t('inferenceProgress.tokens', { processed: progress.processed!.toLocaleString(), total: progress.total!.toLocaleString() })}
         {Number.isSafeInteger(progress.cache) && progress.cache! > 0 && <span className="ml-2">
-          {t('inferenceProgress.cached', { tokens: progress.cache!.toLocaleString() })}
+          <span aria-hidden="true">· </span>{t('inferenceProgress.cached', { tokens: progress.cache!.toLocaleString() })}
         </span>}
       </div>}
       {percentage !== undefined && (

@@ -1,6 +1,14 @@
 import { create } from 'zustand'
 
+export type SummaryInputProgress = {
+  request?: number
+  phase: 'preparing' | 'reading' | 'generating'
+  processed?: number
+  total?: number
+  cache?: number
+}
 export type SummaryProgress = {
+  input?: SummaryInputProgress
   phase: 'queued' | 'paused' | 'summarizing' | 'saving' | 'ready' | 'failed'
   startedAt: number
   completed: number

@@ -205,3 +205,23 @@ describe('ReasoningContent', () => {
     )
   })
 })
+
+describe('literal single tildes in reasoning', () => {
+  it.each([false, true])('keeps the draw ranges literal while streaming=%s', async isStreaming => {
+    const text = 'Each draw has 조 1~5, each with numbers 000000~999999. Total 1,000만 매 (판매점/인터넷 각각 500만매).'
+    const { container } = render(<Reasoning isStreaming={isStreaming} defaultOpen>
+      <ReasoningTrigger /><ReasoningContent isStreaming={isStreaming}>{text}</ReasoningContent>
+    </Reasoning>)
+    await waitFor(() => expect(container).toHaveTextContent(text))
+    expect(container.querySelector('del')).toBeNull()
+  })
+  it('retains explicit double-tilde strikethrough and inline code', async () => {
+    const { container } = render(<Reasoning defaultOpen>
+      <ReasoningTrigger /><ReasoningContent>{'~말투~ · ~~취소~~ · `~code~`'}</ReasoningContent>
+    </Reasoning>)
+    await waitFor(() => expect(container.querySelector('del')).toHaveTextContent('취소'))
+    expect(container.querySelectorAll('del')).toHaveLength(1)
+    expect(container).toHaveTextContent('~말투~')
+    expect(container.querySelector('code')).toHaveTextContent('~code~')
+  })
+})

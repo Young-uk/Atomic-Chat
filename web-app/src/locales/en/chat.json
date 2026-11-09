@@ -321,6 +321,7 @@
     "videoModelNote": "The model can't watch videos: it only sees the file name."
   },
   "inferenceProgress": {
+    "elapsed": "Elapsed {{time}}",
     "tokens": "New input: {{processed}} / {{total}} tokens",
     "cached": "Reused: {{tokens}} tokens",
     "checking": "Checking completion",
@@ -331,6 +332,13 @@
     "preparing": "Preparing response"
   },
   "contextSummary": {
+    "inputPreparing": "Waiting to read input",
+    "elapsed": "Total elapsed {{time}}",
+    "request": "Summary request {{count}}",
+    "inputComplete": "Input reading complete",
+    "inputCompleteTokens": "Input reading complete ({{tokens}} new tokens)",
+    "generating": "Generating summary",
+    "generationPreparing": "Preparing summary generation",
     "paused": "Summary paused · Chat has priority",
     "queued": "Preparing summary",
     "summarizing": "Summarizing earlier messages",

@@ -259,6 +259,20 @@ describe('experimental weighted Strata summary scheduling', () => {
     atomic_summary_foreground_preparation: 'legacy-first-token-v1', atomic_summary_foreground_prefill_exclusive: true,
     ...extra,
   })
+  it('accepts explicit native cold preparation while retaining weighted scheduling', async () => {
+    respond(priority({ atomic_summary_cold_start: true, atomic_summary_requires_foreground_warmup: false,
+      atomic_summary_resource_preparation: 'native-on-admission-v1' }))
+    expect(await probeLocalModelCapabilities(provider, model)).toMatchObject({
+      summarySlot: true, summaryQualifiedEnvelope: undefined, summaryMaxMainTokens: undefined,
+      summaryStateBank: { protocol: 5, coldStart: true, requiresForegroundWarmup: false,
+        resourcePreparation: 'native-on-admission-v1', scheduler: { policy: 'weighted-quanta-v1' } },
+    })
+  })
+  it.each([undefined, null, 'unknown'])('rejects cold banks without native resource preparation %j', async preparation => {
+    respond(priority({ atomic_summary_cold_start: true, atomic_summary_requires_foreground_warmup: false,
+      atomic_summary_resource_preparation: preparation }))
+    expect(await probeLocalModelCapabilities(provider, model)).toMatchObject({ summarySlot: false })
+  })
   it.each([1, 8, 64])('accepts explicit scheduling with foreground weight %i', async foreground_weight => {
     respond(priority({ atomic_summary_scheduler: { ...scheduler, foreground_weight } }))
     expect(await probeLocalModelCapabilities(provider, model)).toMatchObject({

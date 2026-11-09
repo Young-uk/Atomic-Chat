@@ -392,3 +392,71 @@ it('retains raw archives without committing derived state on admission refusal a
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/chat/completions'))).toHaveLength(calls)
   expect(messages).toEqual(original)
 })
+
+
+it('marks only explicitly urgent generation requests for recovery priority', async () => {
+  for (const recovery of [false, true]) {
+    const bodies: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+      bodies.push(JSON.parse(init.body))
+      return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'Combined handoff' } }] }) }
+    }))
+    const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: false, recovery })
+    await summarize.batches!.consolidate([
+      { id: 'one', summary: 'One', sourceEndId: 'a0' },
+      { id: 'two', summary: 'Two', sourceEndId: 'a1' },
+    ], undefined, new AbortController().signal)
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].atomic_summary_recovery).toBe(recovery ? true : undefined)
+    expect(summarize.recoveryPriority).toBe(recovery)
+  }
+})
+
+it('explains state-bank safety refusals without a legacy admission envelope', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/summary-token-count')
+    ? { ok: true, json: async () => ({ input_tokens: 6000, context_length: 16384 }) }
+    : { ok: false, status: 409, json: async () => ({ error: { code: 'atomic_summary_admission_refused' } }) }))
+  const summarize = summarizeBatchesWithDstar('http://strata/v1', 'model', { tokenCounting: true, recovery: true })
+  const messages = turn(1), original = structuredClone(messages), save = vi.fn()
+  await expect(summarize('', 'evidence', new AbortController().signal, undefined,
+    { requestSources: messages, save })).rejects.toThrow('server safety admission; originals retained')
+  expect(save).not.toHaveBeenCalled()
+  expect(messages).toEqual(original)
+})
+
+it('only accepts input progress from its current pending summary signal', async () => {
+  const events: Array<{ input?: unknown } | undefined> = []
+  let owner!: AbortSignal, finish!: () => void
+  const summarize = (async (_p: string, _e: string, signal: AbortSignal) => {
+    owner = signal
+    await new Promise<void>(resolve => { finish = resolve })
+    return 'handoff'
+  }) as Summarize
+  const c = new ContextCompaction('input-owner', { load: async () => undefined, save: async () => {} }, p => events.push(p))
+  c.schedule([...turn(1), ...turn(2)], 1, 100000, summarize, 2)
+  await vi.waitFor(() => expect(owner).toBeDefined())
+  c.reportInput(owner, { phase: 'reading', processed: 10, total: 100, cache: 0 })
+  expect(events.at(-1)?.input).toMatchObject({ processed: 10, total: 100 })
+  const count = events.length
+  c.reportInput(new AbortController().signal, { phase: 'reading', processed: 90, total: 100 })
+  expect(events).toHaveLength(count)
+  c.cancel(); c.reportInput(owner, { phase: 'reading', processed: 99, total: 100 })
+  expect(events.at(-1)?.input).not.toEqual(expect.objectContaining({ processed: 99 }))
+  finish(); await settle()
+})
+
+it('numbers actual summary requests so a new input phase is not mistaken for generation going backwards', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('summary-token-count')
+    ? { ok: true, json: async () => ({ input_tokens: 1000, context_length: 16384 }) }
+    : { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: {
+      content: JSON.stringify({ summary: 'Facts', openRequests: [], resolvedRequests: [] }),
+    } }] }) }))
+  const requests: number[] = []
+  const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', {
+    tokenCounting: true, inputProgress: input => { if (input) requests.push(input.request!) },
+  })
+  const signal = new AbortController().signal
+  for (let n = 0; n < 2; n++) await summarize('', 'evidence', signal, undefined,
+    { requestSources: turn(1), save: async () => {} })
+  expect(requests).toEqual([1, 2])
+})

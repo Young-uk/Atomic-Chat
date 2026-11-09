@@ -56,3 +56,41 @@ it('keeps an in-flight summary active during foreground scheduling, never paused
     await task
   } finally { endForeground() }
 })
+
+it('shows real input counts beside the summary while collapsed, without another thinking indicator', () => {
+  useContextSummaryProgress.setState({ byThread: { a: { phase: 'summarizing', startedAt: Date.now(), completed: 0, archived: true,
+    input: { phase: 'reading', processed: 6144, total: 44877, cache: 13843 } } } })
+  render(withTranslations(<ContextSummaryProgress threadId="a" />))
+  expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '13.6')
+  expect(screen.getByText(/6,144.*44,877/)).toBeInTheDocument()
+  expect(screen.getByText(/13,843/)).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('Summarizing earlier messages')
+  expect(screen.queryByText(/Thinking/)).toBeNull()
+})
+it('labels resource preparation without inventing token counts or a percentage', () => {
+  useContextSummaryProgress.setState({ byThread: { a: { phase: 'summarizing', startedAt: Date.now(), completed: 0, archived: false,
+    input: { phase: 'preparing' } } } })
+  render(withTranslations(<ContextSummaryProgress threadId="a" />))
+  expect(screen.getByText('Waiting to read input')).toBeInTheDocument()
+  expect(screen.queryByRole('progressbar')).toBeNull()
+})
+
+it('separates generation from completed input without displaying output completion percentages', () => {
+  useContextSummaryProgress.setState({ byThread: { a: { phase: 'summarizing', startedAt: Date.now(), completed: 1, archived: true,
+    input: { phase: 'generating', processed: 11219, total: 11219, request: 2 } } } })
+  const { container } = render(withTranslations(<ContextSummaryProgress threadId="a" />))
+  expect(screen.getByText('Input reading complete (11,219 new tokens)')).toBeInTheDocument()
+  expect(screen.getByText('Generating summary')).toBeInTheDocument()
+  expect(screen.getByText('Summary request 2')).toBeInTheDocument()
+  expect(screen.getByText(/Total elapsed/)).toBeInTheDocument()
+  expect(screen.queryByRole('progressbar')).toBeNull()
+  expect(screen.queryByText(/100%|Generating response/)).toBeNull()
+  expect([...container.querySelectorAll('span[aria-hidden="true"]')].filter(e => e.textContent === '·').length).toBeGreaterThanOrEqual(4)
+})
+it('distinguishes input completion before the first generated token', () => {
+  useContextSummaryProgress.setState({ byThread: { a: { phase: 'summarizing', startedAt: Date.now(), completed: 0, archived: true,
+    input: { phase: 'reading', processed: 100, total: 100 } } } })
+  render(withTranslations(<ContextSummaryProgress threadId="a" />))
+  expect(screen.getByText('Preparing summary generation')).toBeInTheDocument()
+  expect(screen.queryByRole('progressbar')).toBeNull()
+})

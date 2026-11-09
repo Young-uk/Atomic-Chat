@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
-import type { SummaryProgress } from './context-summary-progress'
+import type { SummaryProgress, SummaryInputProgress } from './context-summary-progress'
 import type { UIMessage } from 'ai'
 import { estimateTokens } from './prompt-size'
 import { prepareToolResultImagesForModel } from './toolResultImages'
@@ -159,6 +159,7 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
 }
 
 export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
+  recoveryPriority?: boolean
   batches?: {
     countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
     selectCompletePrefix(messages: UIMessage[], requests: RequestLedger | undefined, signal: AbortSignal): Promise<number>
@@ -172,12 +173,17 @@ export type Summarize = ((previous: string, evidence: string, signal: AbortSigna
 export class ContextCompaction {
   private active?: ArchiveRecord
   private resumable?: ArchiveRecord
-  private pending?: { record: ArchiveRecord; sourceKey: string; controller: AbortController }
+  private pending?: { record: ArchiveRecord; sourceKey: string; controller: AbortController; recovery?: boolean; inputProgress?: (input?: SummaryInputProgress) => void }
   private ready?: { record: ArchiveRecord; sourceKey: string }
   private archiveCandidates: ArchiveRecord[] = []
   private initialization?: Promise<void>
   private pendingCompletion?: Promise<void>
   private batchWaiters = new Set<() => void>()
+
+  /** A late stream may only update its own still-pending summary task. */
+  reportInput(signal: AbortSignal, input?: SummaryInputProgress): void {
+    if (!signal.aborted && this.pending?.controller.signal === signal) this.pending.inputProgress?.(input)
+  }
 
   private notifyBatch(): void {
     for (const notify of this.batchWaiters) notify()
@@ -310,7 +316,7 @@ export class ContextCompaction {
       summaryAfterMessageId: (messages.at(-1)?.role === 'user' ? messages.at(-2) : messages.at(-1))?.id,
       summaryFallbackAfterMessageId: messages.findLast(m => m.role === 'user')?.id }
     const controller = new AbortController()
-    const task = { record, sourceKey: fingerprint(source), controller }
+    const task = { record, sourceKey: fingerprint(source), controller, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
     this.error = undefined
     const progress: SummaryProgress = { phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
@@ -319,6 +325,7 @@ export class ContextCompaction {
       progress.phase = phase
       this.onProgress?.({ ...progress })
     }
+    task.inputProgress = input => { progress.input = input; report(input ? 'summarizing' : progress.phase) }
     report('queued')
     this.pendingCompletion = (async () => {
       try {
@@ -387,7 +394,7 @@ export class ContextCompaction {
     if (limit <= archived && !initial?.extractedBatches) return
     const controller = new AbortController()
     const planningRecord: ArchiveRecord = { version: 1, id: crypto.randomUUID(), threadId: this.threadId, source: snapshot.slice(0, limit), previousSummary: initial?.summary ?? '' }
-    const task = { record: planningRecord, sourceKey: fingerprint(planningRecord.source), controller }
+    const task = { record: planningRecord, sourceKey: fingerprint(planningRecord.source), controller, recovery: emergency, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
     this.error = undefined
     const progress: SummaryProgress = { phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
@@ -395,6 +402,7 @@ export class ContextCompaction {
       if (this.pending !== task || controller.signal.aborted) return
       progress.phase = phase; this.onProgress?.({ ...progress })
     }
+    task.inputProgress = input => { progress.input = input; report(input ? 'summarizing' : progress.phase) }
     report('queued')
     this.pendingCompletion = (async () => {
       let current = initial
@@ -531,6 +539,14 @@ export class ContextCompaction {
       // its active summary. Otherwise the retry sends the old oversized view.
       this.apply(messages, true)
       return
+    }
+    if (summarize.recoveryPriority && this.pending && !this.pending.recovery) {
+      // A user request now depends on this summary. Preserve completed batches,
+      // settle the old native owner, then resume with the urgent request adapter.
+      const completion = this.pendingCompletion
+      this.pending.controller.abort(new DOMException('Promoting summary to recovery', 'AbortError'))
+      await completion
+      signal?.throwIfAborted()
     }
     if (this.ready && !this.pending && this.matches(this.ready.record, messages)) {
       this.active = this.ready.record

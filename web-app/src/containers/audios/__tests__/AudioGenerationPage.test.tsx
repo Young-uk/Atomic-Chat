@@ -568,6 +568,10 @@ describe('Audios', () => {
       expect(screen.getByTestId('audio-job-status-pane')).toHaveTextContent(
         'audios:progress.stopping'
       )
+      // Finish the fake server's cancellation handshake so its polling interval
+      // cannot outlive the ServiceHub fixture during the full coverage suite.
+      useAudioGenerationStore.getState().handleEvent({ type: 'job', job: makeJob({ state: 'cancelled' }) })
+      await waitFor(() => expect(useAudioGenerationStore.getState().generating).toBe(false))
     })
   })
 

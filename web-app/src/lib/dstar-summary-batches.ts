@@ -1,3 +1,5 @@
+import { readSummaryChoice, summaryAdmissionMessage } from './summary-stream'
+import type { SummaryInputProgress } from './context-summary-progress'
 import type { SummaryAdmission } from './atomic-summary-admission'
 import type { UIMessage } from 'ai'
 import { prepareToolResultImagesForModel } from './toolResultImages'
@@ -16,7 +18,7 @@ const consolidation = 'Consolidate these historical summaries in chronological o
 /** Independent segment extraction plus occasional bounded consolidation. The
  * exact wire envelope (including validation repairs) determines turn boundaries.
  * No successful extraction is silently split or truncated to make it fit. */
-export function summarizeBatchesWithDstar(baseUrl: string, model: string, options: { tokenCounting: boolean; admission?: SummaryAdmission }): Summarize {
+export function summarizeBatchesWithDstar(baseUrl: string, model: string, options: { tokenCounting: boolean; admission?: SummaryAdmission; recovery?: boolean; streamProgress?: boolean; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
   const bytes = (s: string) => new TextEncoder().encode(s).length
   const wire = (system: string, payload: string, task: string) => [
     { role: 'system', content: system }, { role: 'user', content: payload }, { role: 'user', content: task },
@@ -39,24 +41,32 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
   })
   const repairTask = (messages: UIMessage[]) => `Use only these user-message IDs for new requests: ${JSON.stringify(messages.filter(m => m.role === 'user').map(m => m.id))}. Correct unsupported request sources; return the required JSON, not an explanation.`
   const task = 'Extract the handoff and source-backed work updates for this segment only.'
+  let inputRequest = 0
   const request = async (system: string, payload: string, instruction: string, signal: AbortSignal, progress?: (n: number, paused?: boolean) => void) => {
     if (!(await fits(system, payload, instruction, signal))) throw new Error('Complete summary segment exceeds the bounded input budget')
     return runIdleSummaryRequest(baseUrl, signal, paused => progress?.(0, paused), async idleSignal => {
-      const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, atomic_summary: true, stream: false, think: false, temperature: 0, max_tokens: 2048, messages: wire(system, payload, instruction) }),
-      })
-      if (!response.ok) {
-        if (response.status === 409 && options.admission) {
-          const error = await response.json().catch(() => null)
-          if (error?.error?.code === 'atomic_summary_admission_refused') {
-            options.admission.refuse()
-            throw new Error('Background summary deferred by server safety admission; originals retained')
-          }
-        }
-        throw new Error(`Background summary failed (${response.status})`)
+      const requestNumber = ++inputRequest
+      const reportInput = (input?: SummaryInputProgress) => {
+        if (!signal.aborted) options.inputProgress?.(input ? { ...input, request: requestNumber } : undefined, signal)
       }
-      return (await response.json()).choices?.[0]
+      reportInput({ phase: 'preparing' })
+      try {
+        const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery ? { atomic_summary_recovery: true } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 0, max_tokens: 2048, messages: wire(system, payload, instruction) }),
+        })
+        if (!response.ok) {
+          if (response.status === 409) {
+            const error = await response.json().catch(() => null)
+            if (error?.error?.code === 'atomic_summary_admission_refused') {
+              options.admission?.refuse()
+              throw new Error(summaryAdmissionMessage(error.error.message))
+            }
+          }
+          throw new Error(`Background summary failed (${response.status})`)
+        }
+        return await readSummaryChoice(response, idleSignal, reportInput)
+      } finally { reportInput(undefined) }
     })
   }
   // Only model-input copies are reduced. Every original tool result stays in
@@ -196,5 +206,6 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
       throw new Error('Summary consolidation input exceeds the budget; original batches retained')
     },
   }
+  summarize.recoveryPriority = options.recovery === true
   return summarize
 }

@@ -1,3 +1,4 @@
+import { InferenceProgress } from "@/components/InferenceProgress"
 import { useInferenceProgress } from '@/lib/inference-progress'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -8,8 +9,8 @@ import { seedServiceHub } from '@/test/service-hub'
 
 vi.mock('@/i18n/react-i18next-compat', () => ({
   useTranslation: () => ({
-    t: (key: string, values?: { count?: number }) =>
-      values?.count === undefined ? key : `${key} ${values.count}`,
+    t: (key: string, values?: { count?: number; time?: string }) =>
+      values?.time !== undefined ? `${key} ${values.time}` : values?.count === undefined ? key : `${key} ${values.count}`,
   }),
 }))
 
@@ -732,21 +733,21 @@ it('uses one request clock while preserving the live reasoning disclosure', () =
   const message: UIMessage = { id: 'single-status', role: 'assistant', parts: [
     { type: 'reasoning', text: 'Reasoning remains inspectable.', state: 'streaming' },
   ] }
-  const { rerender } = render(<MessageItem message={message} isFirstMessage={false}
-    isLastMessage status="streaming" inferenceThreadId="test-thread" />)
+  const { rerender } = render(<><MessageItem message={message} isFirstMessage={false}
+    isLastMessage status="streaming" inferenceThreadId="test-thread" /><InferenceProgress threadId="test-thread" /></>)
   expect(screen.getAllByRole('status')).toHaveLength(1)
-  expect(screen.getByText('0:33')).toBeInTheDocument()
+  expect(screen.getByText('inferenceProgress.elapsed 0:33')).toBeInTheDocument()
   expect(screen.queryByText('activity.working')).not.toBeInTheDocument()
   expect(screen.queryByText(/activity.thinkingFor/)).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'activity.reasoningDetails' }))
   expect(screen.getByText('Reasoning remains inspectable.')).toBeVisible()
   act(() => vi.advanceTimersByTime(5000))
-  expect(screen.getByText('0:38')).toBeInTheDocument()
+  expect(screen.getByText('inferenceProgress.elapsed 0:38')).toBeInTheDocument()
   act(() => useInferenceProgress.setState({ byThread: { 'test-thread': { ...progress, phase: 'generating' } } }))
   expect(screen.getByText('inferenceProgress.generating')).toBeInTheDocument()
   expect(screen.getAllByRole('status')).toHaveLength(1)
   act(() => useInferenceProgress.setState({ byThread: {} }))
-  rerender(<MessageItem message={message} isFirstMessage={false} isLastMessage status="ready" inferenceThreadId="test-thread" />)
+  rerender(<><MessageItem message={message} isFirstMessage={false} isLastMessage status="ready" inferenceThreadId="test-thread" /><InferenceProgress threadId="test-thread" /></>)
   expect(screen.queryByRole('status')).not.toBeInTheDocument()
   expect(screen.getByText('Reasoning remains inspectable.')).toBeVisible()
 })
