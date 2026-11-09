@@ -125,13 +125,13 @@ describe('approveChatToolCall', () => {
     }, { bypassGlobalAutoApprove: true, requireFreshApproval: true })
   })
 
-  it('requires a human for a valid nested proposal even on Full access', async () => {
+  it('auto-approves a valid inspected native proposal on Full access', async () => {
     useAgentMode.setState({ approvalModes: { t1: 'skip' } })
     const proposal = { id: 'pending', name: 'os.fs.write', args: { path: 'synthetic.txt' }, request: { category: 'fs_write' }, expiresAt: Date.now() + 10000 }
     nativeCall.mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify(proposal) }] })
-    showApprovalModal.mockResolvedValueOnce(false)
-    expect(await approveChatToolCall('personal_native', 't1', { action: 'confirm', pendingId: 'pending' })).toBe(false)
-    expect(showApprovalModal).toHaveBeenCalledWith('personal_native', 't1', expect.objectContaining({ nativeTool: 'os.fs.write', arguments: proposal.args }), { bypassGlobalAutoApprove: true, requireFreshApproval: true })
+    expect(await approveChatToolCall('personal_native', 't1', { action: 'confirm', pendingId: 'pending' })).toBe(true)
+    expect(nativeCall).toHaveBeenCalled()
+    expect(showApprovalModal).not.toHaveBeenCalled()
   })
 
   it('refuses missing or expired native confirmations even on Full access', async () => {

@@ -256,7 +256,7 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-retained-cache-v27/serve/server.py",
+            "feature-integration/runtime-thread-cache-v31/serve/server.py",
             "feature-integration/engine-cached-summary-v24/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
@@ -292,13 +292,13 @@ impl Environment {
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
-            "cwd": root.join("feature-integration/runtime-retained-cache-v27"),
+            "cwd": root.join("feature-integration/runtime-thread-cache-v31"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
             "log": root.join("strata-atomic.log"),
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
-            "atomic_disk_session_previous_backend_sha256": "ae6f8e23bdd3b53311c5a866387f2ba593169b3c989e6d78892cbb29d1c2a952",
+            "atomic_disk_session_previous_backend_sha256": "d011acf0ee6a13ddf08ede2967e0cd345a6c327358b1426997c5fb89173bcf1b",
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
@@ -310,7 +310,7 @@ impl Environment {
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0",
-            "atomic_summary_expected_backend_sha256": "d011acf0ee6a13ddf08ede2967e0cd345a6c327358b1426997c5fb89173bcf1b",
+            "atomic_summary_expected_backend_sha256": "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -335,7 +335,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-retained-cache-v27"),
+                    .join("feature-integration/runtime-thread-cache-v31"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -488,7 +488,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-retained-cache-v27"),
+                        .join("feature-integration/runtime-thread-cache-v31"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-retained-cache-v27")
+                .join("feature-integration/runtime-thread-cache-v31")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1281,7 +1281,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "d011acf0ee6a13ddf08ede2967e0cd345a6c327358b1426997c5fb89173bcf1b"
+            "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

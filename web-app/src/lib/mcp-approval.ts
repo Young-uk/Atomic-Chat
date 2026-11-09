@@ -68,10 +68,9 @@ export async function approveChatToolCall(
   }
   // Personal desktop tools can manipulate windows, browser sessions and
   // persistent memory. The global MCP switch must not grant those rights.
-  // A nested source-native proposal always needs its own human confirmation,
-  // even if the surrounding conversation grants ordinary Full access calls.
-  // A user-created exact inspected-action grant is the sole scoped exception.
-  const autoApprove = nativeConfirmation ? false : (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
+  // Full access also covers inspected native proposals. Restricted chats keep
+  // a fresh confirmation; missing, expired or replaced proposals still fail.
+  const autoApprove = (offeredChatExecToolNames().has(toolName) || toolName.startsWith('personal_'))
     ? resolveExecAutoApprove(threadId)
     : resolveMcpAutoApprove(threadId)
   const persistentTarget = storedTarget ?? (!autoApprove && !nativeConfirmation ? await toolPermissionTarget(toolName) : undefined)

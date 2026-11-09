@@ -11,6 +11,7 @@
 */
 
 pub mod commands;
+pub mod cache_lifecycle;
 pub mod context_archive;
 pub mod constants;
 #[cfg(any(target_os = "android", target_os = "ios"))]

@@ -66,3 +66,23 @@ test('approved execution is bounded and does not inherit connector credentials',
   assert.equal(captured[2].maxBuffer, 256 * 1024)
   assert.deepEqual(Object.keys(captured[2].env).sort(), ['HOME','PATH','TMPDIR'])
 })
+test('register and update accept nested definitions without duplicating or silently replacing conflicting fields', async () => {
+  const { PersonalTools } = await import('./server.mjs')
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-custom-update-'))
+  const tools = new PersonalTools({ directory, browser: { shutdown: async () => {} } })
+  try {
+    await tools.call('personal_native', { action: 'register', input: JSON.stringify(draft) })
+    const pending = await tools.call('personal_native', { action: 'run', name: draft.name, input: '{"text":"old"}' })
+    const changed = { ...draft, description: 'Updated echo', code: 'return { changed: input.text }' }
+    await tools.call('personal_native', { action: 'update', input: JSON.stringify(changed) })
+    assert.equal((await tools.call('personal_native', { action: 'describe', name: draft.name })).code, changed.code)
+    assert.equal((await tools.call('personal_native', { action: 'catalog' })).filter(row => row.name === draft.name).length, 1)
+    await assert.rejects(tools.call('personal_native', { action: 'confirm', pendingId: pending.pendingId }), /does not match/)
+    await assert.rejects(tools.call('personal_native', { action: 'update', ...draft, name: 'custom.missing' }), /not found/)
+    await assert.rejects(tools.call('personal_native', { action: 'register', name: 'custom.other', input: JSON.stringify(draft) }), /Conflicting/)
+    await assert.rejects(tools.call('personal_native', { action: 'register', input: '[]' }), /JSON object/)
+    await assert.rejects(tools.call('personal_native', { action: 'register', input: JSON.stringify({ ...draft, unsupported: true }) }), /Unexpected/)
+    await tools.call('personal_native', { action: 'register', ...draft })
+    assert.equal((await tools.call('personal_native', { action: 'describe', name: draft.name })).code, draft.code)
+  } finally { await tools.shutdown() }
+})

@@ -1287,7 +1287,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Only the identity-checked managed Strata route gets this extension.
         // Its progress stays on this request's SSE stream, never global metrics.
         if (runtime?.engine === 'strata') effectiveReasoningOverride.return_progress = true
-        if (runtime?.summaryClone) {
+        if (runtime?.engine === 'dstar' || runtime?.engine === 'strata') {
           const user = options.messages.findLast(message => message.role === 'user')
           if (user) effectiveReasoningOverride.atomic_cache_owner = `${this.threadId ?? options.chatId}/${user.id}`
         }

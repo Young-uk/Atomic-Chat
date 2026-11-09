@@ -21,7 +21,7 @@ required. Source availability is not full feature parity or installed-app QA.
   Changed plans require fresh approval; remote Git synchronization is disabled.
   Chat now supports provider-bound Always allow grants and a General settings revocation panel. Native stored action confirmations remain fresh per proposal. Read-scope grants are invocation-scoped until authenticated Chat session
   lifecycle wiring is available. Detached shell jobs do not survive an invocation.
-  GitHub uses explicitly configured credentials; mail receives only Chat-owned configuration. The browser Chat path requires a fresh human approval for every stored native proposal, ignoring remembered grants even in Full access. The separate native agent runner does not receive this adapter until it supports the same contract; its existing built-in file/Git tools are unchanged. This source adapter is not a claim of complete Agent feature parity.
+  GitHub uses explicitly configured credentials; mail receives only Chat-owned configuration. The browser Chat path inspects every stored native proposal. Full access automatically approves it; Restricted requires a fresh human decision. Missing, expired and changed proposals remain invalid. `register` creates or replaces custom tools; `update` requires an existing tool. Both accept definition fields at the top level or in `input` JSON. The separate native agent runner does not receive this adapter until it supports the same contract; its existing built-in file/Git tools are unchanged. This source adapter is not a claim of complete Agent feature parity.
 
 - `personal_browser`: dedicated installed-Chrome profile; tabs, navigation,
   page text and current element references, click/type, scroll and screenshot.

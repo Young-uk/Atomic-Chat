@@ -171,7 +171,7 @@ export async function executeChatToolCalls({
 
       // Source-native guards return a proposal rather than opening UI. Keep
       // ownership here: inspect the immutable proposal in approve(), await a
-      // fresh human decision, then confirm without relying on another model turn.
+      // mode-aware decision, then confirm without relying on another model turn.
       const reviewed = new Set<string>()
       while (toolCall.toolName === 'personal_native' && !result.error) {
         const content = result.content

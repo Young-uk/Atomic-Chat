@@ -66,6 +66,18 @@ pub async fn delete_thread<R: Runtime>(
     }
 
     let data_folder = get_jan_data_folder_path(app_handle.clone());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        // IPC fixtures must never touch the host user's model cache.
+        #[cfg(test)]
+        let cache_root = Some(data_folder.join("test-disk-caches"));
+        #[cfg(not(test))]
+        let cache_root =
+            dirs::home_dir().map(|home| home.join("Library/Application Support/dstar"));
+        if let Some(root) = cache_root {
+            super::cache_lifecycle::forget_thread(&root, &thread_id)?;
+        }
+    }
     file_store::delete_thread(&data_folder, &thread_id)?;
     // Commands the chat ran keep their files in a folder of the thread's own.
     crate::core::chat_exec::forget_thread(

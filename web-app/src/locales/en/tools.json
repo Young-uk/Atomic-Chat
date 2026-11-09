@@ -43,7 +43,7 @@
   },
   "permissions": {
     "title": "Tool permissions",
-    "description": "Choose which tools may run without asking in Restricted chats. Full access still auto-approves calls. Separate native action confirmations remain required. Revoking a tool also clears its remembered thread approvals. Turning off the connector or tool still prevents execution.",
+    "description": "Choose which tools may run without asking in Restricted chats. Full access still auto-approves calls. Native action confirmations are also automatic in Full access. Revoking a tool also clears its remembered thread approvals. Turning off the connector or tool still prevents execution.",
     "settingsDescription": "Manage tools you always allow across conversations and restarts.",
     "manage": "Manage",
     "search": "Search tools",

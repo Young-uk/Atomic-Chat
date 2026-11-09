@@ -816,3 +816,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Revalidate cached summary handoff](2026-11-09-revalidate-cached-summary-handoff.md) — Recheck the latest cache before adopting a cloned summary; retain earlier raw overlap without changing its evidence.
 
 - [Dstar cached summary clones](2026-11-09-dstar-cached-summary-clones.md) — Shared cached-summary client contract, independent owner-bound native state, verified restart receipts and explicit approximate payload persistence.
+
+- [Full access native confirmations and custom tool updates](2026-11-09-full-access-native-confirmations.md)
+
+- [Delete native disk checkpoints with their conversations](2026-11-09-delete-disk-caches-with-conversations.md)

@@ -157,10 +157,10 @@ describe('AgentApprovalModeSelect', () => {
     expect(
       screen.getByRole('menuitem', { name: /Full access/ })
     ).toHaveTextContent(
-      'Runs tool calls without asking. Separate Personal native action confirmations still apply.'
+      'Runs tool calls and Personal native action confirmations without asking.'
     )
     expect(chat.agentApprovals.skipDescription).toBe(
-      'Runs tool calls without asking. Separate Personal native action confirmations still apply.'
+      'Runs tool calls and Personal native action confirmations without asking.'
     )
     expect(screen.queryByText(/sandbox/i)).not.toBeInTheDocument()
   })

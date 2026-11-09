@@ -254,3 +254,25 @@ fn serializes_assistant_not_found_errors() {
     );
     assert_eq!(modify_error, Err(Value::String("Thread not found".into())));
 }
+
+#[test]
+fn thread_deletion_also_reclaims_its_disk_cache_over_ipc() {
+    let harness = harness();
+    let created = create_thread_over_ipc(&harness, "Cache owner");
+    let id = created["id"].as_str().unwrap();
+    let dir = harness
+        .data_root()
+        .join("test-disk-caches/kv-cache-strata-iq3");
+    fs::create_dir_all(&dir).unwrap();
+    let name = format!("{}.session", "a".repeat(32));
+    fs::write(dir.join(&name), b"synthetic native state").unwrap();
+    fs::write(dir.join(format!("{name}.threads")), format!("{id}\n")).unwrap();
+    fs::write(dir.join("latest.json"), json!({"file":name}).to_string()).unwrap();
+    let _: () = harness
+        .invoke("delete_thread", json!({"threadId":id}))
+        .unwrap();
+    assert!(!get_thread_dir(harness.data_root(), id).exists());
+    assert!(!dir.join(name).exists());
+    assert!(!dir.join("latest.json").exists());
+    assert!(dir.join(".deleted-threads").join(id).exists());
+}
