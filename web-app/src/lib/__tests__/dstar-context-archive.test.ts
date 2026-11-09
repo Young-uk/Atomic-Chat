@@ -363,3 +363,63 @@ it('isolates derived summaries by runtime without hiding original archive eviden
   expect(JSON.parse(args.data).source).toEqual(record.source)
   expect(record.runtimeScope).toBeUndefined()
 })
+
+it('carries completed text handoffs across engine fingerprints at the same endpoint and model', async () => {
+  const scope = (fingerprint: string) => JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', fingerprint])
+  const completed: ArchiveRecord = { ...record, runtimeScope: scope('old-engine'), summary: 'Confirmed Maple handoff',
+    requests: { open: [{ id: 'user', request: 'Keep unfinished work', sourceText: 'Original user request' }], resolved: [] } }
+  vi.mocked(invoke).mockResolvedValue([JSON.stringify(completed)])
+  const store = archiveStore(scope('new-engine'))
+  expect(await store.load('thread')).toEqual(completed)
+  expect(await store.loadCandidates!('thread')).toEqual([completed])
+  expect(await store.loadPending!('thread')).toBeUndefined()
+  expect(vi.mocked(invoke).mock.calls.every(([, args]) => (args as { data: unknown }).data === null)).toBe(true)
+})
+
+it('keeps incomplete summary checkpoints bound to the exact engine scope', async () => {
+  const scope = (fingerprint: string) => JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', fingerprint])
+  const pending: ArchiveRecord = { ...record, runtimeScope: scope('old'), checkpoint: {
+    version: 1, inputKey: 'old-input', offset: 100, completed: 1, summary: 'Incomplete extraction checkpoint',
+  } }
+  vi.mocked(invoke).mockResolvedValue([JSON.stringify(pending)])
+  expect(await archiveStore(scope('new')).loadPending!('thread')).toBeUndefined()
+  expect(await archiveStore(scope('new')).loadCandidates!('thread')).toEqual([])
+  expect(await archiveStore(scope('old')).loadPending!('thread')).toEqual(pending)
+})
+
+it('rejects portable handoffs from another provider, endpoint, model, thread or unknown identity', async () => {
+  const current = JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', 'new'])
+  const incompatible = [
+    JSON.stringify(['Dstar', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', 'old']),
+    JSON.stringify(['Strata', 'http://127.0.0.1:8010/v1', 'ista-iq3-xxs', 'old']),
+    JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'another-model', 'old']),
+    'opaque:old', '{broken', JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', '']),
+    JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', 1]), undefined,
+  ]
+  vi.mocked(invoke).mockResolvedValue([
+    ...incompatible.map(runtimeScope => JSON.stringify({ ...record, summary: 'Must not carry', runtimeScope })),
+    JSON.stringify({ ...record, threadId: 'different-thread', runtimeScope: current, summary: 'Another thread' }),
+  ])
+  expect(await archiveStore(current).loadCandidates!('thread')).toEqual([])
+})
+
+it('applies a migrated handoff only to an unchanged archived source prefix', async () => {
+  const { ContextCompaction } = await import('../dstar-context-compaction')
+  const old = JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', 'old'])
+  const current = JSON.stringify(['Strata', 'http://127.0.0.1:18080/v1', 'ista-iq3-xxs', 'new'])
+  vi.mocked(invoke).mockResolvedValue([JSON.stringify({ ...record, summary: 'Verified prior handoff', runtimeScope: old })])
+  const pendingUser = { id: 'next', role: 'user' as const, parts: [{ type: 'text' as const, text: 'Continue our project' }] }
+  const messages = [...structuredClone(record.source), pendingUser]
+  const coordinator = new ContextCompaction('thread', archiveStore(current))
+  await coordinator.initialize()
+  const projected = coordinator.apply(messages)
+  expect(projected.find(message => message.id === 'atomic-context-unique')).toBeDefined()
+  expect(projected.at(-1)).toEqual(pendingUser)
+  expect(projected.filter(message => message.role === 'user')).toEqual([pendingUser])
+  const edited = structuredClone(messages)
+  edited[0].parts = [{ type: 'text', text: 'Changed original project' }]
+  const editedCoordinator = new ContextCompaction('thread', archiveStore(current))
+  await editedCoordinator.initialize()
+  expect(editedCoordinator.apply(edited)).toEqual(edited)
+  expect(messages).toEqual([...record.source, pendingUser])
+})

@@ -23,16 +23,35 @@ async function readRecords(threadId: string): Promise<ArchiveRecord[]> {
   return values.map(v => JSON.parse(v) as ArchiveRecord)
     .filter(r => r.version === 1 && r.threadId === threadId && Array.isArray(r.source))
 }
+/** Completed text handoffs are portable across engine builds at the same
+ * provider/endpoint/model. Native cache and incomplete extraction state are not.
+ * ContextCompaction still verifies the full source prefix before application.
+ * Opaque or unscoped legacy identities cannot establish this compatibility. */
+function compatibleTextSummaryScope(previous: string | undefined, current: string | undefined): boolean {
+  const identity = (value: string | undefined): string[] | undefined => {
+    if (!value) return undefined
+    try {
+      const parts: unknown = JSON.parse(value)
+      return Array.isArray(parts) && [3, 4].includes(parts.length) &&
+        parts.every(part => typeof part === 'string' && part.length > 0) ? parts.slice(0, 3) : undefined
+    } catch { return undefined }
+  }
+  const a = identity(previous), b = identity(current)
+  return !!a && !!b && a.every((part, index) => part === b[index])
+}
+
 export function archiveStore(runtimeScope?: string): ContextArchiveStore {
-  const records = async (threadId: string) => (await readRecords(threadId))
-    .filter(record => runtimeScope === undefined || record.runtimeScope === runtimeScope)
+  const records = async (threadId: string, completed = false) => (await readRecords(threadId))
+    .filter(record => runtimeScope === undefined || record.runtimeScope === runtimeScope ||
+      (completed && typeof record.summary === 'string' && !!record.summary.trim() &&
+        compatibleTextSummaryScope(record.runtimeScope, runtimeScope)))
   return {
     save: async record => { await invoke('context_archive', { threadId: record.threadId, name: filename(record), data: JSON.stringify({ ...record, ...(runtimeScope ? { runtimeScope } : {}) }) }) },
     loadPending: async threadId => (await records(threadId)).filter(r => !r.summary?.trim() && r.checkpoint?.version === 1)
       .sort((a, b) => b.source.length - a.source.length || (b.createdAt ?? 0) - (a.createdAt ?? 0))[0],
-    loadCandidates: async threadId => (await records(threadId)).filter(r => r.summary?.trim())
+    loadCandidates: async threadId => (await records(threadId, true)).filter(r => r.summary?.trim())
       .sort((a, b) => b.source.length - a.source.length || (b.createdAt ?? 0) - (a.createdAt ?? 0)),
-    load: async threadId => (await records(threadId)).filter(r => r.summary?.trim())
+    load: async threadId => (await records(threadId, true)).filter(r => r.summary?.trim())
       .sort((a, b) => b.source.length - a.source.length || (b.createdAt ?? 0) - (a.createdAt ?? 0))[0],
   }
 }

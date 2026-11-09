@@ -44,6 +44,7 @@ export type LocalModelCapabilities = {
   runtimeScope?: string
   archiveScope?: string
   summarySlot: boolean
+  summaryClone?: boolean
   summaryStreamProgress?: boolean
   summaryTokenCounting: boolean
   summaryContext: number
@@ -209,6 +210,10 @@ export async function probeLocalModelCapabilities(
         ? JSON.stringify([provider.provider, provider.base_url!.replace(/\/$/, ''), model.id, fingerprint])
         : undefined,
       summarySlot,
+      // Both engines implement the same owner-bound clone wire contract. Dstar
+      // must explicitly advertise it; legacy 16K servers remain unchanged.
+      ...(summarySlot && body.atomic_summary_clone === true && runtimeId && fingerprint &&
+        summaryContext === 16384 && body.atomic_summary_token_count === true ? { summaryClone: true } : {}),
       summaryStreamProgress: summarySlot && (target.engine === 'dstar' || body.atomic_summary_stream_progress === true),
       summaryTokenCounting: summarySlot && summaryContext === 16384 && body.atomic_summary_token_count === true,
       summaryContext,

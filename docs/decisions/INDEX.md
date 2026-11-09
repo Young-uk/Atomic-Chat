@@ -802,3 +802,17 @@ decision is reversed, add a new one that says which record it supersedes.
 - **2026-11-09** — [Prepare Strata summary resources before first inference](2026-11-09-prepare-strata-summary-resources-before-first-inference.md)
 
 - **2026-11-09** — [Recheck summary admission and stream owned input progress](2026-11-09-recheck-summary-admission-and-stream-owned-input-progress.md)
+
+- **2026-11-09** — [Preserve Strata cache across reasoning effort changes](2026-11-09-preserve-strata-cache-across-effort-changes.md)
+
+- **2026-11-09** — [Summarize Strata from a bound conversation clone](2026-11-09-strata-cached-conversation-summary.md)
+
+- **2026-11-09** — [Preserve completed text handoffs across engine updates](2026-11-09-preserve-text-handoffs-across-engine-updates.md)
+
+- [Bootstrap summary from restored disk cache](2026-11-09-bootstrap-summary-from-restored-disk-cache.md)
+
+- [Align summary boundaries to retained cache](2026-11-09-align-summary-boundaries-to-retained-cache.md)
+
+- [Revalidate cached summary handoff](2026-11-09-revalidate-cached-summary-handoff.md) — Recheck the latest cache before adopting a cloned summary; retain earlier raw overlap without changing its evidence.
+
+- [Dstar cached summary clones](2026-11-09-dstar-cached-summary-clones.md) — Shared cached-summary client contract, independent owner-bound native state, verified restart receipts and explicit approximate payload persistence.

@@ -43,6 +43,8 @@ export type ArchiveRecord = {
   /** Stable insertion boundary after retained completed dialogue. */
   summaryAfterMessageId?: string
   summaryFallbackAfterMessageId?: string
+  /** Keep an earlier raw prefix for cache alignment; summary evidence stays exact. */
+  cacheRetainFrom?: number
   createdAt?: number
   summary?: string
   requests?: RequestLedger
@@ -91,6 +93,8 @@ const fingerprint = (messages: UIMessage[]) => JSON.stringify(stable(messages.ma
   metadata: Object.fromEntries(Object.entries((m.metadata ?? {}) as Record<string, unknown>)
     .filter(([key]) => !volatileMetadata.has(key))),
 }))))
+export { fingerprint as contextSourceFingerprint }
+
 const cost = (messages: UIMessage[]) => messages.length === 0 ? 0 : estimateTokens(JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false }).map(({ role, parts }) => ({ role, parts }))))
 
 /** Keep complete user turns, including every tool call/result in that turn.
@@ -159,6 +163,9 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
 }
 
 export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
+  cached?: boolean
+  selectBoundary?(messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal): Promise<number>
+  countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
   recoveryPriority?: boolean
   batches?: {
     countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
@@ -229,6 +236,35 @@ export class ContextCompaction {
       fingerprint(messages.slice(0, record.source.length)) === fingerprint(record.source)
   }
 
+  /** Recheck a completed clone against the latest foreground cache. The source
+   * is immutable evidence: choosing an earlier turn retains overlapping raw
+   * dialogue rather than pretending the summary covered a different segment.
+   * This runs before a new user request, never during its tool continuation. */
+  async prepareCachedAdoption(messages: UIMessage[],
+    select: (messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>,
+    signal: AbortSignal): Promise<void> {
+    const ready = this.ready
+    if (!ready || this.pending || !this.matches(ready.record, messages) ||
+        !ready.record.checkpoint?.inputKey.startsWith(`${this.threadId}/`)) return
+    const record = ready.record
+    const boundary = record.cacheRetainFrom ?? record.source.length
+    const archived = this.active?.source.length ?? 0
+    const selected = await select(messages, boundary, archived, signal)
+    signal.throwIfAborted()
+    if (this.ready !== ready || !this.matches(record, messages)) return
+    if (!Number.isSafeInteger(selected) || selected <= archived || selected > boundary ||
+        (selected !== boundary && messages[selected]?.role !== 'user')) return
+    logCompactionBudget('cached handoff boundary checked', {
+      threadId: this.threadId, sourceMessages: record.source.length,
+      retainedFrom: selected, additionalRawMessages: record.source.length - selected,
+    })
+    if (selected === boundary) return
+    const updated = { ...record, cacheRetainFrom: selected }
+    await this.store.save(updated)
+    signal.throwIfAborted()
+    if (this.ready === ready && this.matches(record, messages)) ready.record = updated
+  }
+
   /** Caller invokes this only at a new user turn, never mid tool execution. */
   apply(messages: UIMessage[], allowNewSummary = true): UIMessage[] {
     if (this.ready && allowNewSummary) {
@@ -246,7 +282,10 @@ export class ContextCompaction {
     if (!this.active) this.active = this.archiveCandidates.find(record => this.matches(record, messages))
     if (!this.active) return messages
     const archived = this.active
-    const retained = messages.slice(archived.source.length)
+    const overlap = archived.cacheRetainFrom
+    const retainFrom = typeof overlap === 'number' && Number.isSafeInteger(overlap) && overlap > 0 && overlap <= archived.source.length &&
+      messages[overlap]?.role === 'user' ? overlap : archived.source.length
+    const retained = messages.slice(retainFrom)
     if (!archived.summaryAfterMessageId) {
       // Legacy archives acquire a boundary once, before the newest user turn.
       // Never move a summary past later turns on subsequent requests.
@@ -289,9 +328,11 @@ export class ContextCompaction {
       return
     }
     const ledgerMigration = this.active && !this.active.requests && this.matches(this.active, messages)
-    if (!Number.isFinite(context) || context <= 0 || (!ledgerMigration && promptTokens < context * COMPACTION_TRIGGER) || this.pending || this.ready) return
+    if (!Number.isFinite(context) || context <= 0 || (!ledgerMigration && (summarize.cached
+      ? !summarize.countRawTokens && cost(messages.slice(this.active?.source.length ?? 0)) <= context * 0.6 && promptTokens < context * PROMPT_PRESSURE_TRIGGER
+      : promptTokens < context * COMPACTION_TRIGGER)) || this.pending || this.ready) return
     let boundary = recoveryBoundary ?? (ledgerMigration ? this.active!.source.length : compactionBoundary(messages, context))
-    if (retainedPromptCost && recoveryBoundary === undefined && !ledgerMigration && boundary > 0) {
+    if (!summarize.cached && retainedPromptCost && recoveryBoundary === undefined && !ledgerMigration && boundary > 0) {
       // Hidden historical tool catalogs are model input too. Select complete
       // turns using their rendered cost, rather than raw message JSON alone.
       // Never move past the nominal recent-history boundary: recent dialogue
@@ -310,11 +351,13 @@ export class ContextCompaction {
     const resume = this.resumable && this.matches(this.resumable, messages) &&
       this.resumable.source.length <= boundary && (this.resumable.source.length > (this.active?.source.length ?? 0) || !!ledgerMigration) &&
       this.resumable.previousSummary === (this.active?.summary ?? '') ? this.resumable : undefined
-    const source = JSON.parse(JSON.stringify(resume?.source ?? messages.slice(0, boundary))) as UIMessage[]
+    let source = JSON.parse(JSON.stringify(resume?.source ?? messages.slice(0, boundary))) as UIMessage[]
     const record: ArchiveRecord = resume ?? { version: 1, id: crypto.randomUUID(), threadId: this.threadId,
       source, previousSummary: this.active?.summary ?? '', createdAt: Date.now(),
-      summaryAfterMessageId: (messages.at(-1)?.role === 'user' ? messages.at(-2) : messages.at(-1))?.id,
-      summaryFallbackAfterMessageId: messages.findLast(m => m.role === 'user')?.id }
+      // A clone can finish after newer dialogue. Choose its insertion anchor
+      // once on adoption so every retained completed turn precedes new memory.
+      summaryAfterMessageId: summarize.cached ? undefined : (messages.at(-1)?.role === 'user' ? messages.at(-2) : messages.at(-1))?.id,
+      summaryFallbackAfterMessageId: summarize.cached ? undefined : messages.findLast(m => m.role === 'user')?.id }
     const controller = new AbortController()
     const task = { record, sourceKey: fingerprint(source), controller, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
@@ -329,6 +372,26 @@ export class ContextCompaction {
     report('queued')
     this.pendingCompletion = (async () => {
       try {
+        if (summarize.cached && summarize.countRawTokens && recoveryBoundary === undefined && !ledgerMigration) {
+          const rawTokens = await summarize.countRawTokens(messages.slice(this.active?.source.length ?? 0), controller.signal)
+          controller.signal.throwIfAborted()
+          if (rawTokens <= context * 0.6 && promptTokens < context * PROMPT_PRESSURE_TRIGGER) {
+            this.onProgress?.(undefined)
+            return
+          }
+        }
+        if (summarize.cached && summarize.selectBoundary && !resume && !ledgerMigration) {
+          const archived = this.active?.source.length ?? 0
+          const selected = await summarize.selectBoundary(messages, boundary, archived, controller.signal)
+          controller.signal.throwIfAborted()
+          if (Number.isSafeInteger(selected) && selected > archived && selected <= boundary &&
+              (selected === boundary || messages[selected]?.role === 'user')) {
+            boundary = selected
+            source = JSON.parse(JSON.stringify(messages.slice(0, boundary))) as UIMessage[]
+            record.source = source
+            task.sourceKey = fingerprint(source)
+          }
+        }
         await this.store.save(record)
         progress.archived = true
         report('summarizing')
@@ -336,7 +399,7 @@ export class ContextCompaction {
         const summary = (await summarize(oldCount ? record.previousSummary : '', summaryEvidence(source.slice(oldCount)), controller.signal, (completed, paused) => {
           progress.completed = completed
           report(paused ? 'paused' : 'summarizing')
-        }, { resume: record.checkpoint, requestSources: source, previousRequests: this.active?.requests, save: async checkpoint => {
+        }, { resume: record.checkpoint, requestSources: summarize.cached ? source.slice(oldCount) : source, previousRequests: this.active?.requests, save: async checkpoint => {
           // Persist each committed merge before the next inference request.
           // It is not a ready summary and must never replace live history.
           await this.store.save({ ...record, checkpoint })

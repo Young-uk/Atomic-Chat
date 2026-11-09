@@ -1,5 +1,6 @@
 import { stripChatSpeechStyles } from '@/lib/audio/chatSpeechStyle'
 import { useInferenceProgress } from '@/lib/inference-progress'
+import { InferenceProgress } from '@/components/InferenceProgress'
 import {
   memo,
   useState,
@@ -83,6 +84,8 @@ export type MessageItemProps = {
   requestActive?: boolean
   /** The request status row owns live phase and elapsed time for this thread. */
   inferenceThreadId?: string
+  /** The thread assigns exactly one progress owner: this reply or its fallback. */
+  showInferenceProgress?: boolean
   reasoningContainerRef?: React.RefObject<HTMLDivElement | null>
   onReasoningScroll?: UIEventHandler<HTMLDivElement>
   onRegenerate?: (messageId: string) => void
@@ -102,6 +105,7 @@ export const MessageItem = memo(
     status,
     requestActive,
     inferenceThreadId,
+    showInferenceProgress = false,
     isAnimating,
     hideActions,
     reasoningContainerRef,
@@ -631,7 +635,11 @@ export const MessageItem = memo(
           }
         })}
 
-        {/* Request-scoped progress is owned once by the composer. */}
+        {/* Progress occupies the same continuation slot as reply text/actions,
+            instead of crossing the conversation flex rows and their gaps. */}
+        {showInferenceProgress && isLastMessage && message.role === 'assistant' && inferenceThreadId && (
+          <InferenceProgress threadId={inferenceThreadId} className="mt-3 mb-0" />
+        )}
 
         {isEditing && !firstTextBlockKey && renderEditor('inline-editor')}
 
@@ -764,6 +772,7 @@ export const MessageItem = memo(
       prevProps.status === nextProps.status &&
       prevProps.requestActive === nextProps.requestActive &&
       prevProps.inferenceThreadId === nextProps.inferenceThreadId &&
+      prevProps.showInferenceProgress === nextProps.showInferenceProgress &&
       prevProps.showAssistant === nextProps.showAssistant &&
       prevProps.hideActions === nextProps.hideActions &&
       prevProps.onEdit === nextProps.onEdit &&

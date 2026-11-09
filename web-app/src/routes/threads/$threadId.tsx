@@ -2150,6 +2150,7 @@ function ThreadDetail() {
                           status={inputStatus}
                           requestActive={requestActive}
                           inferenceThreadId={isLastMessage && message.role === 'assistant' ? threadId : undefined}
+                          showInferenceProgress={isLastMessage && !isAutoIncreasingContext}
                           reasoningContainerRef={reasoningContainerRef}
                           onReasoningScroll={onReasoningScroll}
                           onRegenerate={handleRegenerate}
@@ -2205,8 +2206,9 @@ function ThreadDetail() {
                       isAnimating={false}
                     />
                   )}
-                  {(inputStatus === CHAT_STATUS.SUBMITTED ||
-                    isAutoIncreasingContext) && (
+                  {(isAutoIncreasingContext || (inputStatus === CHAT_STATUS.SUBMITTED &&
+                    !isAgentRunning && (!hasActiveAssistantMessage || !!pendingContinueMessage) &&
+                    !hasInferenceProgress)) && (
                     <div className="flex flex-row items-center gap-2">
                       {/* One indicator at a time: the context-growth shimmer
                       replaces the generic "Working" progress, never joins it. */}
@@ -2219,7 +2221,9 @@ function ThreadDetail() {
                       )}
                     </div>
                   )}
-                  {!isAutoIncreasingContext && <InferenceProgress threadId={threadId} />}
+                  {/* An existing reply owns progress inline. Before the first reply (or
+                      after an empty failed turn), the conversation owns the fallback. */}
+                  {!isAutoIncreasingContext && (!hasActiveAssistantMessage || !lastChatMessage || isEmptyFailedTurn(lastChatMessage)) && <InferenceProgress threadId={threadId} />}
                   <ContextSummaryProgress threadId={threadId} />
                   {shownError &&
                     !isAutoIncreasingContext &&

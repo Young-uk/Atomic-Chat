@@ -58,7 +58,7 @@ const CONTEXT_PIN_SCRIPT: &str = r#"
 import hashlib, json, pathlib, sys
 cfg = json.load(sys.stdin)
 root = pathlib.Path(cfg['cwd']) / 'serve'
-names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py')
+names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py', 'history_plan.py')
 hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
 backend = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 if backend != cfg['atomic_summary_expected_backend_sha256']:
@@ -256,8 +256,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-summary-progress-v18/serve/server.py",
-            "feature-integration/engine-cold-summary-v17/strata",
+            "feature-integration/runtime-retained-cache-v27/serve/server.py",
+            "feature-integration/engine-cached-summary-v24/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -282,7 +282,7 @@ impl Environment {
             .dstar_root
             .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf");
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-cold-summary-v17/strata"),
+            "exe": root.join("feature-integration/engine-cached-summary-v24/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -292,29 +292,33 @@ impl Environment {
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
-            "cwd": root.join("feature-integration/runtime-summary-progress-v18"),
+            "cwd": root.join("feature-integration/runtime-retained-cache-v27"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
+            "effort_position": "end",
             "log": root.join("strata-atomic.log"),
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
+            "atomic_disk_session_previous_backend_sha256": "ae6f8e23bdd3b53311c5a866387f2ba593169b3c989e6d78892cbb29d1c2a952",
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
             "atomic_summary_state_bank_enabled": true,
-            "atomic_summary_state_bank_max_bytes": 1073741824,
+            "atomic_summary_clone_enabled": true,
+            "atomic_summary_state_bank_max_bytes": 1300000000,
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "356ba17d4811b796072eba57f66d0f9d0c554b0681f0cee0a724cf7fcd49375a",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:fbfa239553da6a7d01654adbed4f88e357116fb92b00b85d70f2d382e7a6ed87",
-            "atomic_summary_expected_backend_sha256": "281b79248b0d36b968a0682d22c9be87f5206959fe31a145a43ee29a26734cee",
+            "atomic_summary_expected_native_sha256": "5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0",
+            "atomic_summary_expected_backend_sha256": "d011acf0ee6a13ddf08ede2967e0cd345a6c327358b1426997c5fb89173bcf1b",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "STRATA_METAL_PROMPT_EXPERTS": "v2", "STRATA_METAL_F16": "0",
                 "STRATA_METAL_PROMPT_CHUNK": "2048", "STRATA_ROUTE_TAIL_SKIP": "0",
-                "STRATA_PREFILL_CPU_SHARE": "0"
+                "STRATA_PREFILL_CPU_SHARE": "0",
+                "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192"
             },
             "vision": {
                 "exe": root.join("candidate/strata-vision"),
@@ -331,7 +335,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-summary-progress-v18"),
+                    .join("feature-integration/runtime-retained-cache-v27"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -484,7 +488,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-summary-progress-v18"),
+                        .join("feature-integration/runtime-retained-cache-v27"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1218,17 +1222,18 @@ mod tests {
         assert_eq!(config["host"], "127.0.0.1");
         assert_eq!(config["port"], 18080);
         assert_eq!(config["model_name"], "ista-iq3-xxs");
+        assert_eq!(config["effort_position"], "end");
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-cold-summary-v17/strata")
+                .join("feature-integration/engine-cached-summary-v24/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-summary-progress-v18")
+                .join("feature-integration/runtime-retained-cache-v27")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1247,7 +1252,9 @@ mod tests {
         assert_eq!(config["atomic_summary_scheduler"], "weighted-quanta-v1");
         assert_eq!(config["atomic_summary_foreground_weight"], 8);
         assert_eq!(config["atomic_summary_state_bank_enabled"], true);
-        assert_eq!(config["atomic_summary_state_bank_max_bytes"], 1073741824);
+        assert_eq!(config["atomic_summary_state_bank_max_bytes"], 1300000000);
+        assert_eq!(config["atomic_summary_clone_enabled"], true);
+        assert_eq!(config["env"]["STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS"], "8192");
         assert_eq!(
             config["atomic_summary_state_bank_provenance"],
             "experimental-user-validation"
@@ -1266,15 +1273,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "356ba17d4811b796072eba57f66d0f9d0c554b0681f0cee0a724cf7fcd49375a"
+            "5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:fbfa239553da6a7d01654adbed4f88e357116fb92b00b85d70f2d382e7a6ed87"
+            "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "281b79248b0d36b968a0682d22c9be87f5206959fe31a145a43ee29a26734cee"
+            "d011acf0ee6a13ddf08ede2967e0cd345a6c327358b1426997c5fb89173bcf1b"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

@@ -14,3 +14,18 @@ it.each([['16px', false], ['20px', false], ['16px', true], ['20px', true]] as co
   expectNoHorizontalOverflow(column)
   expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '99.9')
 })
+
+
+it.each([1024, 1280])('keeps input counts beside the status on one line at desktop width %s', async width => {
+  setFontSize('20px')
+  useInferenceProgress.setState({ byThread: { a: { requestId: 'inline', startedAt: Date.now() - 118000,
+    phase: 'reading', processed: 13855, total: 63579, cache: 64000 } } })
+  render(withTranslations(<div style={{ width: width - 304 }} data-testid="column"><InferenceProgress threadId="a" /></div>))
+  const column = screen.getByTestId('column')
+  await settle(column)
+  const status = screen.getByText('Reading input'), counts = screen.getByText(/New input:/)
+  expect(Math.abs(status.getBoundingClientRect().top - counts.getBoundingClientRect().top)).toBeLessThan(1)
+  expect(getComputedStyle(counts).whiteSpace).toBe('nowrap')
+  expect(counts).toHaveAttribute('title', expect.stringContaining('13,855 / 63,579'))
+  expectNoHorizontalOverflow(column)
+})

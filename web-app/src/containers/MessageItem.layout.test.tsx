@@ -1,4 +1,3 @@
-import { InferenceProgress } from '@/components/InferenceProgress'
 import { useInferenceProgress } from '@/lib/inference-progress'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { page } from '@vitest/browser/context'
@@ -529,8 +528,7 @@ it.each((['reading', 'thinking', 'generating'] as const).flatMap(phase => [16, 2
     render(withTranslations(<div style={{ width: 320 }} data-testid="overlap-column">
       <MessageItem message={{ id: 'overlap', role: 'assistant', parts: [
         { type: 'reasoning', text: 'Inspect this reasoning without a second live clock.', state: 'streaming' },
-      ] }} isFirstMessage={false} isLastMessage status="streaming" inferenceThreadId="overlap" />
-      <InferenceProgress threadId="overlap" />
+      ] }} isFirstMessage={false} isLastMessage status="streaming" inferenceThreadId="overlap" showInferenceProgress />
     </div>))
     const column = screen.getByTestId('overlap-column')
     await settle(column)
@@ -603,8 +601,7 @@ it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].fla
     ] }
     const { container } = render(withTranslations(
       <div className="flex flex-col gap-y-2" style={{ width: width - 304 }}>
-        <MessageItem message={message} isFirstMessage={false} isLastMessage status="submitted" requestActive inferenceThreadId="spacing" />
-        <InferenceProgress threadId="spacing" />
+        <MessageItem message={message} isFirstMessage={false} isLastMessage status="submitted" requestActive inferenceThreadId="spacing" showInferenceProgress />
       </div>
     ))
     await settle(container)
@@ -612,6 +609,55 @@ it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].fla
     const gap = screen.getByRole('status').getBoundingClientRect().top - anchor.getBoundingClientRect().bottom
     expect(gap).toBeLessThanOrEqual(size * 3)
     expect(container.querySelector('[data-testid="assistant-message-actions"]')).toBeNull()
+    expectNoHorizontalOverflow(container)
+    useInferenceProgress.setState({ byThread: {} })
+  }
+)
+
+it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].map(dark => ({ width, size, dark })))))(
+  'matches finished answer spacing while reasoning is live: $width $size dark=$dark',
+  async ({ width, size, dark }) => {
+    await page.viewport(width, 800)
+    setFontSize(`${size}px`)
+    setTheme(dark ? 'dark' : 'light')
+    const thought: UIMessage['parts'][number] = { type: 'reasoning', text: 'Inspect the result.', state: 'done' }
+    useInferenceProgress.setState({ byThread: { adjacent: {
+      requestId: 'adjacent', startedAt: Date.now(), phase: 'thinking',
+    } } })
+    const view = (live: boolean) => withTranslations(
+      <div className="flex flex-col gap-y-2" style={{ width: width - 304 }}>
+        <div>
+          <MessageItem message={{ id: 'adjacent', role: 'assistant', parts: [thought,
+            ...(!live ? [{ type: 'text' as const, text: 'The final answer.' }] : []),
+          ] }} isFirstMessage={false} isLastMessage status={live ? 'submitted' : 'ready'} requestActive={live} inferenceThreadId="adjacent" showInferenceProgress={live} />
+        </div>
+      </div>
+    )
+    const { container, rerender } = render(view(true))
+    await settle(container)
+    const liveGap = screen.getByRole('status').getBoundingClientRect().top -
+      screen.getByRole('button', { name: 'Reasoning details' }).getBoundingClientRect().bottom
+    rerender(view(false))
+    await settle(container)
+    const finishedGap = screen.getByText('The final answer.').getBoundingClientRect().top -
+      screen.getByRole('button', { name: /Thought|Reasoned/ }).getBoundingClientRect().bottom
+    expect(liveGap).toBeCloseTo(finishedGap, 0)
+    // Once answer text exists, progress uses the completed action row's gap.
+    const finishedActionGap = screen.getByTestId('assistant-message-actions').getBoundingClientRect().top -
+      screen.getByText('The final answer.').getBoundingClientRect().bottom
+    act(() => useInferenceProgress.setState({ byThread: { adjacent: {
+      requestId: 'adjacent', startedAt: Date.now(), phase: 'generating',
+    } } }))
+    rerender(withTranslations(
+      <MessageItem message={{ id: 'adjacent', role: 'assistant', parts: [thought,
+        { type: 'text', text: 'The final answer.' },
+      ] }} isFirstMessage={false} isLastMessage status="submitted" requestActive inferenceThreadId="adjacent" showInferenceProgress />
+    ))
+    await settle(container)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    const answerGap = screen.getByRole('status').getBoundingClientRect().top -
+      screen.getByText('The final answer.').getBoundingClientRect().bottom
+    expect(answerGap).toBeCloseTo(finishedActionGap, 0)
     expectNoHorizontalOverflow(container)
     useInferenceProgress.setState({ byThread: {} })
   }

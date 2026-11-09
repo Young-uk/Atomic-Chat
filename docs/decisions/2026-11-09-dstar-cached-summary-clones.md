@@ -1,0 +1,17 @@
+# Dstar cached summary clones and retained-state persistence
+
+## Context
+
+Strata can summarize an owner-bound cloned conversation, reuse retained dialogue after compaction, resume a bound disk cache and recheck handoff boundaries after foreground work. Dstar already moves arbitrary retained token intervals and rebuilds its indexer blocks, but its summary path still uses isolated 16K extraction. Its approximate recurrent state was also memory-only.
+
+## Decision
+
+Negotiate `atomic_summary_clone` only from a registered runtime that explicitly advertises the clone contract, stable model/config identity, per-process identity and tokenizer support. Reuse the existing owner-bound client adapter, source anchors, 60% tokenizer trigger, prompt-pressure fallback, 2048-token summary output, unfinished-work ledger, request-local progress and new-user-turn handoff revalidation. Legacy Dstar servers keep the existing extraction path.
+
+Dstar enables clones only for the explicit dedicated summary slot on local Qwen Metal. The summary session shares weights and has the main context plus 8192 tokens of physical task/output headroom. The larger summary session is created first so both lanes borrow one sufficiently wide scratch arena. At admission the existing serialized executor copies the completed text checkpoint once with device blits, without materializing another full-size host payload. Its source-state footprint is capped at 4 GiB; a missing owner, images, failed copy, cancellation or insufficient context leaves the main session unchanged. Mutable session state is independent after copying. Existing weighted 8:1 scheduling remains in force; cloned-summary prefill uses the ordinary 2048-token physical chunk when idle and yields one token when foreground compute is queued. Legacy extraction keeps its established policy.
+
+A current completed request owner can attest a SHA-256 UI-history fingerprint. Full ordinary cache writes then publish a small native-client-only receipt, bound to the actual payload frontier, file identity and model/native-binary/config identity. Partial checkpoints cannot acquire receipts. A restart may restore that payload directly into the summary session without touching the foreground cache; native payload geometry and token hash are verified before admitting the task. Missing or stale receipts never upgrade legacy cache provenance. Ordinary disk cache lookup remains available.
+
+Approximate Qwen history now has payload version 3. Ordinary version 2 stays byte-identical. The payload already stores the absolute position table, mrope delta, recurrent state and cache rows; version 3 preserves the approximate flag and validates strictly monotonic bounded text positions. It is rejected outside local Qwen Metal and in tensor-parallel mode. A receipt-bound full save writes the actual payload rather than reusing a file sharing only its text key. This is state persistence, not a claim that retained recurrent influence equals exact replay.
+
+The planner uses Dstar's actual chat parser and arbitrary-cut matcher; it does not impose Strata's four-token requirement. It reads a bounded token snapshot under the existing mutex, tokenizes without inference and rejects a changed owner epoch. No locks, model downloads, tool permissions or user-invisible inference are added. Actual model correctness, Metal/SSD throughput and long-context memory usage remain manual validation by the user; automated checks use fake sessions and model-independent parsing/scheduling tests.

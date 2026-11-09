@@ -1,3 +1,4 @@
+import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history-plan'
 import i18n from '@/i18n/setup'
 import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
 import { SummaryAdmission, summarySchedulingContext } from './atomic-summary-admission'
@@ -5,6 +6,7 @@ import { ATOMIC_PLAIN_TOOL_POLICY } from './atomic-tool-policy'
 import { localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
 import { convertThreadMessagesToUIMessages } from './messages'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
+import { bindStrataHistory, resumeRestoredStrataSummary, summarizeWithStrataCache } from './strata-cached-summary'
 import { beginCompletionReviewProgress, publishContextUsage } from './inference-progress'
 import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
@@ -1285,6 +1287,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Only the identity-checked managed Strata route gets this extension.
         // Its progress stays on this request's SSE stream, never global metrics.
         if (runtime?.engine === 'strata') effectiveReasoningOverride.return_progress = true
+        if (runtime?.summaryClone) {
+          const user = options.messages.findLast(message => message.role === 'user')
+          if (user) effectiveReasoningOverride.atomic_cache_owner = `${this.threadId ?? options.chatId}/${user.id}`
+        }
         const hasOverride = Object.keys(effectiveReasoningOverride).length > 0
 
         // Audio attachments (omni/audio-capable models, MLX backend) are
@@ -1570,6 +1576,56 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       preparedMessages = replayDstarToolSnapshots(preparedMessages,
         useMessages.getState().getMessages(snapshotThreadId))
     }
+    // Local-providers (mlx, llamacpp, llamacpp-upstream, foundation-models):
+    // when tools are also active we don't pass a `system` message (gemma-4 and
+    // similar local models reliably auto-emit a chain-of-thought block whenever
+    // the rendered prompt contains BOTH a system message and tools). Instead of
+    // discarding the user's assistant instructions, they are folded into the
+    // first user message below so the model still honors them. Without tools
+    // there is no CoT risk, so the system prompt is forwarded normally.
+    // See LOCAL_INFERENCE_PROVIDERS for rationale. Tool inclusion is
+    // independent of the reasoning toggle and governed solely by the tools
+    // on/off setting (via refreshTools -> useToolAvailable).
+    const isLocalProvider = isLocalInferenceProvider(effectiveProviderName)
+
+    // Skills invoked on this thread (via the composer's "/" menu, stamped on
+    // user-message metadata) ride the system prompt — the chat counterpart of
+    // the agent's `skill.view` loading. Reading them off `options.messages`
+    // makes send, regenerate, edit and app-restart replay uniform.
+    const invokedSkillNames = collectSkillNamesFromMessages(options.messages)
+    if (this.skillCacheRevision !== agentSkillRevision()) {
+      this.invalidateSkillCache()
+    }
+    const skillsBlock = renderChatSkillsBlock(
+      await loadChatSkillDetails(invokedSkillNames, this.skillDetailCache)
+    )
+    const documentsHint =
+      !appendOnlyDstar && activeTools && 'retrieve' in activeTools
+        ? ATTACHED_DOCUMENTS_HINT
+        : undefined
+    const systemWithSkills = composeSystemMessage(
+      composeSystemMessage(renderInstructions(this.systemMessage), skillsBlock),
+      composeSystemMessage(documentsHint, runtime?.toolPolicy === 'plain-system-v1' && shouldEnableTools ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
+    )
+
+    const dropSystemForTools =
+      isLocalProvider && shouldEnableTools && !!systemWithSkills
+    const effectiveSystemMessage = dropSystemForTools
+      ? undefined
+      : systemWithSkills
+
+    const cacheBoundaryPlanner = (modelView: UIMessage[]) =>
+      (owner: string, history: UIMessage[], boundary: number, archived: number, signal: AbortSignal) =>
+        planStrataHistoryBoundary(provider.base_url!, modelId!, owner, history, boundary, archived, signal,
+          retained => {
+            const projected = projectCompactedMessages(retained, modelView)
+            const wire = convertToModelMessages(chatExecOutputsForModel(applyPolicies(projected, history)))
+            return historyPlanMessages(dropSystemForTools && systemWithSkills
+              ? foldSystemIntoFirstUserMessage(wire, systemWithSkills)
+              : [...(effectiveSystemMessage ? [{ role: 'system' as const, content: effectiveSystemMessage }] : []), ...wire])
+          }, { tools: toOpenAiTools(activeTools),
+            ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}) })
+
     if (appendOnlyDstar || compaction || completionReviewSupported) {
       const snapshotThreadId = this.threadId ?? options.chatId
       if (compaction) {
@@ -1577,6 +1633,27 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         // Only hidden catalog metadata is reconciled from durable messages.
         const original = replayDstarToolSnapshots(options.messages,
           useMessages.getState().getMessages(snapshotThreadId))
+        if (runtime?.summaryClone) {
+          // Adopt a verified saved handoff before deciding whether restored
+          // native history needs another summary or still contains attachments.
+          if (options.messages.at(-1)?.role === 'user') {
+            const completed = original.slice(0, -1)
+            const cacheUser = completed.findLast(message => message.role === 'user')
+            if (cacheUser) {
+              await compaction.prepareCachedAdoption(original,
+                (history, boundary, archived, signal) => cacheBoundaryPlanner(preparedMessages)(
+                  `${snapshotThreadId}/${cacheUser.id}`, history, boundary, archived, signal),
+                options.abortSignal ?? new AbortController().signal)
+            }
+          }
+          const startupView = compaction.apply(original, options.messages.at(-1)?.role === 'user')
+          await resumeRestoredStrataSummary(provider.base_url!, modelId!, snapshotThreadId,
+            original, projectCompactedMessages(startupView, preparedMessages), compactionContext, compaction, options.abortSignal ?? new AbortController().signal,
+            { selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
+            estimatePromptTokensHeuristic({ system: systemWithSkills,
+              messages: convertToModelMessages(chatExecOutputsForModel(projectCompactedMessages(startupView, preparedMessages))),
+              tools: activeTools }) + Math.min((getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048))
+        }
         // Tool continuations use the same active summary as their opening
         // request. A newly completed summary waits for the next user turn.
         preparedMessages = projectCompactedMessages(
@@ -1616,9 +1693,18 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           if (summaryAdmission && !summaryAdmission.allowed) return
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
+          const cacheUser = history.findLast(message => message.role === 'user')
+          if (runtime?.summaryClone && cacheUser && !modelView.some(message => message.parts.some(part => part.type === 'file'))) {
+            void bindStrataHistory(provider.base_url!, `${snapshotThreadId}/${cacheUser.id}`, history).catch(() => {
+              console.warn('[context-compaction] disk clone history receipt unavailable')
+            })
+          }
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(chatExecOutputsForModel(modelView)), tools: activeTools })
           coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)),
-            summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) }), undefined,
+            runtime?.summaryClone && !modelView.some(message => message.parts.some(part => part.type === 'file')) && history.findLast(message => message.role === 'user')
+              ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
+                { selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
+              : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) }), undefined,
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)
               const wire = applyPolicies(retainedView, history)
@@ -1650,44 +1736,6 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           { role: 'assistant' as const, content: continueContent },
         ]
       : baseMessages
-
-    // Local-providers (mlx, llamacpp, llamacpp-upstream, foundation-models):
-    // when tools are also active we don't pass a `system` message (gemma-4 and
-    // similar local models reliably auto-emit a chain-of-thought block whenever
-    // the rendered prompt contains BOTH a system message and tools). Instead of
-    // discarding the user's assistant instructions, they are folded into the
-    // first user message below so the model still honors them. Without tools
-    // there is no CoT risk, so the system prompt is forwarded normally.
-    // See LOCAL_INFERENCE_PROVIDERS for rationale. Tool inclusion is
-    // independent of the reasoning toggle and governed solely by the tools
-    // on/off setting (via refreshTools -> useToolAvailable).
-    const isLocalProvider = isLocalInferenceProvider(effectiveProviderName)
-
-    // Skills invoked on this thread (via the composer's "/" menu, stamped on
-    // user-message metadata) ride the system prompt — the chat counterpart of
-    // the agent's `skill.view` loading. Reading them off `options.messages`
-    // makes send, regenerate, edit and app-restart replay uniform.
-    const invokedSkillNames = collectSkillNamesFromMessages(options.messages)
-    if (this.skillCacheRevision !== agentSkillRevision()) {
-      this.invalidateSkillCache()
-    }
-    const skillsBlock = renderChatSkillsBlock(
-      await loadChatSkillDetails(invokedSkillNames, this.skillDetailCache)
-    )
-    const documentsHint =
-      !appendOnlyDstar && activeTools && 'retrieve' in activeTools
-        ? ATTACHED_DOCUMENTS_HINT
-        : undefined
-    const systemWithSkills = composeSystemMessage(
-      composeSystemMessage(renderInstructions(this.systemMessage), skillsBlock),
-      composeSystemMessage(documentsHint, runtime?.toolPolicy === 'plain-system-v1' && shouldEnableTools ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
-    )
-
-    const dropSystemForTools =
-      isLocalProvider && shouldEnableTools && !!systemWithSkills
-    const effectiveSystemMessage = dropSystemForTools
-      ? undefined
-      : systemWithSkills
 
     // When we drop the `system` field for the gemma+tools CoT workaround, fold
     // the instructions into the first user message so they still reach the

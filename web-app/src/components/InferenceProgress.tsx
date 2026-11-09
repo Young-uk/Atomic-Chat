@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
+import { cn } from '@/lib/utils'
 import { Loader2 } from 'lucide-react'
 import { useInferenceProgress } from '@/lib/inference-progress'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 
 /** Request-scoped status stays visible through prefill, reasoning and decoding. */
-export function InferenceProgress({ threadId }: { threadId: string }) {
+export function InferenceProgress({ threadId, className }: { threadId: string; className?: string }) {
   const progress = useInferenceProgress((state) => state.byThread[threadId])
   const { t } = useTranslation('chat')
   const [now, setNow] = useState(Date.now)
@@ -23,24 +24,26 @@ export function InferenceProgress({ threadId }: { threadId: string }) {
   const percentage = hasCounts
     ? Math.floor(progress.processed! / progress.total! * 1000) / 10
     : undefined
+  const inputLabel = hasCounts ? [
+    t('inferenceProgress.tokens', { processed: progress.processed!.toLocaleString(), total: progress.total!.toLocaleString() }),
+    ...(Number.isSafeInteger(progress.cache) && progress.cache! > 0
+      ? [t('inferenceProgress.cached', { tokens: progress.cache!.toLocaleString() })] : []),
+  ].join(' · ') : undefined
   return (
-    <div role="status" aria-live="polite" className="my-2 min-w-0 max-w-full text-sm text-muted-foreground">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+    <div role="status" aria-live="polite" className={cn('my-2 min-w-0 max-w-full text-sm text-muted-foreground', className)}>
+      <div className="flex min-w-0 items-center gap-x-2 overflow-hidden">
         <span className="flex size-4 shrink-0 items-center justify-center overflow-hidden" aria-hidden="true">
           <Loader2 className="size-3.5 animate-spin" />
         </span>
-        <span className="min-w-0 break-words">{t(`inferenceProgress.${progress.phase}`)}</span>
+        <span className="min-w-0 truncate" title={t(`inferenceProgress.${progress.phase}`)}>{t(`inferenceProgress.${progress.phase}`)}</span>
         {percentage !== undefined && <span className="shrink-0 tabular-nums">{percentage}%</span>}
-        <span className="inline-flex min-w-0 items-baseline gap-x-2 tabular-nums">
-          <span aria-hidden="true">·</span><span>{t('inferenceProgress.elapsed', { time: elapsed })}</span>
+        <span className="min-w-0 truncate tabular-nums" title={t('inferenceProgress.elapsed', { time: elapsed })}>
+          <span aria-hidden="true">· </span>{t('inferenceProgress.elapsed', { time: elapsed })}
         </span>
-      </div>
-      {hasCounts && <div className="mt-1 min-w-0 break-words tabular-nums">
-        {t('inferenceProgress.tokens', { processed: progress.processed!.toLocaleString(), total: progress.total!.toLocaleString() })}
-        {Number.isSafeInteger(progress.cache) && progress.cache! > 0 && <span className="ml-2">
-          <span aria-hidden="true">· </span>{t('inferenceProgress.cached', { tokens: progress.cache!.toLocaleString() })}
+        {inputLabel && <span className="min-w-0 truncate tabular-nums" title={inputLabel}>
+          <span aria-hidden="true">· </span>{inputLabel}
         </span>}
-      </div>}
+      </div>
       {percentage !== undefined && (
         <div role="progressbar" aria-label={t('inferenceProgress.reading')}
           aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage}

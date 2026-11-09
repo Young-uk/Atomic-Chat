@@ -1,4 +1,3 @@
-import { InferenceProgress } from "@/components/InferenceProgress"
 import { useInferenceProgress } from '@/lib/inference-progress'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -734,7 +733,7 @@ it('uses one request clock while preserving the live reasoning disclosure', () =
     { type: 'reasoning', text: 'Reasoning remains inspectable.', state: 'streaming' },
   ] }
   const { rerender } = render(<><MessageItem message={message} isFirstMessage={false}
-    isLastMessage status="streaming" inferenceThreadId="test-thread" /><InferenceProgress threadId="test-thread" /></>)
+    isLastMessage status="streaming" inferenceThreadId="test-thread" showInferenceProgress /></>)
   expect(screen.getAllByRole('status')).toHaveLength(1)
   expect(screen.getByText('inferenceProgress.elapsed 0:33')).toBeInTheDocument()
   expect(screen.queryByText('activity.working')).not.toBeInTheDocument()
@@ -747,7 +746,7 @@ it('uses one request clock while preserving the live reasoning disclosure', () =
   expect(screen.getByText('inferenceProgress.generating')).toBeInTheDocument()
   expect(screen.getAllByRole('status')).toHaveLength(1)
   act(() => useInferenceProgress.setState({ byThread: {} }))
-  rerender(<><MessageItem message={message} isFirstMessage={false} isLastMessage status="ready" inferenceThreadId="test-thread" /><InferenceProgress threadId="test-thread" /></>)
+  rerender(<><MessageItem message={message} isFirstMessage={false} isLastMessage status="ready" inferenceThreadId="test-thread" showInferenceProgress /></>)
   expect(screen.queryByRole('status')).not.toBeInTheDocument()
   expect(screen.getByText('Reasoning remains inspectable.')).toBeVisible()
 })

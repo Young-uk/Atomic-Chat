@@ -372,3 +372,29 @@ describe('explicit completion review opt-in', () => {
       { id: 'dstar-model' }, { completionReviewEnabled: true }))?.completionReview).toBe(advertisement === true)
   })
 })
+
+
+describe('Dstar cached-summary negotiation', () => {
+  const provider = { provider: 'dstar', base_url: 'http://localhost:8010/v1', models: [] }
+  const model = { id: 'qwen3.8-flash-next' }
+  const clone = { data: [{ id: model.id, context_length: 65536 }], runtime_id: 'dstar-a',
+    atomic_model_fingerprint: 'qwen-config', atomic_summary_slot: true, atomic_summary_clone: true,
+    atomic_summary_stream_progress: true, atomic_summary_context: 16384, atomic_summary_token_count: true,
+    atomic_tool_preamble: 4 }
+  it('enables the shared clone adapter only for an explicit complete Dstar contract', async () => {
+    respond(clone)
+    const first = await probeLocalModelCapabilities(provider, model)
+    expect(first).toMatchObject({ engine: 'dstar', summaryClone: true, summarySlot: true,
+      summaryStreamProgress: true, summaryTokenCounting: true, toolPolicy: 'dstar-markers' })
+    respond({ ...clone, runtime_id: 'dstar-b' })
+    const next = await probeLocalModelCapabilities(provider, model)
+    expect(next?.archiveScope).toBe(first?.archiveScope)
+    expect(next?.runtimeScope).not.toBe(first?.runtimeScope)
+  })
+  it.each([{ atomic_summary_clone: false }, { runtime_id: undefined },
+    { atomic_summary_context: 8192 }, { atomic_summary_token_count: false }, { atomic_summary_slot: false }])(
+    'retains the legacy path for an incomplete clone advertisement: %j', async missing => {
+      respond({ ...clone, ...missing })
+      expect((await probeLocalModelCapabilities(provider, model))?.summaryClone).toBeUndefined()
+    })
+})
