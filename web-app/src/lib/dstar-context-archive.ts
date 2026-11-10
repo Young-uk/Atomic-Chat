@@ -109,7 +109,7 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
       const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
         method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, atomic_summary: true, think: false, max_tokens: 2048,
+        body: JSON.stringify({ model, atomic_summary: true, think: false, max_tokens: 0,
           messages: renderedMessages }),
       })
       if (!response.ok) throw new Error(`Summary token counting failed (${response.status})`)
@@ -189,14 +189,13 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
             const task = attempt
               ? 'The previous attempt was too large. Use shorter phrases and omit repeated context; do not add explanations.'
               : 'Produce the compact historical handoff requested above.'
-            const inputBytes = bytes(base) + bytes(retryPayload) + bytes(task)
             if (!(await fits(base, retryPayload, 0, task))) throw new Error('Historical summary repack exceeds input budget')
             const choice = await runIdleSummaryRequest(baseUrl, signal, paused => progress?.(completed, paused), async idleSignal => {
               const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
                 method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]),
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model, atomic_summary: true, stream: false, think: false,
-                  temperature: 0, max_tokens: tokenCounting ? 2048 : Math.min(2048, 8192 - 512 - inputBytes), messages: messages(base, retryPayload, task) }),
+                  temperature: 0, max_tokens: 0, messages: messages(base, retryPayload, task) }),
               })
               if (!response.ok) throw new Error(`Historical summary repack failed (${response.status})`)
               return (await response.json()).choices?.[0]
@@ -256,7 +255,6 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
           else high = mid - 1
         }
         if (!(await mergeFits(payload(low))) || (low === 0 && offset < points.length)) throw new Error('Summary exceeds the bounded evidence budget')
-        const maxOutput = tokenCounting ? 2048 : Math.min(2048, 8192 - 512 - bytes(instructions) - bytes(mergeTask) - bytes(payload(low)))
         const requestMerge = async (system: string) => {
           // Repair the same evidence/previous ledger; never silently reduce or
           // advance this fragment merely to bypass source validation.
@@ -267,7 +265,7 @@ export function summarizeWithDstar(baseUrl: string, model: string, options?: { t
               method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]),
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ model, atomic_summary: true, stream: false, think: false,
-                temperature: 0, max_tokens: maxOutput, messages: messages(instructions, payload(low), task) }),
+                temperature: 0, max_tokens: 0, messages: messages(instructions, payload(low), task) }),
             })
             if (!response.ok) throw new Error(`Background summary failed (${response.status})`)
             const body = await response.json()

@@ -9,7 +9,7 @@ export type SummaryInputProgress = {
 }
 export type SummaryProgress = {
   method?: 'clone' | 'segments'
-  fallbackReason?: 'images' | 'unsupported' | 'headroom'
+  fallbackReason?: 'images' | 'unsupported' | 'headroom' | 'output_limit'
   input?: SummaryInputProgress
   phase: 'queued' | 'paused' | 'summarizing' | 'saving' | 'ready' | 'failed'
   startedAt: number

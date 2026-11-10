@@ -103,8 +103,7 @@ it('bounds repeated output-limit retries without advancing or claiming completio
   expect(fetcher).toHaveBeenCalledTimes(4)
   for (const call of fetcher.mock.calls) {
     const body = JSON.parse(call[1].body), fragment = JSON.parse(body.messages[1].content)
-    expect(body.max_tokens).toBeGreaterThanOrEqual(1680)
-    expect(body.max_tokens).toBeLessThanOrEqual(2048)
+    expect(body.max_tokens).toBe(0)
     expect(body.messages.reduce((n: number, m: { content: string }) => n + new TextEncoder().encode(m.content).length, 0) + body.max_tokens + 512).toBeLessThanOrEqual(8192)
     expect(fragment.evidenceOffset).toBe(0)
     expect(fragment.previousSummary).toBe('prior')
@@ -126,8 +125,8 @@ it('reserves the full output allowance for byte-bounded multilingual inputs', as
   }))
   await summarizeWithDstar('http://localhost/v1', 'model')('', 'short', new AbortController().signal)
   await summarizeWithDstar('http://localhost/v1', 'model')('한'.repeat(1100), '한'.repeat(800), new AbortController().signal)
-  expect(bodies[0].max_tokens).toBe(2048)
-  expect(bodies.every(body => body.max_tokens === 2048)).toBe(true)
+  expect(bodies[0].max_tokens).toBe(0)
+  expect(bodies.every(body => body.max_tokens === 0)).toBe(true)
   for (const body of bodies) {
     const inputBytes = body.messages.reduce((n, m) => n + new TextEncoder().encode(m.content).length, 0)
     expect(inputBytes + body.max_tokens + 512).toBeLessThanOrEqual(8192)
@@ -212,7 +211,7 @@ it('halves the actual byte-limited evidence rather than repeating identical requ
   const lengths = bodies.map(b => Array.from(JSON.parse(b.messages[1].content).newEvidence).length)
   expect(lengths[0]).toBeLessThan(1200)
   for (let i = 1; i < lengths.length; i++) expect(lengths[i]).toBe(Math.floor(lengths[i - 1] / 2))
-  expect(bodies.every(b => b.max_tokens === 2048)).toBe(true)
+  expect(bodies.every(b => b.max_tokens === 0)).toBe(true)
 })
 
 it('checkpoints source-backed open requests separately and preserves them through a prose repack', async () => {

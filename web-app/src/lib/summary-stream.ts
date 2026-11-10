@@ -8,6 +8,11 @@ const admissionMessages = new Set([
 export const summaryAdmissionMessage = (message: unknown) => typeof message === 'string' && admissionMessages.has(message)
   ? message : 'Background summary deferred by server safety admission; originals retained'
 
+/** A length finish is incomplete even when its partial JSON happens to parse. */
+export class SummaryOutputLimitError extends Error {
+  constructor() { super('Cached summary ended before completion; originals retained') }
+}
+
 /** Only this explicit capacity refusal may switch recovery strategies. */
 export class SummaryHeadroomError extends Error {
   constructor() { super('Summary cache has insufficient context headroom; originals retained') }

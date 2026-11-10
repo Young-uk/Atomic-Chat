@@ -64,7 +64,7 @@ it('selects complete tool-bearing turns with the full token-counted extraction a
   const summarize = summarizeBatchesWithDstar('http://dstar/v1', 'qwen', { tokenCounting: true })
   const messages = [...turn(0), { id: 'tool-result', role: 'assistant', parts: [{ type: 'text', text: 'Tool result and final answer' }] }, ...turn(1)] as UIMessage[]
   expect(await summarize.batches!.selectCompletePrefix(messages, undefined, new AbortController().signal)).toBe(3)
-  expect(calls.every(c => c.think === false && c.max_tokens === 2048)).toBe(true)
+  expect(calls.every(c => c.think === false && c.max_tokens === 0)).toBe(true)
   expect(calls.some(c => c.messages[2].content.includes('user-message IDs'))).toBe(true)
 })
 

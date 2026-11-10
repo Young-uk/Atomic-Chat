@@ -29,7 +29,7 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
     if (!options.tokenCounting) return messages.reduce((n, m) => n + bytes(m.content), 0) <= 8192 - 512 - 2048
     const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
       method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]), headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, atomic_summary: true, think: false, max_tokens: 2048, messages }),
+      body: JSON.stringify({ model, atomic_summary: true, think: false, max_tokens: 0, messages }),
     })
     if (!response.ok) throw new Error(`Summary token counting failed (${response.status})`)
     const count = await response.json()
@@ -53,7 +53,7 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
       try {
         const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST', signal: options.recovery ? idleSignal : AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery && (!options.idleOnly || options.coldRecoveryOwner) ? { atomic_summary_recovery: true } : {}), ...(options.coldRecoveryOwner ? { atomic_summary_cold_recovery: typeof options.coldRecoveryOwner === 'function' ? options.coldRecoveryOwner() : options.coldRecoveryOwner } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 1, max_tokens: 2048, messages: wire(system, payload, instruction) }),
+          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery && (!options.idleOnly || options.coldRecoveryOwner) ? { atomic_summary_recovery: true } : {}), ...(options.coldRecoveryOwner ? { atomic_summary_cold_recovery: typeof options.coldRecoveryOwner === 'function' ? options.coldRecoveryOwner() : options.coldRecoveryOwner } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 1, max_tokens: 0, messages: wire(system, payload, instruction) }),
         })
         if (!response.ok) {
           if (response.status === 409) {

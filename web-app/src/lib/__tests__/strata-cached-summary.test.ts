@@ -1,5 +1,5 @@
 import { beginDstarForeground, noteDstarCacheOwner } from '../dstar-summary-idle'
-import { SummaryHeadroomError } from '../summary-stream'
+import { SummaryHeadroomError, SummaryOutputLimitError } from '../summary-stream'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import { bindStrataHistory, strataHistoryHash, resumeRestoredStrataSummary, summarizeWithStrataCache } from '../strata-cached-summary'
@@ -32,6 +32,7 @@ it('sends only source anchors and one task to the bound clone, preserving the ve
   const body = JSON.parse(init.body as string)
   expect(body.atomic_summary_clone).toBe('thread/turn')
   expect(body.temperature).toBe(1)
+  expect(body.max_tokens).toBe(0)
   expect(body.messages).toHaveLength(1)
   expect(body.messages[0].content).not.toContain('raw evidence must not be replayed')
   expect(body.messages[0].content).not.toContain('q'.repeat(300))
@@ -494,4 +495,75 @@ it('keeps native foreground priority for the independent Dstar background slot',
   expect(generated[0]).not.toHaveProperty('atomic_summary_recovery')
   expect(generated[0]).not.toHaveProperty('atomic_summary_cold_recovery')
   expect(fallback.recoveryPriority).toBe(false)
+})
+
+it('recovers a length-limited clone using complete turns while preserving the newest request', async () => {
+  const messages: UIMessage[] = [...history(), { id:'pending', role:'user', parts:[{type:'text',text:'Keep newest question'}] }]
+  const original = structuredClone(messages), saved: ArchiveRecord[] = []
+  const counts: number[] = []
+  const fallback = vi.fn(async (_previous, _evidence, _signal, _progress, checkpoints) => {
+    const segment = checkpoints?.requestSources ?? []
+    counts.push(segment.length)
+    await checkpoints?.save({version:1,inputKey:'cold',offset:segment.length,completed:1,summary:'Emergency handoff',requests:{open:[],resolved:[]}})
+    return 'Emergency handoff'
+  }) as unknown as Summarize
+  fallback.recoveryPriority = true
+  fallback.batches = { selectCompletePrefix:async source => Math.min(4, source.length), consolidate:async batches => batches }
+  const clone = vi.fn(async () => { throw new SummaryOutputLimitError() }) as unknown as Summarize
+  clone.cached = true; clone.recoveryPriority = true; clone.outputLimitFallback = fallback
+  const coordinator = new ContextCompaction('thread', {save:async record=>{saved.push(structuredClone(record))},load:async()=>undefined})
+  await coordinator.recover(messages, 1000, clone, undefined, 0,
+    view => view.some(message => message.id.startsWith('atomic-context-')) ? 900 : 1100)
+  expect(clone).toHaveBeenCalledTimes(1)
+  expect(fallback).toHaveBeenCalledTimes(1)
+  expect(counts).toEqual([4])
+  const view = coordinator.apply(messages)
+  expect(view.at(-1)?.id).toBe('pending')
+  expect(messages).toEqual(original)
+  expect(saved.some(record => record.summary === 'Historical segment 1:\nEmergency handoff')).toBe(true)
+})
+
+
+it('continues a length-limited background clone without committing its partial output', async () => {
+  const messages = history(), original = structuredClone(messages), saved: ArchiveRecord[] = []
+  const completed = vi.fn(async (_previous, _evidence, _signal, _progress, checkpoints) => {
+    await checkpoints?.save({version:1,inputKey:'background-cold',offset:4,completed:1,summary:'Verified older facts',requests:{open:[],resolved:[]}})
+    return 'Verified older facts'
+  }) as unknown as Summarize
+  completed.batches = {countRawTokens:async source=>source.length*50,selectCompletePrefix:async source=>Math.min(4,source.length),consolidate:async batches=>batches}
+  completed.fallbackReason='output_limit'
+  const clone=vi.fn(async()=>{throw new SummaryOutputLimitError()}) as unknown as Summarize
+  clone.cached=true;clone.outputLimitFallback=completed
+  const changes: import('../context-summary-progress').SummaryProgress[]=[]
+  const coordinator=new ContextCompaction('thread',{save:async record=>{saved.push(structuredClone(record))},load:async()=>undefined},value=>{if(value)changes.push(value)})
+  coordinator.schedule(messages,1000,950,clone,undefined,view=>view.some(m=>m.id.startsWith('atomic-context-'))?500:950)
+  await settle();await settle();await settle()
+  expect(clone).toHaveBeenCalledTimes(1)
+  expect(completed).toHaveBeenCalledTimes(2)
+  expect(coordinator.error).toBeUndefined()
+  expect(changes.some(value=>value.phase==='failed')).toBe(false)
+  expect(changes.some(value=>value.method==='segments'&&value.fallbackReason==='output_limit')).toBe(true)
+  expect(changes.at(-1)?.phase).toBe('ready')
+  const newer: UIMessage={id:'new-after-snapshot',role:'user',parts:[{type:'text',text:'Keep this new question'}]}
+  const view=coordinator.apply([...messages,newer])
+  expect(view.at(-1)?.id).toBe(newer.id)
+  expect(messages).toEqual(original)
+  expect(saved.filter(record=>record.summary).at(-1)?.source).toEqual(original.slice(0,8))
+})
+
+
+it('rejects even parseable length-limited JSON before any checkpoint is saved', async () => {
+  const save = vi.fn(async () => {})
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({choices:[{finish_reason:'length',message:{content:JSON.stringify({summary:'Incomplete handoff',openRequests:[],resolvedRequests:[]})}}]})))
+  const adapter = summarizeWithStrataCache('http://length-test/v1','m','thread/turn',{})
+  await expect(adapter('', '', new AbortController().signal, undefined, {save,requestSources:history()})).rejects.toBeInstanceOf(SummaryOutputLimitError)
+  expect(save).not.toHaveBeenCalled()
+  expect(adapter.outputLimitFallback?.fallbackReason).toBe('output_limit')
+})
+
+it('accepts a completed clone result beyond the prose target without slicing it', async () => {
+  const prose = 'Confirmed fact. '.repeat(500), save = vi.fn(async () => {})
+  vi.stubGlobal('fetch',vi.fn(async()=>Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:prose,openRequests:[],resolvedRequests:[]})}}]})))
+  await expect(summarizeWithStrataCache('http://room-test/v1','m','thread/turn',{})('', '',new AbortController().signal,undefined,{save,requestSources:history()})).resolves.toBe(prose.trim())
+  expect(save).toHaveBeenCalledTimes(1)
 })

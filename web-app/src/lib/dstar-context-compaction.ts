@@ -1,4 +1,4 @@
-import { SummaryHeadroomError } from './summary-stream'
+import { SummaryHeadroomError, SummaryOutputLimitError } from './summary-stream'
 import { invoke } from '@tauri-apps/api/core'
 import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
 import type { SummaryProgress, SummaryInputProgress } from './context-summary-progress'
@@ -189,8 +189,9 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
 
 export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
   cached?: boolean
-  fallbackReason?: 'images' | 'unsupported' | 'headroom'
+  fallbackReason?: 'images' | 'unsupported' | 'headroom' | 'output_limit'
   headroomFallback?: Summarize
+  outputLimitFallback?: Summarize
   selectBoundary?(messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal): Promise<number>
   countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
   recoveryPriority?: boolean
@@ -447,11 +448,13 @@ export class ContextCompaction {
           report('ready')
         }
       } catch (error) {
-        if (error instanceof SummaryHeadroomError && summarize.headroomFallback &&
+        const fallback = error instanceof SummaryHeadroomError ? summarize.headroomFallback :
+          error instanceof SummaryOutputLimitError ? summarize.outputLimitFallback : undefined
+        if (fallback &&
             recoveryBoundary === undefined && this.pending === task && !controller.signal.aborted) {
-          logCompactionBudget('background headroom fallback', { threadId: this.threadId, context })
+          logCompactionBudget('background bounded fallback', { threadId: this.threadId, context, reason: fallback.fallbackReason })
           this.pending = undefined
-          this.scheduleBatches(messages, context, summarize.headroomFallback, undefined, retainedPromptCost)
+          this.scheduleBatches(messages, context, fallback, undefined, retainedPromptCost)
           const fallbackCompletion = this.pendingCompletion
           if (fallbackCompletion) await fallbackCompletion
           return
@@ -694,9 +697,11 @@ export class ContextCompaction {
     })
     } catch (error) {
       signal?.throwIfAborted()
-      if (!(error instanceof SummaryHeadroomError) || !summarize.headroomFallback) throw error
-      logCompactionBudget('headroom recovery fallback', { threadId: this.threadId, context })
-      return this.recover(messages, context, summarize.headroomFallback, signal, overflowTokens, promptCost)
+      const fallback = error instanceof SummaryHeadroomError ? summarize.headroomFallback :
+        error instanceof SummaryOutputLimitError ? summarize.outputLimitFallback : undefined
+      if (!fallback) throw error
+      logCompactionBudget('bounded recovery fallback', { threadId: this.threadId, context, reason: fallback.fallbackReason })
+      return this.recover(messages, context, fallback, signal, overflowTokens, promptCost)
     }
     signal?.throwIfAborted()
     if (!fits()) return this.recover(messages, context, summarize, signal, overflowTokens, promptCost)

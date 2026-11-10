@@ -5,7 +5,7 @@ import type { UIMessage } from 'ai'
 import { contextSourceFingerprint, type ContextCompaction, type Summarize } from './dstar-context-compaction'
 import type { SummaryInputProgress } from './context-summary-progress'
 import { mergeRequestLedger, requestSources } from './dstar-open-requests'
-import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom } from './summary-stream'
+import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom, SummaryOutputLimitError } from './summary-stream'
 import type { SummaryAdmission } from './atomic-summary-admission'
 
 /** The conversation is already in the bound native clone. Send only the task,
@@ -28,7 +28,7 @@ Preserve confirmed facts, user preferences, corrections, uncertainty, unfinished
 Return only JSON:
 {"summary":"...","openRequests":[{"id":"user source ID","request":"at most 280 characters"}],"resolvedRequests":[{"id":"existing request ID","evidenceId":"source ID","quote":"exact visible quote"}]}
 
-Limit summary to 2000 tokens and total JSON to 2048 tokens. Carry forward existing open requests; omission does not resolve them. Do not duplicate existing request IDs as new requests.
+Aim for about 2000 tokens of summary prose; complete the JSON naturally if it needs a little more. Existing open requests are retained automatically: emit only new requests and evidenced resolutions, never re-emit existing IDs. Omission does not resolve an existing request.
 ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => ({ id, request })), sourceAnchors: anchors })}`
     options.inputProgress?.({ phase: 'preparing' }, signal)
     let polling = false
@@ -56,7 +56,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
         method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, atomic_summary: true, atomic_summary_clone: owner,
           ...(options.recovery ? { atomic_summary_recovery: true } : {}),
-          stream: true, return_progress: true, think: false, temperature: 1, max_tokens: 2048,
+          stream: true, return_progress: true, think: false, temperature: 1, max_tokens: 0,
           messages: [{ role: 'user', content: task }] }),
       })
       if (response.ok) break
@@ -82,6 +82,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
         throw new Error(error?.error?.message ?? `Cached summary failed (${response.status}); originals retained`)
       }
       const choice = await readSummaryChoice(response, signal, input => options.inputProgress?.(input, signal))
+      if (choice?.finish_reason === 'length') throw new SummaryOutputLimitError()
       if (choice?.finish_reason !== 'stop' || !choice.message?.content?.trim()) throw new Error('Cached summary did not complete; originals retained')
       const value = JSON.parse(choice.message.content)
       const known = new Set([...ledger.open, ...ledger.resolved].map(item => item.id))
@@ -101,12 +102,17 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
   summarize.countRawTokens = summarizeBatchesWithDstar(baseUrl, model, { tokenCounting: true }).batches?.countRawTokens
   summarize.cached = true
   summarize.recoveryPriority = options.recovery === true
-  summarize.headroomFallback = summarizeBatchesWithDstar(baseUrl, model, {
-    tokenCounting: true, recovery: true, idleOnly: !options.recovery, streamProgress: true, inputProgress: options.inputProgress,
-    ...(options.coldRecovery ? { coldRecoveryOwner: options.recovery ? owner : () => latestDstarCacheOwner(baseUrl, owner) } : {}),
-  })
-  summarize.headroomFallback.fallbackReason = 'headroom'
-  summarize.headroomFallback.recoveryPriority = options.recovery === true
+  const boundedFallback = (reason: 'headroom' | 'output_limit') => {
+    const fallback = summarizeBatchesWithDstar(baseUrl, model, {
+      tokenCounting: true, recovery: true, idleOnly: !options.recovery, streamProgress: true, inputProgress: options.inputProgress,
+      ...(options.coldRecovery ? { coldRecoveryOwner: options.recovery ? owner : () => latestDstarCacheOwner(baseUrl, owner) } : {}),
+    })
+    fallback.fallbackReason = reason
+    fallback.recoveryPriority = options.recovery === true
+    return fallback
+  }
+  summarize.headroomFallback = boundedFallback('headroom')
+  summarize.outputLimitFallback = boundedFallback('output_limit')
   if (options.selectBoundary) summarize.selectBoundary = (messages, boundary, archived, signal) =>
     options.selectBoundary!(owner, messages, boundary, archived, signal)
   return summarize

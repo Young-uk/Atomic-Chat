@@ -845,3 +845,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Recover summaries without cache headroom](2026-11-10-recover-summary-without-cache-headroom.md) — disk-preserved bounded emergency extraction after explicit capacity refusal.
 
 - [Continue background summaries after headroom refusal](2026-11-10-background-summary-headroom-fallback.md) — defer capacity fallback until idle, retaining frozen evidence and cancellation.
+
+- [2026-11-10 — Import window and profile fixes](2026-11-10-select-upstream-window-and-profile-fixes.md)
+
+- [2026-11-10 — Let summaries finish within real context capacity](2026-11-10-summary-output-uses-context-room.md)

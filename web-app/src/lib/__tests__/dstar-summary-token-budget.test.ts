@@ -15,8 +15,8 @@ it('uses the rendered token budget instead of the 2400-character cap and preserv
     }
     generated.push(body)
     expect(count(body)).toBeLessThanOrEqual(13312)
-    expect(body.max_tokens).toBe(2048)
-    expect(count(body) + body.max_tokens + 1024).toBeLessThanOrEqual(16384)
+    expect(body.max_tokens).toBe(0)
+    expect(count(body) + 2048 + 1024).toBeLessThanOrEqual(16384)
     expect(body.atomic_summary).toBe(true)
     expect(body.think).toBe(false)
     expect(body.tools).toBeUndefined()

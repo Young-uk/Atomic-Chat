@@ -23,6 +23,7 @@ import { isFirstLaunch, rememberFirstLaunch } from './lib/onboarding-telemetry'
 import { assignOnboardingCohort } from './lib/onboarding/experiment'
 import { useGeneralSetting } from './hooks/useGeneralSetting'
 import { useModelProvider } from './hooks/useModelProvider'
+import { restoreThreadWindowModel } from './lib/thread-window-model'
 import { isLocalProvider } from '@/utils/registerRemoteProvider'
 import GlobalError from './containers/GlobalError'
 
@@ -206,6 +207,10 @@ if (!useGeneralSetting.getState().preloadModelOnStartup) {
     useModelProvider.setState({ selectedProvider: '', selectedModel: null })
   }
 }
+
+// A chat opened in its own window starts on the model of the window that
+// opened it, provider included, whatever the reset above cleared (B12).
+restoreThreadWindowModel()
 
 // Custom local endpoints keep the existing picker and persisted selection.
 if (IS_TAURI && !IS_IOS && !IS_ANDROID) {
