@@ -1,3 +1,4 @@
+import { interruptWorkForEngineStop } from '@/lib/confirmed-engine-stop'
 import { ModelContextSlider } from '@/components/ModelContextSlider'
 import { MAX_LOCAL_CONTEXT_TOKENS } from '@/lib/local-context-size'
 import { useEffect, useRef, useState } from 'react'
@@ -52,6 +53,7 @@ export function DstarControlPanel({
   const [draft, setDraft] = useState<DstarSelection>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const [confirmStop, setConfirmStop] = useState(false)
   const [confirmRestart, setConfirmRestart] = useState(false)
   const [chatModel, setChatModel] = useState('')
   const alive = useRef(false)
@@ -164,14 +166,22 @@ export function DstarControlPanel({
     snapshot?.servedModels.includes(model.id)
   )
 
-  const run = async (action: 'start' | 'stop' | 'restart') => {
-    if (!draft || inAction.current || isLocalEngineBusy() || (action !== 'stop' && engineTransition)) return
+  const run = async (action: 'start' | 'stop' | 'restart', confirmed = false) => {
+    if (!draft || inAction.current || (action !== 'stop' && isLocalEngineBusy()) || (action !== 'stop' && engineTransition)) return
+    if (action === 'stop' && !confirmed && isLocalEngineBusy()) { setConfirmStop(true); return }
     inAction.current = true
     selectOnReady.current = action !== 'stop'
     setBusy(true)
     setError(undefined)
     setConfirmRestart(false)
     try {
+      if (confirmed) {
+        interruptWorkForEngineStop()
+        const next = await localEngineCoordinator.stopConfirmed('dstar')
+        if (alive.current) setSnapshot({ ...snapshot!, ...next, status: 'stopped', owned: false, servedModels: [], error: next.error ?? undefined })
+        setConfirmStop(false)
+        return
+      }
       if (action !== 'stop') await localEngineCoordinator.prepareStart()
       const coordinatedStop = action === 'stop' && useLocalEngine.getState().target?.engine === 'dstar'
       if (coordinatedStop) {
@@ -186,6 +196,7 @@ export function DstarControlPanel({
           : await controlDstar(coordinatedStop ? 'status' : action, action === 'start' ? draft : undefined)
       if (alive.current) setSnapshot(next)
     } catch (reason) {
+      if (action === 'stop' && !confirmed && String(reason).includes('engineBusy')) setConfirmStop(true)
       selectOnReady.current = false
       if (alive.current) setError(String(reason))
     } finally {
@@ -239,7 +250,7 @@ export function DstarControlPanel({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy || chatBusy || snapshot.status === 'stopping'}
+                disabled={busy || snapshot.status === 'stopping'}
                 onClick={() => void run('stop')}
               >
                 {t('endpoints:dstar.stop')}
@@ -393,6 +404,18 @@ export function DstarControlPanel({
             : snapshot?.error}
         </p>
       )}
+      <Dialog open={confirmStop} onOpenChange={setConfirmStop}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('endpoints:localEngine.confirmStopTitle')}</DialogTitle>
+            <DialogDescription>{t('endpoints:localEngine.confirmStopDescription')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => setConfirmStop(false)}>{t('endpoints:dstar.goBack')}</Button>
+            <Button variant="destructive" disabled={busy} onClick={() => void run('stop', true)}>{t('endpoints:localEngine.confirmStopAction')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={confirmRestart} onOpenChange={setConfirmRestart}>
         <DialogContent>
           <DialogHeader>

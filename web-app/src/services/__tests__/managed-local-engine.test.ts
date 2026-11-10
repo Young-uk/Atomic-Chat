@@ -484,3 +484,26 @@ it.each([dstar, strata])('joins an in-flight $engine ownership recheck before re
   expect(acquired).toBe(true)
   release()
 })
+
+it.each(['dstar', 'strata'] as const)('confirmed %s shutdown bypasses a retained request lease and busy admission', async engine => {
+  const target = engine === 'dstar' ? dstar : strata
+  const control = vi.fn().mockImplementation(async action => action === 'stop_confirmed' ? { ...snapshot(target), status: 'stopping' } : action === 'status' ? { engine: null, status: 'stopped', owned: false, servedModels: [] } : snapshot(target))
+  const publish = vi.fn()
+  const coordinator = new LocalEngineCoordinator(control, publish, async () => {})
+  coordinator.selectEngineTarget(target)
+  await coordinator.settled()
+  const release = await coordinator.acquire(target)
+  coordinator.configureBusy(() => true)
+  const result = await coordinator.stopConfirmed(engine)
+  expect(result.status).toBe('stopped')
+  expect(control).toHaveBeenCalledWith('stop_confirmed', engine)
+  expect(publish.mock.calls.at(-1)?.[0].phase).toBe('idle')
+  release()
+})
+it('confirmed shutdown never reports stopped after an ownership failure', async () => {
+  const control = vi.fn().mockRejectedValue(new Error('notOwned'))
+  const publish = vi.fn()
+  const coordinator = new LocalEngineCoordinator(control, publish, async () => {})
+  await expect(coordinator.stopConfirmed('strata')).rejects.toThrow('notOwned')
+  expect(publish.mock.calls.at(-1)?.[0].phase).toBe('error')
+})

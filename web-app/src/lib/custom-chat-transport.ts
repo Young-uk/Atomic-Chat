@@ -7,7 +7,7 @@ import { ATOMIC_PLAIN_TOOL_POLICY } from './atomic-tool-policy'
 import { localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
 import { convertThreadMessagesToUIMessages } from './messages'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
-import { bindStrataHistory, resumeRestoredStrataSummary, summarizeWithStrataCache } from './strata-cached-summary'
+import { strataHistoryHash, bindStrataHistory, resumeRestoredStrataSummary, summarizeWithStrataCache } from './strata-cached-summary'
 import { beginCompletionReviewProgress, publishContextUsage } from './inference-progress'
 import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
@@ -1640,6 +1640,29 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           }, { tools: toOpenAiTools(activeTools),
             ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}) })
 
+    const checkpointSourcePlanner = (modelView: UIMessage[], history: UIMessage[]) =>
+      async (owner: string, source: UIMessage[]): Promise<Record<string, unknown> | undefined> => {
+        if (!compaction) return undefined
+        const end = history.findIndex(message => message.id === source.at(-1)?.id)
+        const ownerId = owner.slice(owner.lastIndexOf('/') + 1)
+        const ownerAt = history.findIndex(message => message.id === ownerId && message.role === 'user')
+        if (end < 0 || ownerAt < 0) return undefined
+        const nextUser = history.findIndex((message, index) => index > ownerAt && message.role === 'user')
+        const completed = history.slice(0, nextUser < 0 ? history.length : nextUser)
+        const prefix = history.slice(0, end + 1)
+        const view = compaction.previewReady(prefix)
+        const projected = projectCompactedMessages(view, modelView)
+        const wire = convertToModelMessages(modelToolMessages(applyPolicies(projected, history)))
+        return {
+          messages: historyPlanMessages(dropSystemForTools && systemWithSkills
+            ? foldSystemIntoFirstUserMessage(wire, systemWithSkills)
+            : [...(effectiveSystemMessage ? [{ role: 'system' as const, content: effectiveSystemMessage }] : []), ...wire]),
+          tools: toOpenAiTools(activeTools),
+          history_hash: await strataHistoryHash(completed),
+          ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}),
+        }
+      }
+
     if (appendOnlyDstar || compaction || completionReviewSupported) {
       const snapshotThreadId = this.threadId ?? options.chatId
       if (compaction) {
@@ -1663,7 +1686,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const startupView = compaction.apply(original, options.messages.at(-1)?.role === 'user')
           await resumeRestoredStrataSummary(provider.base_url!, modelId!, snapshotThreadId,
             original, projectCompactedMessages(startupView, preparedMessages), compactionContext, compaction, options.abortSignal ?? new AbortController().signal,
-            { coldRecovery: runtime?.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
+            { sourcePrefix: checkpointSourcePlanner(preparedMessages, original), coldRecovery: runtime?.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
             estimatePromptTokensHeuristic({ system: systemWithSkills,
               messages: convertToModelMessages(modelToolMessages(projectCompactedMessages(startupView, preparedMessages))),
               tools: activeTools }) + Math.min((getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048))
@@ -1688,7 +1711,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const cacheUser = (original.at(-1)?.role === 'user' ? original.slice(0, -1) : original).findLast(message => message.role === 'user')
           const recoverySummary = runtime?.summaryClone && cacheUser
             ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${cacheUser.id}`, {
-              recovery: true, coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages),
+              sourcePrefix: checkpointSourcePlanner(preparedMessages, original), recovery: true, coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages),
               inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
             : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, recovery: true, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
           return coordinator.recover(original, compactionContext, recoverySummary, options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
@@ -1720,7 +1743,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(modelToolMessages(modelView)), tools: activeTools })
           const summaryAdapter = runtime?.summaryClone && cacheUser
               ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
-                { coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
+                { sourcePrefix: checkpointSourcePlanner(modelView, history), coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
               : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
           if (!summaryAdapter.cached) summaryAdapter.fallbackReason = 'unsupported'
           coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)), summaryAdapter, undefined,

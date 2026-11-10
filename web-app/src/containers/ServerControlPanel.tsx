@@ -32,8 +32,7 @@ export function ServerControlPanel() {
       state.configuredAgents.length + (state.endpointConfigured ? 1 : 0)
   )
 
-  // Show the recorded API provider/model, not a claim of backend readiness.
-  // The selected chat engine has its own native-backed status on Overview.
+  // Prefer the native-backed running engine over a stale API default.
   const served = useServedModel(control.isRunning)
 
   const busy = control.isBusy
@@ -127,7 +126,7 @@ export function ServerControlPanel() {
             quant follows its readable name on the same line, and the id
             clients pass (owner and quant included) is the row's tooltip. */}
         <Link
-          to={route.api.model}
+          to={served.live ? route.endpoints.index : route.api.model}
           className="dsc-detail dsc-model"
           title={engine}
           data-testid="server-panel-engine"
@@ -135,7 +134,7 @@ export function ServerControlPanel() {
           <Cpu size={15} />
           <span className="dsc-model-text">
             <span className="dsc-model-label">
-              {t('api:overview.apiProvider')}
+              {t(served.live ? 'api:overview.runningEngine' : 'api:overview.apiProvider')}
             </span>
             <span className="dsc-model-value">
               <strong>{engine ?? t('common:navigation.notSelected')}</strong>
@@ -143,7 +142,7 @@ export function ServerControlPanel() {
           </span>
         </Link>
         <Link
-          to={route.api.model}
+          to={served.live ? route.endpoints.index : route.api.model}
           className="dsc-detail dsc-model"
           title={
             pendingChoice

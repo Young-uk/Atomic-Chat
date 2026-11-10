@@ -82,6 +82,9 @@
     "contextSlider": "컨텍스트 크기 슬라이더",
     "modelContextMax": "모델 지원 최대: {{tokens}}토큰",
     "modelContextUnknown": "모델 최대 컨텍스트 확인 불가",
-    "contextExtended": "모델 범위를 넘는 직접 입력"
+    "contextExtended": "모델 범위를 넘는 직접 입력",
+    "confirmStopTitle": "진행 중인 작업을 중단하고 서버를 종료할까요?",
+    "confirmStopDescription": "답변·도구·요약 작업을 중단하고 대기 메시지를 일시 정지합니다. 대화 기록은 유지되지만, 마지막에 저장하지 못한 캐시는 다시 읽어야 할 수 있습니다.",
+    "confirmStopAction": "중단하고 종료"
   }
 }

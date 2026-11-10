@@ -855,3 +855,10 @@ decision is reversed, add a new one that says which record it supersedes.
 - **2026-11-10** — [Anchor scheduled delivery after whole model turns](2026-11-10-anchor-scheduled-delivery-after-whole-turns.md)
 
 - **2026-11-10** — [Use measured personal Strata prompt chunks and memory reserve](2026-11-10-measured-personal-strata-cache-reserve.md)
+- **2026-11-10** — [Use native physical capacity for cached summary recovery](2026-11-10-use-native-summary-clone-capacity.md)
+- **2026-11-10** — [Recover summaries from conversation checkpoints](2026-11-10-recover-summaries-from-conversation-checkpoints.md)
+- **2026-11-10** — [Reuse earlier Dstar summary checkpoints](2026-11-10-reuse-earlier-dstar-summary-checkpoints.md)
+- **2026-11-10** — [Show the ready local server identity](2026-11-10-show-ready-local-server-identity.md)
+- **2026-11-10** — [Scale the personal conversation cache with context](2026-11-10-scale-conversation-cache-with-context.md)
+
+- [Confirmed busy-engine shutdown](confirmed-managed-engine-stop.md) — Explicit interruption with owned-process cleanup.

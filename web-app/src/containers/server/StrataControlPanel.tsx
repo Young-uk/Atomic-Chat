@@ -1,3 +1,4 @@
+import { interruptWorkForEngineStop } from '@/lib/confirmed-engine-stop'
 import { ModelContextSlider } from '@/components/ModelContextSlider'
 import { MAX_LOCAL_CONTEXT_TOKENS } from '@/lib/local-context-size'
 import { useEffect, useRef, useState } from 'react'
@@ -23,6 +24,7 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<string>()
   const draftEdited = useRef(false)
+  const [confirmStop, setConfirmStop] = useState(false)
   const [confirmRestart, setConfirmRestart] = useState(false)
   const inAction = useRef(false)
   const alive = useRef(false)
@@ -60,15 +62,23 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
   const context = Number(draft)
   const validContext = draft !== undefined && Number.isInteger(context) && context >= 16384 && context <= MAX_LOCAL_CONTEXT_TOKENS
   const dirty = validContext && (context !== (snapshot?.strataContext ?? 65536) || (owned && snapshot?.activeContext != null && context !== snapshot.activeContext))
-  const run = async (action: 'ensure' | 'stop') => {
-    if (inAction.current || isLocalEngineBusy() || !snapshot || snapshot.status === 'external' ||
+  const run = async (action: 'ensure' | 'stop', confirmed = false) => {
+    if (inAction.current || (action !== 'stop' && isLocalEngineBusy()) || !snapshot || snapshot.status === 'external' ||
         (action === 'ensure' && (engineTransition || transitioning || !validContext))) return
+    if (action === 'stop' && !confirmed && isLocalEngineBusy()) { setConfirmStop(true); return }
     setConfirmRestart(false)
     inAction.current = true
     beginStrataStatusAction(action === 'stop' ? 'stopping' : 'loading')
     setBusy(true); setError(undefined)
     selectOnReady.current = action === 'ensure'
     try {
+      if (confirmed) {
+        interruptWorkForEngineStop()
+        const next = await localEngineCoordinator.stopConfirmed('strata')
+        finishStrataStatusAction(next)
+        setConfirmStop(false)
+        return
+      }
       if (action === 'ensure') await localEngineCoordinator.prepareStart()
       if (action === 'stop' && useLocalEngine.getState().target?.engine === 'strata') {
         localEngineCoordinator.cancel()
@@ -87,6 +97,7 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
       // The status store rejects older in-flight polls across this action.
       finishStrataStatusAction(next)
     } catch (reason) {
+      if (action === 'stop' && !confirmed && String(reason).includes('engineBusy')) setConfirmStop(true)
       selectOnReady.current = false
       finishStrataStatusAction(undefined, String(reason))
       if (alive.current) setError(reason instanceof Error ? reason.message : String(reason))
@@ -109,7 +120,7 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
         {owned && dirty && <Button size="sm" disabled={busy || chatBusy || engineTransition || transitioning || !validContext}
           onClick={() => setConfirmRestart(true)}>{t('endpoints:dstar.restart')}</Button>}
         <Button size="sm" variant={owned ? 'outline' : 'default'}
-          disabled={busy || chatBusy || !snapshot || snapshot.status === 'external' ||
+          disabled={busy || (!owned && chatBusy) || !snapshot || snapshot.status === 'external' ||
             (owned ? snapshot.status === 'stopping' : transitioning || engineTransition || !validContext)}
           onClick={() => void run(owned ? 'stop' : 'ensure')}>
           {t(owned ? 'endpoints:localEngine.stop' : 'endpoints:localEngine.retry')}
@@ -142,6 +153,18 @@ export function StrataControlPanel({ provider }: { provider: ModelProvider }) {
         {t(`endpoints:localEngine.errors.${error || snapshot?.error}`, { defaultValue: t('endpoints:localEngine.errors.engineFailed') })}
       </p>}
       <p className="mt-2 break-words text-sm text-muted-foreground">{t('endpoints:localEngine.strataCaution')}</p>
+      <Dialog open={confirmStop} onOpenChange={setConfirmStop}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('endpoints:localEngine.confirmStopTitle')}</DialogTitle>
+            <DialogDescription>{t('endpoints:localEngine.confirmStopDescription')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => setConfirmStop(false)}>{t('endpoints:dstar.goBack')}</Button>
+            <Button variant="destructive" disabled={busy} onClick={() => void run('stop', true)}>{t('endpoints:localEngine.confirmStopAction')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={confirmRestart} onOpenChange={setConfirmRestart}>
         <DialogContent>
           <DialogHeader>

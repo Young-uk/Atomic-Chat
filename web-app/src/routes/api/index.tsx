@@ -29,7 +29,7 @@ export const Route = createFileRoute(route.api.index as any)({
 export function ServerOverviewPage() {
   const { t } = useTranslation()
   const running = useAppState((state) => state.serverStatus === 'running')
-  const { engine, model } = useServedModel(running)
+  const { engine, model, live } = useServedModel(running)
   const guideVisible = useSetupGuideVisible()
   const guide = useServerSetup((state) => state.guide)
   const guideRevision = useServerSetup((state) => state.guideRevision)
@@ -55,7 +55,7 @@ export function ServerOverviewPage() {
             </strong>
             <p>
               {setupDone
-                ? [t('api:overview.apiProvider'), model ?? t('api:strip.noModel'), engine]
+                ? [t(live ? 'api:overview.runningEngine' : 'api:overview.apiProvider'), model ?? t('api:strip.noModel'), engine]
                     .filter(Boolean)
                     .join(' · ')
                 : t('api:overview.setupHint')}

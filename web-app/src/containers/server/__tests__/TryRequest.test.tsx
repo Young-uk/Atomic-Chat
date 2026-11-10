@@ -19,6 +19,7 @@ vi.mock('@/utils/localApiServerControl', async (importOriginal) => ({
 import { EMBEDDING_MODEL_ID } from '@/constants/models'
 import { useAppState } from '@/hooks/useAppState'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
+import { useLocalEngine } from '@/services/managed-local-engine'
 import { useModelProvider } from '@/hooks/useModelProvider'
 
 import {
@@ -60,6 +61,7 @@ describe('chatCompletionExample', () => {
 describe('Server → Connections, try a request', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useLocalEngine.setState({ target: null, phase: 'idle' }, true)
     useAppState.setState({ serverStatus: 'running', activeModels: ['gemma-4'] })
     useLocalApiServer.setState({
       serverHost: '127.0.0.1',
@@ -105,6 +107,30 @@ describe('Server → Connections, try a request', () => {
       )
     })
   }
+
+  it.each([
+    ['strata', 'ista-iq3-xxs'],
+    ['dstar', 'qwen3.8-flash-next-chat'],
+  ] as const)('tests the ready %s runtime instead of a stale API default', async (engine, model) => {
+    useAppState.setState({ activeModels: ['stale-model'] })
+    useLocalApiServer.setState({ defaultModelLocalApiServer: { model: 'old-default', provider: 'old' } })
+    useLocalEngine.setState({ target: null, phase: 'ready', snapshot: {
+      engine, status: 'ready', owned: true, servedModels: [model],
+    } }, true)
+    sendTest.mockResolvedValue({ ok: true, latencyMs: 1, model })
+    render(<TryRequest />)
+    expect(screen.getByText(new RegExp(`"model":"${model}"`))).toBeInTheDocument()
+    await clickSend()
+    expect(sendTest).toHaveBeenCalledWith(BASE, '', model)
+    expect(useLocalApiServer.getState().defaultModelLocalApiServer?.model).toBe('old-default')
+
+    act(() => useLocalEngine.setState({ target: null, phase: 'ready', snapshot: {
+      engine: engine === 'strata' ? 'dstar' : 'strata', status: 'ready', owned: true,
+      servedModels: ['newly-running-model'],
+    } }, true))
+    expect(screen.getByText(/"model":"newly-running-model"/)).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
 
   it('sends the chat completion it shows, for that model, and names who answered', async () => {
     useLocalApiServer.setState({ apiKey: 'secret' })

@@ -78,6 +78,7 @@ describe('Server → Overview', () => {
       },
       lastServerModels: [],
     })
+    useLocalEngine.setState({ target: null, phase: 'idle' }, true)
     useServerSetup.setState(SET_UP)
   })
 
@@ -116,7 +117,7 @@ describe('Server → Overview', () => {
     expect(screen.getByText('api:overview.listenerStopped')).toBeInTheDocument()
   })
 
-  it('keeps the Dstar API choice distinct from a verified Strata chat engine', () => {
+  it('shows verified Strata instead of a stale Dstar API choice without changing routing', () => {
     const defaultModel = { model: 'qwen3.8-flash-next-chat', provider: 'Dstar' }
     useLocalApiServer.setState({ defaultModelLocalApiServer: defaultModel, lastServerModels: [] })
     const model = { id: STRATA_MODEL } as Model
@@ -124,7 +125,7 @@ describe('Server → Overview', () => {
     useLocalEngine.setState({ target: { engine: 'strata', provider: STRATA_PROVIDER, model: STRATA_MODEL }, phase: 'ready', snapshot: { engine: 'strata', status: 'ready', owned: true, servedModels: [STRATA_MODEL] } }, true)
     const settings = useLocalApiServer.getState()
     render(<ServerOverviewPage />)
-    expect(screen.getByText('api:overview.apiProvider · qwen3.8-flash-next-chat · Dstar')).toBeInTheDocument()
+    expect(screen.getByText('api:overview.runningEngine · ista-iq3-xxs · Strata')).toBeInTheDocument()
     expect(screen.getByText('api:overview.chatEngine: Strata')).toBeInTheDocument()
     expect(screen.getByText('endpoints:localEngine.ready')).toBeInTheDocument()
     expect(useLocalApiServer.getState()).toBe(settings)

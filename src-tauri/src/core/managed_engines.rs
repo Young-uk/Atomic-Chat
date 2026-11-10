@@ -50,6 +50,15 @@ fn strata_summary_budget(context: u32) -> u64 {
     // state, alignment and descriptor headroom remain covered by the base.
     1_300_000_000 + u64::from(context.saturating_sub(DEFAULT_STRATA_CONTEXT)) * 14_208
 }
+// The personal int8 KV layout uses 14,208 bytes per token. Keep 1 GiB
+// for recurrent checkpoints, indexer state and snapshot descriptors, then
+// round the cap upward in 256 MiB steps. This is a lazy cache budget, not an
+// allocation; native snapshot accounting and physical-RAM admission still win.
+fn strata_conversation_cache_mib(context: u32) -> u64 {
+    let bytes = (1_u64 << 30) + u64::from(context) * 14_208;
+    bytes.div_ceil(256 << 20) * 256
+}
+
 pub(super) fn validate_strata_context(context: u32) -> Result<(), String> {
     if (16_384..=MAX_LOCAL_CONTEXT).contains(&context) {
         Ok(())
@@ -65,7 +74,7 @@ struct StrataSettings {
 }
 
 // Run only the pinned read-only calculator, never an inference engine. Checking
-// the baseline before projecting one context field prevents requalifying drift.
+// the reviewed baseline before projecting context/cache capacity prevents requalifying drift.
 const CONTEXT_PIN_SCRIPT: &str = r#"
 import hashlib, json, pathlib, sys
 cfg = json.load(sys.stdin)
@@ -83,6 +92,15 @@ context = int(cfg['args'][index])
 expected_budget = 1300000000 + max(0, context - 65536) * 14208
 if cfg.get('atomic_summary_state_bank_max_bytes') != expected_budget:
     raise ValueError('strataContextPinMismatch')
+cache_index = cfg['args'].index('--conversation-cache-mib') + 1
+minimum_index = cfg['args'].index('--conversation-cache-min-tokens')
+expected_cache_mib = (((1 << 30) + context * 14208 + (256 << 20) - 1) // (256 << 20)) * 256
+if cfg['args'][cache_index] != str(expected_cache_mib) or cfg['args'][minimum_index + 1] != '1024':
+    raise ValueError('strataContextPinMismatch')
+# Verify the exact previously qualified 64K policy before projecting either
+# capacity field. Only these reviewed, layout-neutral cache options change.
+baseline['args'][cache_index] = '1024'
+del baseline['args'][minimum_index:minimum_index + 2]
 baseline['args'][index] = '65536'
 baseline['atomic_summary_state_bank_max_bytes'] = 1300000000
 observed = prepare_summary_qualification_pins(baseline, offline=True)
@@ -93,6 +111,19 @@ projected = prepare_summary_qualification_pins(cfg, offline=True)
 for key in ('atomic_summary_expected_native_sha256', 'atomic_summary_expected_backend_sha256'):
     if projected.get(key) != cfg.get(key):
         raise ValueError('strataContextPinMismatch')
+previous = copy.deepcopy(cfg)
+previous['args'][cache_index] = '1024'
+del previous['args'][minimum_index:minimum_index + 2]
+previous_pins = prepare_summary_qualification_pins(previous, offline=True)
+for key in ('atomic_summary_expected_native_sha256', 'atomic_summary_expected_backend_sha256'):
+    if previous_pins.get(key) != cfg.get(key):
+        raise ValueError('strataContextPinMismatch')
+upgrades = copy.deepcopy(cfg.get('atomic_disk_session_reviewed_upgrades', []))
+for bridge in upgrades:
+    bridge['current_model'] = projected['atomic_summary_expected_model_fingerprint']
+upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                     current_model=projected['atomic_summary_expected_model_fingerprint'], previous=previous_pins))
+projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
 
@@ -281,8 +312,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-output-v47/serve/server.py",
-            "feature-integration/engine-upstream-v46/strata",
+            "feature-integration/runtime-checkpoint-recovery-v57/serve/server.py",
+            "feature-integration/engine-checkpoint-recovery-v57/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -307,7 +338,7 @@ impl Environment {
             .dstar_root
             .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf");
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-upstream-v46/strata"),
+            "exe": root.join("feature-integration/engine-checkpoint-recovery-v57/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -315,9 +346,11 @@ impl Environment {
                 "--expert-profile", root.join("feature-integration/engine-priority-v7/metal/data/expert-profile.bin").to_string_lossy(),
                 "--expert-cache", "64", "--prefill", "4096", "--spec", "2",
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
-                "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
+                "--conversation-cache-mib", strata_conversation_cache_mib(context).to_string(), "--kv", "int8", "--suffix-draft", "0", "--vision",
+                "--prompt-cache-spread", "--prompt-cache-every", "4096",
+                "--conversation-cache-min-tokens", "1024"
             ],
-            "cwd": root.join("feature-integration/runtime-output-v47"),
+            "cwd": root.join("feature-integration/runtime-checkpoint-recovery-v57"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
@@ -326,37 +359,56 @@ impl Environment {
             // Reviewed output-policy and cache-reserve upgrades keep the native/session layout.
             "atomic_disk_session_reviewed_upgrades": if context == DEFAULT_STRATA_CONTEXT { serde_json::json!([
     {
-        "current_native": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-        "current_model": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
+        "current_native": "adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74",
+        "current_model": "strata-stat-v2:10e486c5fa3e9135b0388dd56515cf1db8dbb5dccd9648b29a5c8925b50b3722",
         "previous": {
             "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
             "atomic_summary_expected_backend_sha256": "4d0753e9ecadd6d28788ef9f7f55df687b50bd531ff7064662ee2003262029fe"
         }
     },
-{
-    "current_native": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-    "current_model": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
-    "previous": {
-        "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-        "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
-        "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
+    {
+        "current_native": "adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74",
+        "current_model": "strata-stat-v2:10e486c5fa3e9135b0388dd56515cf1db8dbb5dccd9648b29a5c8925b50b3722",
+        "previous": {
+            "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
+            "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
+        }
+    },
+    {
+        "current_native": "adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74",
+        "current_model": "strata-stat-v2:10e486c5fa3e9135b0388dd56515cf1db8dbb5dccd9648b29a5c8925b50b3722",
+        "previous": {
+            "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
+            "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
+        }
+    },
+    {
+        "current_native": "adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74",
+        "current_model": "strata-stat-v2:10e486c5fa3e9135b0388dd56515cf1db8dbb5dccd9648b29a5c8925b50b3722",
+        "previous": {
+            "atomic_summary_expected_native_sha256": "85f853021e5c8dbb81d554f3d993a9dc18548f3ad156c660b625e155014796e8",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:a53714342790166df88d17f628584f9f52be3d7815c9a8d2de2f37d7dc2e113c",
+            "atomic_summary_expected_backend_sha256": "293ab773e56162f0afdd7d517b3e3f8c4e23fce43d65693e7239502f1cb067d4"
+        }
     }
-}
 ]) } else { serde_json::json!([]) },
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
             "atomic_summary_state_bank_enabled": true,
             "atomic_summary_clone_enabled": true,
+            "atomic_summary_checkpoint_enabled": true,
             "atomic_summary_disk_recovery_enabled": true,
             "atomic_summary_state_bank_max_bytes": strata_summary_budget(context),
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
-            "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4",
+            "atomic_summary_expected_native_sha256": "adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:10e486c5fa3e9135b0388dd56515cf1db8dbb5dccd9648b29a5c8925b50b3722",
+            "atomic_summary_expected_backend_sha256": "c04d9d981b5d1c45f4329bd7eaaee988cb8d81169c056c2fd9175103f98e3642",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -366,7 +418,8 @@ impl Environment {
                 "STRATA_PREFILL_CPU_SHARE": "0",
                 // Measured on the personal 64 GiB M1 Max; keep automatic arena sizing.
                 "STRATA_METAL_KEEP_FREE_GB": "8",
-                "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192"
+                "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192",
+                "STRATA_ATOMIC_SUMMARY_CHECKPOINTS": "1"
             },
             "vision": {
                 "exe": root.join("candidate/strata-vision"),
@@ -383,7 +436,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-output-v47"),
+                    .join("feature-integration/runtime-checkpoint-recovery-v57"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -457,6 +510,10 @@ impl Environment {
             return Err("strataContextPinCalculationFailed".into());
         }
         config["atomic_summary_expected_model_fingerprint"] = fingerprint.into();
+        let upgrades = pins["atomic_disk_session_reviewed_upgrades"]
+            .as_array()
+            .ok_or("strataContextPinCalculationFailed")?;
+        config["atomic_disk_session_reviewed_upgrades"] = serde_json::Value::Array(upgrades.clone());
         Ok(config)
     }
 
@@ -536,7 +593,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-output-v47"),
+                        .join("feature-integration/runtime-checkpoint-recovery-v57"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -652,6 +709,22 @@ pub(super) fn owned_family(root: u32) -> Result<Vec<ProcessIdentity>, String> {
                 .collect());
         }
     }
+}
+
+/// Terminate only captured descendants whose PID and start time still match.
+pub(super) fn kill_owned_family(family: &[ProcessIdentity]) -> Result<(), String> {
+    use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    if system.processes().is_empty() { return Err("processInspectionFailed".into()); }
+    for identity in family.iter().rev() {
+        if let Some(process) = system.process(Pid::from_u32(identity.pid)) {
+            if process.start_time() == identity.started {
+                let _ = process.kill_with(Signal::Kill);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn owned_pids(root: u32) -> Result<Vec<u32>, String> {
@@ -1028,25 +1101,94 @@ pub(super) const STRATA_STOP_GRACE: Duration = Duration::from_secs(180);
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn confirmed_kill_ignores_recycled_identity_and_reaps_only_owned_child() {
+        let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let captured = super::owned_family(child.id()).unwrap();
+        let changed: Vec<_> = captured.iter().map(|p| super::ProcessIdentity { pid: p.pid, started: p.started + 1 }).collect();
+        super::kill_owned_family(&changed).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        super::kill_owned_family(&captured).unwrap();
+        assert!(!child.wait().unwrap().success());
+    }
+
     use super::*;
+
+    #[test]
+    #[ignore = "requires explicitly selected personal model/runtime artifacts; read-only"]
+    fn personal_strata_config_matches_real_qualified_artifacts() {
+        let root = std::env::var_os("ATOMIC_STRATA_LIVE_ROOT")
+            .expect("set ATOMIC_STRATA_LIVE_ROOT to the personal dstar data directory");
+        let env = Environment::personal(PathBuf::from(root));
+        for context in [DEFAULT_STRATA_CONTEXT, 131_072] {
+            let config = env.pinned_strata_config(context)
+                .expect("the exact app-generated config must pass the real read-only pin calculator");
+            let upgrades = config["atomic_disk_session_reviewed_upgrades"].as_array().unwrap();
+            let bridge = upgrades.last().unwrap();
+            assert_eq!(bridge["current_model"], config["atomic_summary_expected_model_fingerprint"]);
+            assert_ne!(bridge["previous"]["atomic_summary_expected_model_fingerprint"], bridge["current_model"]);
+            if context == 131_072 {
+                if let Some(path) = std::env::var_os("ATOMIC_STRATA_CAPTURE_CONFIG") {
+                    fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conversation_cache_capacity_follows_context_and_preserves_snapshot_room() {
+        for (context, expected) in [(16_384, 1280), (65_536, 2048), (131_072, 2816), (262_144, 4608)] {
+            assert_eq!(strata_conversation_cache_mib(context), expected);
+            let cfg = Environment::personal(PathBuf::from("/home/test/dstar")).strata_config(context);
+            let args = cfg["args"].as_array().unwrap();
+            let budget = args.iter().position(|arg| arg == "--conversation-cache-mib").unwrap();
+            assert_eq!(args[budget + 1], expected.to_string());
+            let minimum = args.iter().position(|arg| arg == "--conversation-cache-min-tokens").unwrap();
+            assert_eq!(args[minimum + 1], "1024");
+        }
+        assert!(strata_conversation_cache_mib(131_072) > 1634);
+        let mut previous = 0;
+        for context in [16_384, 65_536, 65_537, 131_072, 262_144, 1_048_576, MAX_LOCAL_CONTEXT] {
+            let bytes = strata_conversation_cache_mib(context) << 20;
+            let required = (1_u64 << 30) + u64::from(context) * 14_208;
+            assert!(bytes >= required && bytes - required < (256 << 20));
+            assert!(bytes >= previous);
+            previous = bytes;
+        }
+    }
 
     #[test]
     fn cache_reserve_bridges_are_exact_and_context_scoped() {
         let env = Environment::personal(PathBuf::from("/home/test/dstar"));
         let cfg = env.strata_config(DEFAULT_STRATA_CONTEXT);
         let upgrades = cfg["atomic_disk_session_reviewed_upgrades"].as_array().unwrap();
-        assert_eq!(upgrades.len(), 2);
+        assert_eq!(upgrades.len(), 4);
         let bridge = &upgrades[0];
         assert_eq!(bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
         assert_eq!(bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
-        assert_eq!(bridge["previous"]["atomic_summary_expected_native_sha256"], cfg["atomic_summary_expected_native_sha256"]);
+        assert_eq!(bridge["previous"]["atomic_summary_expected_native_sha256"], "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa");
         assert_eq!(bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0");
         let reserve_bridge = &upgrades[1];
         assert_eq!(reserve_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
         assert_eq!(reserve_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
         assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0");
-        assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_backend_sha256"], cfg["atomic_summary_expected_backend_sha256"]);
+        assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_backend_sha256"], "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4");
         assert_eq!(bridge["previous"]["atomic_summary_expected_backend_sha256"], "4d0753e9ecadd6d28788ef9f7f55df687b50bd531ff7064662ee2003262029fe");
+        let capacity_bridge = &upgrades[2];
+        assert_eq!(capacity_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
+        assert_eq!(capacity_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
+        assert_eq!(capacity_bridge["previous"]["atomic_summary_expected_native_sha256"], "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa");
+        assert_eq!(capacity_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c");
+        assert_eq!(capacity_bridge["previous"]["atomic_summary_expected_backend_sha256"], "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4");
+        let checkpoint_bridge = &upgrades[3];
+        assert_eq!(checkpoint_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
+        assert_eq!(checkpoint_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
+        assert_eq!(checkpoint_bridge["previous"]["atomic_summary_expected_native_sha256"], "85f853021e5c8dbb81d554f3d993a9dc18548f3ad156c660b625e155014796e8");
+        assert_eq!(checkpoint_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:a53714342790166df88d17f628584f9f52be3d7815c9a8d2de2f37d7dc2e113c");
+        assert_eq!(checkpoint_bridge["previous"]["atomic_summary_expected_backend_sha256"], "293ab773e56162f0afdd7d517b3e3f8c4e23fce43d65693e7239502f1cb067d4");
+        assert_eq!(cfg["atomic_summary_checkpoint_enabled"], true);
+        assert_eq!(cfg["env"]["STRATA_ATOMIC_SUMMARY_CHECKPOINTS"], "1");
         for context in [16_384, 65_537, 131_072, 262_144] {
             assert!(env.strata_config(context)["atomic_disk_session_reviewed_upgrades"].as_array().unwrap().is_empty());
         }
@@ -1357,14 +1499,14 @@ mod tests {
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-upstream-v46/strata")
+                .join("feature-integration/engine-checkpoint-recovery-v57/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-output-v47")
+                .join("feature-integration/runtime-checkpoint-recovery-v57")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1407,15 +1549,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa"
+            "adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c"
+            "strata-stat-v2:10e486c5fa3e9135b0388dd56515cf1db8dbb5dccd9648b29a5c8925b50b3722"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
+            "c04d9d981b5d1c45f4329bd7eaaee988cb8d81169c056c2fd9175103f98e3642"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();
@@ -1423,7 +1565,8 @@ mod tests {
             ["--max-context", "65536"],
             ["--prefill", "4096"],
             ["--prompt-cache", "6"],
-            ["--conversation-cache-mib", "1024"],
+            ["--conversation-cache-mib", "2048"],
+            ["--conversation-cache-min-tokens", "1024"],
         ] {
             assert!(args
                 .windows(2)

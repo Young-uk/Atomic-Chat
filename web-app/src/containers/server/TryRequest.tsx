@@ -18,6 +18,7 @@ import {
 
 import { useLocalApiServerUrl } from './ConnectionDetails'
 import { ServerButton, ServerCopyButton, ServerSelect } from './ServerPageParts'
+import { useServedModel } from './useServedModel'
 
 export type ExampleLanguage = 'curl' | 'python'
 
@@ -89,11 +90,12 @@ export function TryRequest() {
     (state) => state.defaultModelLocalApiServer
   )
   const running = useAppState((state) => state.serverStatus === 'running')
+  const served = useServedModel(running)
   const activeModels = useAppState((state) => state.activeModels)
   const providers = useModelProvider((state) => state.providers)
   // The first loaded model that can chat: project indexing loads an embedding
   // model beside it, which would only answer a chat completion with an error.
-  const loadedModel = activeModels.find(
+  const loadedModel = (served.live ? served.model : undefined) ?? activeModels.find(
     (id) => !isEmbeddingOnlyModel(describeModel(id, providers))
   )
   const [language, setLanguage] = useState<ExampleLanguage>('curl')
@@ -153,7 +155,7 @@ export function TryRequest() {
       ) : (
         !hasModel && <p>{t('api:connections.testNeedsModel')}</p>
       )}
-      {result &&
+      {result && result.model === model &&
         (result.ok ? (
           <div role="status" className="sp-note sp-positive">
             <IconCheck size={16} />

@@ -24,6 +24,7 @@ import {
 } from '@/test/layout'
 
 import { ServerControlPanel } from './ServerControlPanel'
+import { useLocalEngine, STRATA_PROVIDER, STRATA_MODEL } from '@/services/managed-local-engine'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -86,6 +87,7 @@ const modelLabel = () => screen.getByText('Model', { selector: 'span' })
 const modelRow = () => modelLabel().closest('a') as HTMLElement
 
 beforeEach(() => {
+  useLocalEngine.setState({ target: null, phase: 'idle' }, true)
   useServerSetup.setState({ setupDone: true, configuredAgents: [] })
   useOnboardingStore.getState().reset()
 })
@@ -121,6 +123,29 @@ describe.each(['light', 'dark'] as const)(
   (theme) => {
     const cases = [1024, 1280].flatMap((width) =>
       ['16px', XL_FONT_SIZE].map((fontSize) => ({ width, fontSize }))
+    )
+
+    it.each(cases)(
+      'shows the running Strata identity with a stale Dstar default at $width px / $fontSize',
+      async ({ width, fontSize }) => {
+        await page.viewport(width, 800)
+        setTheme(theme)
+        setFontSize(fontSize)
+        useLocalApiServer.setState({ defaultModelLocalApiServer: { provider: 'Dstar', model: 'qwen3.8-flash-next-chat' }, lastServerModels: [] })
+        useLocalEngine.setState({ target: { engine: 'strata', provider: STRATA_PROVIDER, model: STRATA_MODEL }, phase: 'ready',
+          snapshot: { engine: 'strata', status: 'ready', owned: true, servedModels: [STRATA_MODEL] } }, true)
+        render(<Shell width="14rem" />)
+        await settle()
+        const card = screen.getByRole('region', { name: 'Server' })
+        const engine = screen.getByTestId('server-panel-engine')
+        expect(engine.textContent).toContain('Strata')
+        expect(engine.textContent).not.toContain('Dstar')
+        expect(screen.getByText('Running engine')).toBeTruthy()
+        expectNoHorizontalOverflow(card)
+        expectOneLine(engine.querySelector('strong') as HTMLElement)
+        expectFits(engine, card)
+        expect(useLocalApiServer.getState().defaultModelLocalApiServer?.provider).toBe('Dstar')
+      }
     )
 
     it.each(cases)(

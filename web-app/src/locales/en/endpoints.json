@@ -133,6 +133,9 @@
     "contextSlider": "Context size slider",
     "modelContextMax": "Model maximum: {{tokens}} tokens",
     "modelContextUnknown": "Model maximum could not be read",
-    "contextExtended": "Manual extension beyond model window"
+    "contextExtended": "Manual extension beyond model window",
+    "confirmStopTitle": "Stop the server and interrupt active work?",
+    "confirmStopDescription": "Active replies, tools and summaries will be interrupted, and queued messages will be paused. Conversation history is kept. The latest unsaved cache may need to be rebuilt.",
+    "confirmStopAction": "Stop anyway"
   }
 }

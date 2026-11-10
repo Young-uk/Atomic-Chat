@@ -9,6 +9,7 @@ import {
   type OnboardingGuide,
 } from '@/stores/onboarding-store'
 import { ServerControlPanel } from '../ServerControlPanel'
+import { useLocalEngine, STRATA_PROVIDER, STRATA_MODEL } from '@/services/managed-local-engine'
 
 vi.mock('posthog-js', () => ({
   default: { capture: vi.fn() },
@@ -76,6 +77,7 @@ const setStatus = (status: typeof control.status) => {
 
 describe('ServerControlPanel', () => {
   beforeEach(() => {
+    useLocalEngine.setState({ target: null, phase: 'idle' }, true)
     vi.clearAllMocks()
     setStatus('stopped')
     server.defaultModelLocalApiServer = null
@@ -91,6 +93,26 @@ describe('ServerControlPanel', () => {
       configuredAgents: [],
       endpointConfigured: false,
     })
+  })
+
+  it('shows the native running engine/model instead of the stale API default', () => {
+    server.defaultModelLocalApiServer = { provider: 'Dstar', model: 'qwen3.8-flash-next-chat' }
+    useLocalEngine.setState({ target: { engine: 'strata', provider: STRATA_PROVIDER, model: STRATA_MODEL },
+      phase: 'ready', snapshot: { engine: 'strata', status: 'ready', owned: true, servedModels: [STRATA_MODEL] } }, true)
+    render(<ServerControlPanel />)
+    expect(screen.getByTestId('server-panel-engine')).toHaveTextContent('Strata')
+    expect(screen.getByTestId('server-panel-engine')).toHaveTextContent('api:overview.runningEngine')
+    expect(screen.getByTestId('server-panel-model')).toHaveTextContent('Ista Xxs')
+    expect(screen.getByTestId('server-panel-engine')).toHaveAttribute('href', '/endpoints/')
+    expect(server.defaultModelLocalApiServer.provider).toBe('Dstar')
+  })
+
+  it.each(['loading', 'error', 'stopped', 'external'] as const)('does not call an unverified %s snapshot running', status => {
+    server.defaultModelLocalApiServer = { provider: 'Dstar', model: 'qwen3.8-flash-next-chat' }
+    useLocalEngine.setState({ target: { engine: 'strata', provider: STRATA_PROVIDER, model: STRATA_MODEL },
+      phase: 'ready', snapshot: { engine: 'strata', status, owned: true, servedModels: [STRATA_MODEL] } }, true)
+    render(<ServerControlPanel />)
+    expect(screen.queryByText('api:overview.runningEngine')).not.toBeInTheDocument()
   })
 
   it('starts a stopped server', async () => {

@@ -60,7 +60,8 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@/i18n/react-i18next-compat', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string, params?: Record<string, unknown>) =>
+    key === 'api:strip.ctx' ? `${key}:${params?.count}` : key }),
 }))
 
 vi.mock('@/hooks/useAppState', () => ({
@@ -81,6 +82,7 @@ vi.mock('@/utils/localApiServerControl', () => ({
 
 import { useRemoteAccessStore } from '@/hooks/useRemoteAccess'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
+import { useLocalEngine } from '@/services/managed-local-engine'
 import type { DecisionService, DecisionState } from '@/services/decision/types'
 import type {
   EmbeddingService,
@@ -143,6 +145,7 @@ function embeddingAs(
 describe('Server → Connections, connection details', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useLocalEngine.setState({ target: null, phase: 'idle' }, true)
     appState.serverStatus = 'running'
     appState.activeModels = ['gemma-4']
     useRemoteAccessStore.getState().reset()
@@ -158,6 +161,21 @@ describe('Server → Connections, connection details', () => {
         subscribe: () => () => {},
       } as unknown as DecisionService,
     })
+  })
+
+  it.each([
+    ['strata', 'ista-iq3-xxs'],
+    ['dstar', 'qwen3.8-flash-next-chat'],
+  ] as const)('shows the ready %s model when the generic active list is empty', (engine, model) => {
+    appState.activeModels = []
+    useLocalEngine.setState({ target: null, phase: 'ready', snapshot: {
+      engine, status: 'ready', owned: true, servedModels: [model], activeContext: 131072,
+    } }, true)
+    render(<ConnectionDetails />)
+    expect(screen.getByTitle(model)).toBeInTheDocument()
+    expect(screen.getByTitle(model)).toHaveTextContent('api:strip.ctx:131 072')
+    expect(screen.getByText('api:status.ready')).toBeInTheDocument()
+    expect(screen.queryByText('api:status.noModel')).not.toBeInTheDocument()
   })
 
   it('names the decision model the server answers /systemone with', async () => {

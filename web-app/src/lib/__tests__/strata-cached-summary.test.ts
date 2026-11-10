@@ -567,3 +567,23 @@ it('accepts a completed clone result beyond the prose target without slicing it'
   await expect(summarizeWithStrataCache('http://room-test/v1','m','thread/turn',{})('', '',new AbortController().signal,undefined,{save,requestSources:history()})).resolves.toBe(prose.trim())
   expect(save).toHaveBeenCalledTimes(1)
 })
+
+it('keeps checkpoint source proof outside the inference prompt and awaits it before admission', async () => {
+  const source = history().slice(0, 4)
+  const proof = { messages: [{ role: 'user', content: 'CPU-only exact source envelope' }], history_hash: 'a'.repeat(64) }
+  const sourcePrefix = vi.fn(async () => proof)
+  const fetcher = vi.fn(async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+    summary: 'Historical summary', openRequests: [], resolvedRequests: [],
+  }) } }] }))
+  vi.stubGlobal('fetch', fetcher)
+  const summarize = summarizeWithStrataCache('http://local/v1', 'model', 'thread/turn', { recovery: true, sourcePrefix })
+  const signal = new AbortController().signal
+  await summarize('', '', signal, undefined, { save: async () => {}, requestSources: source })
+  expect(sourcePrefix).toHaveBeenCalledWith('thread/turn', source)
+  const body = JSON.parse((fetcher.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)
+  expect(body.atomic_summary_checkpoint_source).toEqual(proof)
+  expect(body.messages).toHaveLength(1)
+  expect(body.messages[0].content).not.toContain('CPU-only exact source envelope')
+  expect(body.atomic_summary_recovery).toBe(true)
+  expect(body.max_tokens).toBe(0)
+})

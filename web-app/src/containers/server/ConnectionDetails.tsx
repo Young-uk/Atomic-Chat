@@ -36,6 +36,7 @@ import { formatCount } from '@/utils/apiServerStats'
 import { getLocalApiServerUrl } from '@/utils/localApiServerControl'
 
 import { ServerCopyButton } from './ServerPageParts'
+import { useServedModel } from './useServedModel'
 
 /** `idle` is an enabled module unloaded for idling: the next request starts it. */
 const DECISION_SERVED_STATES = new Set<DecisionState>([
@@ -181,6 +182,7 @@ export function useLocalApiServerUrl(): string {
 export function ConnectionDetails() {
   const { t } = useTranslation()
   const { serverStatus, activeModels } = useAppState()
+  const served = useServedModel(serverStatus === 'running')
   const decisionModel = useServedDecisionModel()
   const embeddingModel = useServedEmbeddingModel()
   const serverHost = useLocalApiServer((state) => state.serverHost)
@@ -194,8 +196,8 @@ export function ConnectionDetails() {
   const authRequired = apiKey.trim().length > 0
   const apiKeyHint = t('api:strip.apiKeyHint', { key: API_KEY_PLACEHOLDER })
 
-  const loadedModel = activeModels[0] ?? null
-  const contextLength = getModelContextLength(loadedModel)
+  const loadedModel = (served.live ? served.model : undefined) ?? activeModels[0] ?? null
+  const contextLength = served.live ? served.context : getModelContextLength(loadedModel)
 
   const { tone, label }: { tone: StatusTone; label: string } =
     serverStatus === 'stopped'

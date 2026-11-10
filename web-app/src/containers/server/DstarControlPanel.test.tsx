@@ -1,3 +1,4 @@
+import { useChatSessions } from '@/stores/chat-session-store'
 import {
   act,
   cleanup,
@@ -87,6 +88,7 @@ describe('Dstar local control panel', () => {
     vi.stubGlobal('IS_MACOS', true)
     vi.useFakeTimers()
     vi.clearAllMocks()
+    useChatSessions.setState({ sessions: {}, requestActive: {} })
     mock.control.mockReset().mockResolvedValue(base)
     mock.checked.mockResolvedValue({ ok: true, modelCount: 1, latencyMs: 1 })
   })
@@ -257,4 +259,20 @@ it('reads the selected model maximum and synchronizes slider edits with the nume
   expect(slider).toHaveAttribute('max', '262144')
   fireEvent.change(slider, { target: { value: '131072' } })
   expect(screen.getByRole('spinbutton')).toHaveValue(131072)
+})
+
+it('confirms interruption of busy Dstar work before stopping', async () => {
+  vi.stubGlobal('IS_MACOS', true)
+  mock.control.mockResolvedValue({ ...base, status: 'ready', owned: true })
+  useChatSessions.getState().setRequestActive('stuck-dstar', true)
+  const force = vi.spyOn(localEngineCoordinator, 'stopConfirmed').mockResolvedValue({ engine: null, status: 'stopped', owned: false, servedModels: [] })
+  render(<DstarControlPanel />); await flush()
+  fireEvent.click(screen.getByRole('button', { name: 'endpoints:dstar.stop' })); await flush()
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
+  expect(force).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'endpoints:localEngine.confirmStopAction' })); await flush()
+  expect(force).toHaveBeenCalledWith('dstar')
+  expect(useChatSessions.getState().requestActive['stuck-dstar']).toBe(false)
+  force.mockRestore()
+  useChatSessions.setState({ sessions: {}, requestActive: {} })
 })

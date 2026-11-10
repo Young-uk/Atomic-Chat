@@ -43,7 +43,7 @@ export function localEngineTarget(
   } catch { return null }
 }
 
-export const controlLocalEngine = (action: 'ensure' | 'status' | 'stop' | 'quiesce' | 'resume', engine: LocalEngine | null, strataContext?: number) =>
+export const controlLocalEngine = (action: 'ensure' | 'status' | 'stop' | 'quiesce' | 'resume' | 'stop_confirmed', engine: LocalEngine | null, strataContext?: number) =>
   invoke<LocalEngineSnapshot>('managed_engine_control', { action, engine, ...(strataContext === undefined ? {} : { strataContext }) })
 
 const key = (target: LocalEngineTarget | null) => target
@@ -238,6 +238,36 @@ export class LocalEngineCoordinator {
       if (this.refreshing === operation) this.refreshing = null
     })
     this.refreshing = operation
+    return operation
+  }
+
+  /** Called only after the user confirms interruption of active work. */
+  stopConfirmed(engine: LocalEngine): Promise<LocalEngineSnapshot> {
+    const revision = ++this.revision
+    this.pending = false
+    const target = this.target?.engine === engine ? this.target : { engine, provider: '', model: '' }
+    this.update({ target, phase: 'stopping' })
+    const operation = (async () => {
+      try {
+      let snapshot = await this.control('stop_confirmed', engine)
+      const deadline = Date.now() + 30_000
+      while (snapshot.status !== 'stopped') {
+        if (snapshot.error || snapshot.status === 'error' || snapshot.status === 'external') throw new Error(snapshot.error || 'stopFailed')
+        if (revision !== this.revision || Date.now() >= deadline) throw new Error('stopFailed')
+        await this.pause()
+        snapshot = await this.control('status', engine)
+      }
+      if (revision === this.revision) this.update({ target, phase: 'idle', snapshot })
+      return snapshot
+    } catch (error) {
+      if (revision === this.revision) this.update({ target, phase: 'error', error: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
+    })()
+    const tracked = operation.then(() => undefined, () => undefined).finally(() => {
+      if (this.running === tracked) { this.running = null; this.resume() }
+    })
+    this.running = tracked
     return operation
   }
 

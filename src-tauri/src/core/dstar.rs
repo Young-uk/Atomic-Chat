@@ -409,7 +409,7 @@ fn launch(root: &Path, selection: &Selection, port: u16) -> Result<Child, String
     }
     // Opt-in local test build only; ordinary Personal builds remain single-slot.
     if option_env!("ATOMIC_DSTAR_SUMMARY_TEST") == Some("true") {
-        cmd.arg("--summary-slot");
+        cmd.args(["--summary-slot", "--kv-cache-continued-interval-tokens", "4096"]);
     }
     cmd.spawn().map_err(|e| e.to_string())
 }
@@ -528,6 +528,7 @@ struct Actor {
     client: reqwest::Client,
     owned: Option<OwnedEngine>,
     stopping: Option<Instant>,
+    confirmed_stop: bool,
     pending: Option<RequestedEngine>,
     selection: Selection,
     strata_context: u32,
@@ -609,6 +610,7 @@ impl Actor {
             }
         }
         self.stopping = None;
+        self.confirmed_stop = false;
         self.error = None;
         self.error_engine = Some(next.engine);
         Ok(())
@@ -677,6 +679,23 @@ impl Actor {
             managed_engines::owned_family(owned.process.id().ok_or("notOwned")?)?;
         managed_engines::signal(&mut owned.process, owned.engine, false);
         self.stopping = Some(Instant::now());
+        Ok(())
+    }
+
+    // Explicit confirmation bypasses activity admission, never process ownership.
+    async fn begin_confirmed_stop(&mut self, engine: Option<Engine>) -> Result<(), String> {
+        let owned = self.owned.as_mut().ok_or("notOwned")?;
+        if engine != Some(owned.engine) { return Err("notOwned".into()); }
+        if self.stopping.is_none() {
+            let pid = owned.process.id().ok_or("notOwned")?;
+            self.env.ensure_no_competitor(owned.engine, pid).await?;
+            owned.stopping_family = managed_engines::owned_family(pid)?;
+            managed_engines::signal(&mut owned.process, owned.engine, false);
+            self.stopping = Some(Instant::now());
+        }
+        self.confirmed_stop = true;
+        self.pending = None;
+        self.error = None;
         Ok(())
     }
 
@@ -908,6 +927,11 @@ impl Actor {
     async fn tick(&mut self) {
         let mut ended = false;
         if let Some(owned) = self.owned.as_mut() {
+            if self.confirmed_stop && self.stopping.is_some_and(|t| t.elapsed() >= Duration::from_secs(15)) {
+                if let Err(error) = managed_engines::kill_owned_family(&owned.stopping_family) {
+                    self.error = Some(error);
+                }
+            }
             match owned.process.try_wait() {
                 Ok(Some(status)) => {
                     if self.stopping.is_none() {
@@ -985,6 +1009,7 @@ impl Actor {
         if ended {
             self.owned = None;
             self.stopping = None;
+            self.confirmed_stop = false;
             if let Some(next) = self.pending.take() {
                 self.error_engine = Some(next.engine);
                 if let Err(error) = self.start(next) {
@@ -1065,6 +1090,7 @@ async fn run(
         client,
         owned: None,
         stopping: None,
+        confirmed_stop: false,
         pending: None,
         selection,
         error: None,
@@ -1131,6 +1157,7 @@ async fn run(
                             None => Err("missingEngine".into()),
                         },
                         "configure" if engine == Some(Engine::Strata) => Ok(()),
+                        "stop_confirmed" => actor.begin_confirmed_stop(engine).await,
                         "stop" => {
                             if engine.is_some() && actor.pending.as_ref().is_some_and(|next| Some(next.engine) == engine) {
                                 // Cancel a queued choice, including Dstar -> Strata
@@ -1199,6 +1226,27 @@ mod tests {
             fs::write(root.path().join(name), b"fixture").unwrap();
         }
         root
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[tokio::test]
+    async fn confirmed_stop_requires_exact_owned_engine_and_reaps_it() {
+        let root = fixture();
+        let controller = DstarController::with_port(root.path().into(), unused_port());
+        assert_eq!(controller.managed_request("stop_confirmed".into(), Some(Engine::Dstar), None).await.unwrap_err(), "notOwned");
+        controller.request("start".into(), None).await.unwrap();
+        for engine in [None, Some(Engine::Strata)] {
+            assert_eq!(controller.managed_request("stop_confirmed".into(), engine, None).await.unwrap_err(), "notOwned");
+        }
+        assert!(controller.request("status".into(), None).await.unwrap().owned);
+        controller.managed_request("stop_confirmed".into(), Some(Engine::Dstar), None).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            let state = controller.request("status".into(), None).await.unwrap();
+            if !state.owned { assert_eq!(state.status, "stopped"); break; }
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     pub(super) fn unused_port() -> u16 {
@@ -1514,6 +1562,7 @@ mod tests {
                 .unwrap(),
             owned: None,
             stopping: None,
+            confirmed_stop: false,
             pending: None,
             selection: Selection::default(),
             strata_context: managed_engines::DEFAULT_STRATA_CONTEXT,
@@ -1801,6 +1850,7 @@ mod tests {
                 .unwrap(),
             owned: None,
             stopping: None,
+            confirmed_stop: false,
             pending: None,
             selection: Selection::default(),
             error: None,

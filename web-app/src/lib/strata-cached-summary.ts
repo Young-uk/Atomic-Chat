@@ -12,7 +12,7 @@ import type { SummaryAdmission } from './atomic-summary-admission'
  * source anchors and authoritative unfinished-work ledger, never replay history.
  * The frozen archive boundary is independent of later foreground messages. */
 export function summarizeWithStrataCache(baseUrl: string, model: string, owner: string,
-  options: { recovery?: boolean; coldRecovery?: boolean; selectBoundary?: (owner: string, messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>; admission?: SummaryAdmission; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
+  options: { sourcePrefix?: (owner: string, source: UIMessage[]) => Promise<Record<string, unknown> | undefined>; recovery?: boolean; coldRecovery?: boolean; selectBoundary?: (owner: string, messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>; admission?: SummaryAdmission; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
   const summarize: Summarize = async (previous, _evidence, signal, progress, checkpoints) => {
     if (!options.recovery) options.admission?.assertAllowed()
     const source = checkpoints?.requestSources ?? []
@@ -30,6 +30,10 @@ Return only JSON:
 
 Aim for about 2000 tokens of summary prose; complete the JSON naturally if it needs a little more. Existing open requests are retained automatically: emit only new requests and evidenced resolutions, never re-emit existing IDs. Omission does not resolve an existing request.
 ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => ({ id, request })), sourceAnchors: anchors })}`
+    // CPU-only metadata authorizes a native checkpoint boundary. It is never
+    // appended to the summary prompt or independently evaluated by the model.
+    const checkpointSource = await options.sourcePrefix?.(owner, source)
+    signal.throwIfAborted()
     options.inputProgress?.({ phase: 'preparing' }, signal)
     let polling = false
     let watching = true
@@ -55,6 +59,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
       response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, atomic_summary: true, atomic_summary_clone: owner,
+          ...(checkpointSource ? { atomic_summary_checkpoint_source: checkpointSource } : {}),
           ...(options.recovery ? { atomic_summary_recovery: true } : {}),
           stream: true, return_progress: true, think: false, temperature: 1, max_tokens: 0,
           messages: [{ role: 'user', content: task }] }),
