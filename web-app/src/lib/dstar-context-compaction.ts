@@ -1,3 +1,4 @@
+import { SummaryHeadroomError } from './summary-stream'
 import { invoke } from '@tauri-apps/api/core'
 import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
 import type { SummaryProgress, SummaryInputProgress } from './context-summary-progress'
@@ -188,7 +189,8 @@ export function projectCompactedMessages(view: UIMessage[], prepared: UIMessage[
 
 export type Summarize = ((previous: string, evidence: string, signal: AbortSignal, progress?: (completed: number, paused?: boolean) => void, checkpoints?: { resume?: SummaryCheckpoint; save: (checkpoint: SummaryCheckpoint) => Promise<void>; requestSources?: UIMessage[]; previousRequests?: RequestLedger }) => Promise<string>) & {
   cached?: boolean
-  fallbackReason?: 'images' | 'unsupported'
+  fallbackReason?: 'images' | 'unsupported' | 'headroom'
+  headroomFallback?: Summarize
   selectBoundary?(messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal): Promise<number>
   countRawTokens?(messages: UIMessage[], signal: AbortSignal): Promise<number>
   recoveryPriority?: boolean
@@ -233,6 +235,7 @@ export class ContextCompaction {
     const record = this.ready?.record ?? this.active
     return record && this.matches(record, messages) ? this.preview(record, messages) : messages
   }
+  private summaryFailure?: unknown
   error?: string
 
   constructor(private threadId: string, private store: ContextArchiveStore,
@@ -388,6 +391,7 @@ export class ContextCompaction {
     const task = { record, sourceKey: fingerprint(source), controller, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
     this.error = undefined
+    this.summaryFailure = undefined
     const progress: SummaryProgress = { method: summarize.cached ? 'clone' : 'segments', fallbackReason: summarize.fallbackReason, phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
     const report = (phase: SummaryProgress['phase']) => {
       if (this.pending !== task || controller.signal.aborted) return
@@ -443,7 +447,17 @@ export class ContextCompaction {
           report('ready')
         }
       } catch (error) {
+        if (error instanceof SummaryHeadroomError && summarize.headroomFallback &&
+            recoveryBoundary === undefined && this.pending === task && !controller.signal.aborted) {
+          logCompactionBudget('background headroom fallback', { threadId: this.threadId, context })
+          this.pending = undefined
+          this.scheduleBatches(messages, context, summarize.headroomFallback, undefined, retainedPromptCost)
+          const fallbackCompletion = this.pendingCompletion
+          if (fallbackCompletion) await fallbackCompletion
+          return
+        }
         this.error = error instanceof Error ? error.message : String(error)
+        this.summaryFailure = error
         progress.finishedAt = Date.now()
         report('failed')
       } finally {
@@ -486,6 +500,7 @@ export class ContextCompaction {
     const task = { record: planningRecord, sourceKey: fingerprint(planningRecord.source), controller, recovery: emergency, inputProgress: undefined as ((input?: SummaryInputProgress) => void) | undefined }
     this.pending = task
     this.error = undefined
+    this.summaryFailure = undefined
     const progress: SummaryProgress = { method: summarize.cached ? 'clone' : 'segments', fallbackReason: summarize.fallbackReason, phase: 'queued', startedAt: Date.now(), completed: 0, archived: false }
     const report = (phase: SummaryProgress['phase']) => {
       if (this.pending !== task || controller.signal.aborted) return
@@ -657,6 +672,7 @@ export class ContextCompaction {
     this.schedule(messages, context, context, summarize, boundary, promptCost)
     const completion = this.pending ? this.pendingCompletion : undefined
     if (!completion) throw new Error('No earlier complete turns are available to summarize')
+    try {
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => { signal?.removeEventListener('abort', aborted); this.batchWaiters.delete(changed) }
       const aborted = () => { cleanup(); reject(signal?.reason) }
@@ -667,7 +683,7 @@ export class ContextCompaction {
           // A normal background snapshot may stop at 60% before the full
           // foreground envelope fits. Continue from its durable boundary.
           if (this.ready && !this.error) resolve()
-          else reject(new Error(this.error ?? 'No verified recovery summary fits the context window'))
+          else reject(this.summaryFailure instanceof Error ? this.summaryFailure : new Error(this.error ?? 'No verified recovery summary fits the context window'))
         }
       }
       signal?.addEventListener('abort', aborted, { once: true })
@@ -676,6 +692,12 @@ export class ContextCompaction {
       if (signal?.aborted) aborted()
       else changed()
     })
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (!(error instanceof SummaryHeadroomError) || !summarize.headroomFallback) throw error
+      logCompactionBudget('headroom recovery fallback', { threadId: this.threadId, context })
+      return this.recover(messages, context, summarize.headroomFallback, signal, overflowTokens, promptCost)
+    }
     signal?.throwIfAborted()
     if (!fits()) return this.recover(messages, context, summarize, signal, overflowTokens, promptCost)
     this.apply(messages, true)

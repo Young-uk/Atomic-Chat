@@ -281,7 +281,7 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-recovery-v42/serve/server.py",
+            "feature-integration/runtime-headroom-recovery-v44/serve/server.py",
             "feature-integration/engine-recovery-v42/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
@@ -317,16 +317,25 @@ impl Environment {
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
-            "cwd": root.join("feature-integration/runtime-recovery-v42"),
+            "cwd": root.join("feature-integration/runtime-headroom-recovery-v44"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
             "log": root.join("strata-atomic.log"),
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
-            "atomic_disk_session_previous_backend_sha256": "815799582a5ff127fbf652514e9c25f5f045cbae3372a3eaa26d59013a19f0cb",
+            "atomic_disk_session_previous_backend_sha256": "1852d999555e00ce07f51321db40dfb706fdb98ba23b2d550b3baf5858796aa4",
             // This exact 64K transition changes clone admission, not the native
             // session-file format. Other models/contexts receive no bridge.
             "atomic_disk_session_reviewed_upgrades": if context == DEFAULT_STRATA_CONTEXT { serde_json::json!([
+    {
+        "current_native": "f614a73e8872350dcd615b5f6f507ec52b29b871002cc2a1a54631915c4d7a0b",
+        "current_model": "strata-stat-v2:d7358396e6567f5458637453edb0c954c66ad3ddf482a85e1dc25baebf4583d7",
+        "previous": {
+            "atomic_summary_expected_native_sha256": "f614a73e8872350dcd615b5f6f507ec52b29b871002cc2a1a54631915c4d7a0b",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:d7358396e6567f5458637453edb0c954c66ad3ddf482a85e1dc25baebf4583d7",
+            "atomic_summary_expected_backend_sha256": "1852d999555e00ce07f51321db40dfb706fdb98ba23b2d550b3baf5858796aa4"
+        }
+    },
     {
         "current_native": "f614a73e8872350dcd615b5f6f507ec52b29b871002cc2a1a54631915c4d7a0b",
         "current_model": "strata-stat-v2:d7358396e6567f5458637453edb0c954c66ad3ddf482a85e1dc25baebf4583d7",
@@ -367,7 +376,7 @@ impl Environment {
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "f614a73e8872350dcd615b5f6f507ec52b29b871002cc2a1a54631915c4d7a0b",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:d7358396e6567f5458637453edb0c954c66ad3ddf482a85e1dc25baebf4583d7",
-            "atomic_summary_expected_backend_sha256": "1852d999555e00ce07f51321db40dfb706fdb98ba23b2d550b3baf5858796aa4",
+            "atomic_summary_expected_backend_sha256": "8a425a1fbdc4b4e9534b598564ca94fd98f01eae667833df5c7cb645ae11ec71",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -392,7 +401,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-recovery-v42"),
+                    .join("feature-integration/runtime-headroom-recovery-v44"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -545,7 +554,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-recovery-v42"),
+                        .join("feature-integration/runtime-headroom-recovery-v44"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1047,6 +1056,7 @@ mod tests {
             .as_array()
             .unwrap();
         let expected = std::collections::BTreeSet::from([
+            "1852d999555e00ce07f51321db40dfb706fdb98ba23b2d550b3baf5858796aa4",
             "815799582a5ff127fbf652514e9c25f5f045cbae3372a3eaa26d59013a19f0cb",
             "cfa50288478eeaffe129a8484e05e1c21c6b11617efb253be0b65088bd2287ee",
             "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33",
@@ -1059,6 +1069,9 @@ mod tests {
             let (native, model) = if backend == "fabf0acec9b385057a4b95c9ac737c1b0708072423853977008f24621a758c33" {
                 ("5ceae59777332afb07bb5e431f7941329cf729dc854a2dc42c7d4e130fe1f883",
                  "strata-stat-v2:f191b0b6653263c99a1acb382b2afe2ac1b1186252fcfe03b87929d635c5e1b0")
+            } else if backend == "1852d999555e00ce07f51321db40dfb706fdb98ba23b2d550b3baf5858796aa4" {
+                ("f614a73e8872350dcd615b5f6f507ec52b29b871002cc2a1a54631915c4d7a0b",
+                 "strata-stat-v2:d7358396e6567f5458637453edb0c954c66ad3ddf482a85e1dc25baebf4583d7")
             } else {
                 ("cc8a0002024dc5cc2ddba0c57938390354b654028b789f330d0bda2d27252052",
                  "strata-stat-v2:401f2352597b8d474e478ec358050f3036d38d040eaa1d73c5dddd8bd86a8612")
@@ -1387,7 +1400,7 @@ mod tests {
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-recovery-v42")
+                .join("feature-integration/runtime-headroom-recovery-v44")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1438,7 +1451,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "1852d999555e00ce07f51321db40dfb706fdb98ba23b2d550b3baf5858796aa4"
+            "8a425a1fbdc4b4e9534b598564ca94fd98f01eae667833df5c7cb645ae11ec71"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

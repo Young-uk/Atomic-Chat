@@ -1,4 +1,4 @@
-import { readSummaryChoice, summaryAdmissionMessage } from './summary-stream'
+import { readSummaryChoice, summaryAdmissionMessage, SummaryIdleError, checkSummaryIdle } from './summary-stream'
 import type { SummaryInputProgress } from './context-summary-progress'
 import type { SummaryAdmission } from './atomic-summary-admission'
 import type { UIMessage } from 'ai'
@@ -18,13 +18,13 @@ const consolidation = 'Consolidate these historical summaries in chronological o
 /** Independent segment extraction plus occasional bounded consolidation. The
  * exact wire envelope (including validation repairs) determines turn boundaries.
  * No successful extraction is silently split or truncated to make it fit. */
-export function summarizeBatchesWithDstar(baseUrl: string, model: string, options: { tokenCounting: boolean; admission?: SummaryAdmission; recovery?: boolean; streamProgress?: boolean; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
+export function summarizeBatchesWithDstar(baseUrl: string, model: string, options: { tokenCounting: boolean; admission?: SummaryAdmission; recovery?: boolean; coldRecoveryOwner?: string | (() => string); idleOnly?: boolean; streamProgress?: boolean; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
   const bytes = (s: string) => new TextEncoder().encode(s).length
   const wire = (system: string, payload: string, task: string) => [
     { role: 'system', content: system }, { role: 'user', content: payload }, { role: 'user', content: task },
   ]
   const fits = async (system: string, payload: string, task: string, signal: AbortSignal) => {
-    options.admission?.assertAllowed()
+    if (!options.recovery) options.admission?.assertAllowed()
     const messages = wire(system, payload, task)
     if (!options.tokenCounting) return messages.reduce((n, m) => n + bytes(m.content), 0) <= 8192 - 512 - 2048
     const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
@@ -44,7 +44,7 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
   let inputRequest = 0
   const request = async (system: string, payload: string, instruction: string, signal: AbortSignal, progress?: (n: number, paused?: boolean) => void) => {
     if (!(await fits(system, payload, instruction, signal))) throw new Error('Complete summary segment exceeds the bounded input budget')
-    return runIdleSummaryRequest(baseUrl, signal, paused => progress?.(0, paused), async idleSignal => {
+    const run = () => runIdleSummaryRequest(baseUrl, signal, paused => progress?.(0, paused), async idleSignal => {
       const requestNumber = ++inputRequest
       const reportInput = (input?: SummaryInputProgress) => {
         if (!signal.aborted) options.inputProgress?.(input ? { ...input, request: requestNumber } : undefined, signal)
@@ -52,12 +52,13 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
       reportInput({ phase: 'preparing' })
       try {
         const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-          method: 'POST', signal: AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery ? { atomic_summary_recovery: true } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 1, max_tokens: 2048, messages: wire(system, payload, instruction) }),
+          method: 'POST', signal: options.recovery ? idleSignal : AbortSignal.any([idleSignal, AbortSignal.timeout(600_000)]), headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, atomic_summary: true, ...(options.recovery && (!options.idleOnly || options.coldRecoveryOwner) ? { atomic_summary_recovery: true } : {}), ...(options.coldRecoveryOwner ? { atomic_summary_cold_recovery: typeof options.coldRecoveryOwner === 'function' ? options.coldRecoveryOwner() : options.coldRecoveryOwner } : {}), stream: options.streamProgress === true, ...(options.streamProgress ? { return_progress: true } : {}), think: false, temperature: 1, max_tokens: 2048, messages: wire(system, payload, instruction) }),
         })
         if (!response.ok) {
           if (response.status === 409) {
             const error = await response.json().catch(() => null)
+            if (options.idleOnly) checkSummaryIdle(error?.error)
             if (error?.error?.code === 'atomic_summary_admission_refused') {
               options.admission?.refuse()
               throw new Error(summaryAdmissionMessage(error.error.message))
@@ -67,7 +68,20 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
         }
         return await readSummaryChoice(response, idleSignal, reportInput)
       } finally { reportInput(undefined) }
-    })
+    }, { idleOnly: options.idleOnly, serverIdle: options.coldRecoveryOwner ? async () => {
+      const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/status`, { signal })
+      if (!response.ok) throw new Error('Cannot verify an idle server for disk-preserved summary; originals retained')
+      const count = (await response.json()).atomic_summary?.foreground_requests
+      if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid foreground status; originals retained')
+      return count === 0
+    } : undefined })
+    while (true) {
+      try { return await run() }
+      catch (error) {
+        if (!options.idleOnly || !(error instanceof SummaryIdleError)) throw error
+        signal.throwIfAborted()
+      }
+    }
   }
   // Only model-input copies are reduced. Every original tool result stays in
   // the archive, and user text/final answers are never sliced to make a turn fit.

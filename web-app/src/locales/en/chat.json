@@ -350,6 +350,7 @@
     "archived": "Original messages saved in the conversation archive.",
     "retained": "Original messages retained.",
     "background": "Runs in the background. Waiting for the server is included.",
+    "fallback_headroom": "Emergency summary · Cache context full",
     "method_clone": "Cached conversation summary",
     "method_segments": "Segmented summary",
     "fallback_images": "Image input: text-only clone unavailable",

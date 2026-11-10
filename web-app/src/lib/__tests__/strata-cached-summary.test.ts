@@ -1,3 +1,5 @@
+import { beginDstarForeground, noteDstarCacheOwner } from '../dstar-summary-idle'
+import { SummaryHeadroomError } from '../summary-stream'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import { bindStrataHistory, strataHistoryHash, resumeRestoredStrataSummary, summarizeWithStrataCache } from '../strata-cached-summary'
@@ -308,4 +310,188 @@ it('marks urgent cached recovery without ordinary background admission', async (
   const result = await summarizeWithStrataCache('http://local/v1', 'm', 'thread/turn', { recovery: true })('', '', new AbortController().signal, undefined, { save: async () => {}, requestSources: history() })
   expect(result).toBe('Recovered handoff')
   expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ atomic_summary_clone: 'thread/turn', atomic_summary_recovery: true })
+})
+
+it('switches blocked recovery to bounded complete turns only for explicit headroom refusal', async () => {
+  const messages: UIMessage[] = [...history(), { id:'pending', role:'user', parts:[{type:'text',text:'Keep newest question'}] }]
+  const original = structuredClone(messages), saved: ArchiveRecord[] = []
+  const counts: number[] = []
+  const fallback = vi.fn(async (_previous, _evidence, _signal, _progress, checkpoints) => {
+    const segment = checkpoints?.requestSources ?? []
+    counts.push(segment.length)
+    await checkpoints?.save({version:1,inputKey:'cold',offset:segment.length,completed:1,summary:'Emergency handoff',requests:{open:[],resolved:[]}})
+    return 'Emergency handoff'
+  }) as unknown as Summarize
+  fallback.recoveryPriority = true
+  fallback.batches = { selectCompletePrefix:async source => Math.min(4, source.length), consolidate:async batches => batches }
+  const clone = vi.fn(async () => { throw new SummaryHeadroomError() }) as unknown as Summarize
+  clone.cached = true; clone.recoveryPriority = true; clone.headroomFallback = fallback
+  const coordinator = new ContextCompaction('thread', {save:async record=>{saved.push(structuredClone(record))},load:async()=>undefined})
+  await coordinator.recover(messages, 1000, clone, undefined, 0,
+    view => view.some(message => message.id.startsWith('atomic-context-')) ? 900 : 1100)
+  expect(clone).toHaveBeenCalledTimes(1)
+  expect(fallback).toHaveBeenCalledTimes(1)
+  expect(counts).toEqual([4])
+  const view = coordinator.apply(messages)
+  expect(view.at(-1)?.id).toBe('pending')
+  expect(messages).toEqual(original)
+  expect(saved.some(record => record.summary === 'Historical segment 1:\nEmergency handoff')).toBe(true)
+})
+
+it('does not switch strategy for stale caches or arbitrary summary failures', async () => {
+  const messages: UIMessage[] = [...history(), {id:'pending',role:'user',parts:[{type:'text',text:'Newest'}]}]
+  const fallback = vi.fn(async ()=>'not allowed') as unknown as Summarize
+  const clone = vi.fn(async () => {throw new Error('Cache changed; originals retained')}) as unknown as Summarize
+  clone.cached = true; clone.recoveryPriority = true; clone.headroomFallback = fallback
+  const coordinator = new ContextCompaction('thread',{save:async()=>{},load:async()=>undefined})
+  await expect(coordinator.recover(messages,1000,clone)).rejects.toThrow('Cache changed')
+  expect(fallback).not.toHaveBeenCalled()
+})
+
+it('prepares token-counted emergency requests without cloning the full native history', async () => {
+  const calls: Record<string, unknown>[] = []
+  vi.stubGlobal('fetch',vi.fn(async (url:string,init?:RequestInit)=>{
+    const body=JSON.parse(init?.body as string);calls.push(body)
+    if(url.endsWith('summary-token-count')) return Response.json({input_tokens:100,context_length:16384})
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Bounded summary',openRequests:[],resolvedRequests:[]})}}]})
+  }))
+  const clone=summarizeWithStrataCache('http://local/v1','m','thread/turn',{recovery:true,coldRecovery:true})
+  const fallback=clone.headroomFallback!
+  await fallback('', '', new AbortController().signal,undefined,{save:async()=>{},requestSources:history().slice(0,2)})
+  const generated=calls.find(body=>body.atomic_summary_cold_recovery)
+  expect(generated).toMatchObject({atomic_summary_recovery:true,atomic_summary_cold_recovery:'thread/turn',temperature:1})
+  expect(generated).not.toHaveProperty('atomic_summary_clone')
+  expect(calls.length).toBeGreaterThan(1)
+})
+
+it('automatically continues a normal background capacity failure without adopting or rewriting messages', async () => {
+  const messages = history(), original = structuredClone(messages), saved: ArchiveRecord[] = []
+  const completed = vi.fn(async (_previous, _evidence, _signal, _progress, checkpoints) => {
+    await checkpoints?.save({version:1,inputKey:'background-cold',offset:4,completed:1,summary:'Verified older facts',requests:{open:[],resolved:[]}})
+    return 'Verified older facts'
+  }) as unknown as Summarize
+  completed.batches = {countRawTokens:async source=>source.length*50,selectCompletePrefix:async source=>Math.min(4,source.length),consolidate:async batches=>batches}
+  completed.fallbackReason='headroom'
+  const clone=vi.fn(async()=>{throw new SummaryHeadroomError()}) as unknown as Summarize
+  clone.cached=true;clone.headroomFallback=completed
+  const changes: import('../context-summary-progress').SummaryProgress[]=[]
+  const coordinator=new ContextCompaction('thread',{save:async record=>{saved.push(structuredClone(record))},load:async()=>undefined},value=>{if(value)changes.push(value)})
+  coordinator.schedule(messages,1000,950,clone,undefined,view=>view.some(m=>m.id.startsWith('atomic-context-'))?500:950)
+  await settle();await settle();await settle()
+  expect(clone).toHaveBeenCalledTimes(1)
+  expect(completed).toHaveBeenCalledTimes(2)
+  expect(coordinator.error).toBeUndefined()
+  expect(changes.some(value=>value.phase==='failed')).toBe(false)
+  expect(changes.some(value=>value.method==='segments'&&value.fallbackReason==='headroom')).toBe(true)
+  expect(changes.at(-1)?.phase).toBe('ready')
+  const newer: UIMessage={id:'new-after-snapshot',role:'user',parts:[{type:'text',text:'Keep this new question'}]}
+  const view=coordinator.apply([...messages,newer])
+  expect(view.at(-1)?.id).toBe(newer.id)
+  expect(messages).toEqual(original)
+  expect(saved.filter(record=>record.summary).at(-1)?.source).toEqual(original.slice(0,8))
+})
+
+it('waits for conversation completion then preserves the latest native owner with frozen older evidence', async () => {
+  const endpoint='http://background-owner/v1', end=beginDstarForeground(endpoint)
+  noteDstarCacheOwner(endpoint,'thread/old')
+  const generated: Record<string,unknown>[]=[]
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+    if(url.endsWith('/status'))return Response.json({atomic_summary:{foreground_requests:0}})
+    const body=JSON.parse(init?.body as string)
+    if(url.endsWith('summary-token-count'))return Response.json({input_tokens:100,context_length:16384})
+    generated.push(body)
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Frozen facts',openRequests:[],resolvedRequests:[]})}}]})
+  }))
+  const fallback=summarizeWithStrataCache(endpoint,'m','thread/old',{coldRecovery:true}).headroomFallback!
+  const source=history().slice(0,2), original=structuredClone(source)
+  const task=fallback('','',new AbortController().signal,undefined,{save:async()=>{},requestSources:source})
+  await settle();expect(generated).toHaveLength(0)
+  noteDstarCacheOwner(endpoint,'thread/new');end()
+  expect(await task).toBe('Frozen facts')
+  expect(generated).toHaveLength(1)
+  expect(generated[0]).toMatchObject({atomic_summary_cold_recovery:'thread/new',atomic_summary_recovery:true})
+  expect(source).toEqual(original)
+  expect(JSON.stringify(generated[0])).not.toContain('new-after-snapshot')
+})
+
+it('retries only a clean native idle race and refreshes the preserved owner', async () => {
+  const endpoint='http://idle-race/v1';noteDstarCacheOwner(endpoint,'thread/old')
+  const requests: Record<string,unknown>[]=[]
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+    if(url.endsWith('/status'))return Response.json({atomic_summary:{foreground_requests:0}})
+    const body=JSON.parse(init?.body as string)
+    if(url.endsWith('summary-token-count'))return Response.json({input_tokens:100,context_length:16384})
+    requests.push(body)
+    if(requests.length===1){
+      noteDstarCacheOwner(endpoint,'thread/new')
+      return Response.json({error:{code:'atomic_summary_admission_refused',message:'Recovery is waiting for the active conversation to finish; originals retained'}},{status:409})
+    }
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Independent facts',openRequests:[],resolvedRequests:[]})}}]})
+  }))
+  const fallback=summarizeWithStrataCache(endpoint,'m','thread/old',{coldRecovery:true}).headroomFallback!
+  expect(await fallback('','',new AbortController().signal,undefined,{save:async()=>{},requestSources:history().slice(0,2)})).toBe('Independent facts')
+  expect(requests.map(body=>body.atomic_summary_cold_recovery)).toEqual(['thread/old','thread/new'])
+})
+
+it('promotes an idle background fallback without leaving its old completion in control', async () => {
+  const source=history(), saved: ArchiveRecord[]=[]
+  let waitingSignal: AbortSignal | undefined
+  const cold=vi.fn(async(_previous,_evidence,signal:AbortSignal)=>{
+    waitingSignal=signal
+    return await new Promise<string>((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))
+  }) as unknown as Summarize
+  cold.batches={countRawTokens:async view=>view.length*50,selectCompletePrefix:async()=>4,consolidate:async batches=>batches}
+  const clone=vi.fn(async()=>{throw new SummaryHeadroomError()}) as unknown as Summarize
+  clone.cached=true;clone.headroomFallback=cold
+  const coordinator=new ContextCompaction('thread',{save:async record=>{saved.push(structuredClone(record))},load:async()=>undefined})
+  coordinator.schedule(source,1000,950,clone)
+  await settle();await settle()
+  expect(waitingSignal).toBeDefined()
+  const urgent=vi.fn(async(_previous,_evidence,_signal,_progress,checkpoints)=>{
+    await checkpoints?.save({version:1,inputKey:'urgent',offset:4,completed:1,summary:'Urgent verified facts',requests:{open:[],resolved:[]}})
+    return 'Urgent verified facts'
+  }) as unknown as Summarize
+  urgent.cached=true;urgent.recoveryPriority=true
+  const latest: UIMessage={id:'pending-latest',role:'user',parts:[{type:'text',text:'New question'}]}
+  await coordinator.recover([...source,latest],1000,urgent,undefined,0,view=>view.some(m=>m.id.startsWith('atomic-context-'))?500:1100)
+  expect(waitingSignal?.aborted).toBe(true)
+  expect(urgent).toHaveBeenCalledTimes(1)
+  expect(coordinator.error).toBeUndefined()
+  expect(coordinator.apply([...source,latest]).at(-1)?.id).toBe(latest.id)
+})
+
+it('does not idle-wait on the foreground request that depends on restored-cache recovery', async () => {
+  const endpoint='http://startup-capacity/v1', end=beginDstarForeground(endpoint)
+  const messages: UIMessage[]=[...history(),{id:'pending',role:'user',parts:[{type:'text',text:'Newest question'}]}]
+  const generated: Record<string,unknown>[]=[]
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+    if(url.endsWith('/status'))return Response.json({loaded:true,atomic_summary:{restored_cache_owner:'thread/u9',restored_cache_hash:await strataHistoryHash(history())}})
+    const body=JSON.parse(init?.body as string)
+    if(url.endsWith('summary-token-count'))return Response.json({input_tokens:900,context_length:16384})
+    generated.push(body)
+    if(body.atomic_summary_clone)return Response.json({error:{code:'atomic_summary_headroom_exhausted'}},{status:409})
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Recovered startup facts',openRequests:[],resolvedRequests:[]})}}]})
+  }))
+  const coordinator=new ContextCompaction('thread',{save:async()=>{},load:async()=>undefined})
+  try {
+    expect(await resumeRestoredStrataSummary(endpoint,'m','thread',messages,messages,1000,coordinator,new AbortController().signal,{coldRecovery:true})).toBe(true)
+    expect(generated[0]).toMatchObject({atomic_summary_clone:'thread/u9',atomic_summary_recovery:true})
+    expect(generated[1]).toMatchObject({atomic_summary_cold_recovery:'thread/u9',atomic_summary_recovery:true})
+    expect(coordinator.apply(messages).at(-1)?.id).toBe('pending')
+  } finally {end()}
+})
+
+it('keeps native foreground priority for the independent Dstar background slot', async () => {
+  const generated: Record<string,unknown>[]=[]
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+    const body=JSON.parse(init?.body as string)
+    if(url.endsWith('summary-token-count'))return Response.json({input_tokens:100,context_length:16384})
+    generated.push(body)
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Dstar background facts',openRequests:[],resolvedRequests:[]})}}]})
+  }))
+  const fallback=summarizeWithStrataCache('http://dstar-background/v1','m','thread/turn',{}).headroomFallback!
+  expect(await fallback('','',new AbortController().signal,undefined,{save:async()=>{},requestSources:history().slice(0,2)})).toBe('Dstar background facts')
+  expect(generated[0]).not.toHaveProperty('atomic_summary_recovery')
+  expect(generated[0]).not.toHaveProperty('atomic_summary_cold_recovery')
+  expect(fallback.recoveryPriority).toBe(false)
 })

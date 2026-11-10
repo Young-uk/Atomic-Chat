@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { readSummaryChoice } from '../summary-stream'
+import { readSummaryChoice, SummaryHeadroomError, checkSummaryHeadroom, SummaryIdleError } from '../summary-stream'
 import type { SummaryInputProgress } from '../context-summary-progress'
 import { useInferenceProgress } from '../inference-progress'
 const stream = (text: string) => new Response(new ReadableStream<Uint8Array>({ start(controller) {
@@ -46,4 +46,19 @@ it('keeps summary generation stable when delayed input heartbeats follow output'
   expect(decoding).toBeGreaterThanOrEqual(0)
   expect(observed.slice(decoding).every(p => p.phase === 'generating')).toBe(true)
   expect(useInferenceProgress.getState()).toBe(before)
+})
+
+it('preserves an explicit headroom refusal across a streamed error', async () => {
+  const response = stream('data: {"error":{"code":"atomic_summary_headroom_exhausted"}}\n\ndata: [DONE]\n\n')
+  await expect(readSummaryChoice(response, new AbortController().signal)).rejects.toBeInstanceOf(SummaryHeadroomError)
+})
+
+it('accepts only the exact legacy Dstar capacity refusal for fallback', () => {
+  expect(() => checkSummaryHeadroom({message:'cached summary exceeds snapshot or context headroom'})).toThrow(SummaryHeadroomError)
+  expect(() => checkSummaryHeadroom({message:'Cache changed; originals retained'})).not.toThrow()
+})
+
+it('preserves only the explicit native idle-admission refusal for retry', async () => {
+  const error={code:'atomic_summary_admission_refused',message:'Recovery is waiting for the active conversation to finish; originals retained'}
+  await expect(readSummaryChoice(stream('data: '+JSON.stringify({error})+'\n\ndata: [DONE]\n\n'),new AbortController().signal)).rejects.toBeInstanceOf(SummaryIdleError)
 })

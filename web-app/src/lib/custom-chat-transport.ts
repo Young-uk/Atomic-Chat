@@ -1658,7 +1658,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const startupView = compaction.apply(original, options.messages.at(-1)?.role === 'user')
           await resumeRestoredStrataSummary(provider.base_url!, modelId!, snapshotThreadId,
             original, projectCompactedMessages(startupView, preparedMessages), compactionContext, compaction, options.abortSignal ?? new AbortController().signal,
-            { selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
+            { coldRecovery: runtime?.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
             estimatePromptTokensHeuristic({ system: systemWithSkills,
               messages: convertToModelMessages(modelToolMessages(projectCompactedMessages(startupView, preparedMessages))),
               tools: activeTools }) + Math.min((getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048))
@@ -1683,7 +1683,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const cacheUser = (original.at(-1)?.role === 'user' ? original.slice(0, -1) : original).findLast(message => message.role === 'user')
           const recoverySummary = runtime?.summaryClone && cacheUser
             ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${cacheUser.id}`, {
-              recovery: true, selectBoundary: cacheBoundaryPlanner(preparedMessages),
+              recovery: true, coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages),
               inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
             : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, recovery: true, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
           return coordinator.recover(original, compactionContext, recoverySummary, options.abortSignal, Math.max(recoveryOverflow, exact ? Number(exact[1]) + Number(exact[2]) - compactionContext : 0), view => {
@@ -1715,7 +1715,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(modelToolMessages(modelView)), tools: activeTools })
           const summaryAdapter = runtime?.summaryClone && cacheUser
               ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
-                { selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
+                { coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
               : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
           if (!summaryAdapter.cached) summaryAdapter.fallbackReason = 'unsupported'
           coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)), summaryAdapter, undefined,

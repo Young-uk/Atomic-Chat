@@ -45,3 +45,37 @@ it('waits for client tools and their final answer even if the provider says stop
   expect(summaryTurnHasToolsPending(message([{ type: 'text', text: 'Searching.' }, { type: 'tool-search', state: 'output-available', output: 'found' }]))).toBe(true)
   expect(summaryTurnHasToolsPending(message([{ type: 'tool-search', state: 'output-available', output: 'found' }, { type: 'text', text: 'The final answer.' }]))).toBe(false)
 })
+
+it('waits for an idle endpoint only for disk-preserved background fallback', async () => {
+  const endpoint = 'http://qa/cold-idle', end = beginDstarForeground(endpoint)
+  const run = vi.fn().mockResolvedValue('done'), paused = vi.fn()
+  const task = runIdleSummaryRequest(endpoint,new AbortController().signal,paused,run,{idleOnly:true})
+  await settle()
+  expect(run).not.toHaveBeenCalled()
+  expect(paused).toHaveBeenCalledWith(true)
+  end()
+  expect(await task).toBe('done')
+  expect(run).toHaveBeenCalledTimes(1)
+})
+it('cancels an idle wait without sending inference or leaking its next notification', async () => {
+  const endpoint = 'http://qa/cancel-idle', end = beginDstarForeground(endpoint)
+  const owner = new AbortController(), run = vi.fn()
+  const task = runIdleSummaryRequest(endpoint,owner.signal,()=>{},run,{idleOnly:true})
+  owner.abort(new Error('history edited'))
+  await expect(task).rejects.toThrow('history edited')
+  end(); await settle()
+  expect(run).not.toHaveBeenCalled()
+})
+
+it('also waits for native foreground activity outside this UI and cleans its timer', async () => {
+  vi.useFakeTimers()
+  try {
+    let busy=true
+    const run=vi.fn().mockResolvedValue('idle')
+    const task=runIdleSummaryRequest('http://qa/server-idle',new AbortController().signal,()=>{},run,{idleOnly:true,serverIdle:async()=>!busy})
+    await settle();expect(run).not.toHaveBeenCalled()
+    busy=false;await vi.advanceTimersByTimeAsync(500)
+    expect(await task).toBe('idle')
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {vi.useRealTimers()}
+})

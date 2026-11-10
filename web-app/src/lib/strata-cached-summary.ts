@@ -1,17 +1,18 @@
+import { noteDstarCacheOwner, latestDstarCacheOwner } from './dstar-summary-idle'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
 import { fetchDstarContext } from './dstar-context-archive'
 import type { UIMessage } from 'ai'
 import { contextSourceFingerprint, type ContextCompaction, type Summarize } from './dstar-context-compaction'
 import type { SummaryInputProgress } from './context-summary-progress'
 import { mergeRequestLedger, requestSources } from './dstar-open-requests'
-import { readSummaryChoice, summaryAdmissionMessage } from './summary-stream'
+import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom } from './summary-stream'
 import type { SummaryAdmission } from './atomic-summary-admission'
 
 /** The conversation is already in the bound native clone. Send only the task,
  * source anchors and authoritative unfinished-work ledger, never replay history.
  * The frozen archive boundary is independent of later foreground messages. */
 export function summarizeWithStrataCache(baseUrl: string, model: string, owner: string,
-  options: { recovery?: boolean; selectBoundary?: (owner: string, messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>; admission?: SummaryAdmission; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
+  options: { recovery?: boolean; coldRecovery?: boolean; selectBoundary?: (owner: string, messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>; admission?: SummaryAdmission; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
   const summarize: Summarize = async (previous, _evidence, signal, progress, checkpoints) => {
     if (!options.recovery) options.admission?.assertAllowed()
     const source = checkpoints?.requestSources ?? []
@@ -39,7 +40,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
         const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/status`, { signal })
         if (!response.ok) return
         const lane = (await response.json()).atomic_summary
-        if (!watching || signal.aborted || lane?.transaction_mode !== 'serial-disk-recovery') return
+        if (!watching || signal.aborted || !['serial-disk-recovery', 'serial-disk-summary'].includes(lane?.transaction_mode)) return
         if (lane.phase === 'saving' || lane.phase === 'restoring')
           options.inputProgress?.({ phase: lane.phase === 'saving' ? 'saving-state' : 'restoring-state' }, signal)
       } catch { /* The generation response remains the source of truth. */ }
@@ -73,6 +74,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
       }
       if (!response.ok) {
         const error = await response.json().catch(() => null)
+        checkSummaryHeadroom(error?.error)
         if (error?.error?.code === 'atomic_summary_admission_refused') {
           options.admission?.refuse()
           throw new Error(summaryAdmissionMessage(error.error.message))
@@ -98,6 +100,13 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
   // its extraction/consolidation functions or sends history to the model.
   summarize.countRawTokens = summarizeBatchesWithDstar(baseUrl, model, { tokenCounting: true }).batches?.countRawTokens
   summarize.cached = true
+  summarize.recoveryPriority = options.recovery === true
+  summarize.headroomFallback = summarizeBatchesWithDstar(baseUrl, model, {
+    tokenCounting: true, recovery: true, idleOnly: !options.recovery, streamProgress: true, inputProgress: options.inputProgress,
+    ...(options.coldRecovery ? { coldRecoveryOwner: options.recovery ? owner : () => latestDstarCacheOwner(baseUrl, owner) } : {}),
+  })
+  summarize.headroomFallback.fallbackReason = 'headroom'
+  summarize.headroomFallback.recoveryPriority = options.recovery === true
   if (options.selectBoundary) summarize.selectBoundary = (messages, boundary, archived, signal) =>
     options.selectBoundary!(owner, messages, boundary, archived, signal)
   return summarize
@@ -112,6 +121,7 @@ export async function strataHistoryHash(messages: UIMessage[]): Promise<string> 
 /** Only attest the completed UI history to its current native owner. No chat
  * text is transmitted; a changed owner cannot acquire this old receipt. */
 export async function bindStrataHistory(baseUrl: string, owner: string, history: UIMessage[]): Promise<void> {
+  noteDstarCacheOwner(baseUrl, owner)
   const historyHash = await strataHistoryHash(history)
   const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/cache-receipt`, {
     method: 'POST', signal: AbortSignal.timeout(3000), headers: { 'Content-Type': 'application/json' },
@@ -155,7 +165,9 @@ export async function resumeRestoredStrataSummary(baseUrl: string, model: string
       lane.rollback_pending || lane.recovery_required) return false
   if (typeof lane.restored_cache_hash !== 'string' ||
       lane.restored_cache_hash !== await strataHistoryHash(completed)) return false
-  const summarize = summarizeWithStrataCache(baseUrl, model, owner, options)
+  // This handoff is awaited before the pending foreground request can run.
+  // It must not wait for that same client's foreground lease to end.
+  const summarize = summarizeWithStrataCache(baseUrl, model, owner, { ...options, recovery: true })
   const raw = coordinator.previewReady(history).filter(message => !message.id.startsWith('atomic-context-'))
   const tokens = await summarize.countRawTokens!(raw, signal)
   if (tokens <= context * 0.6 && promptTokens < context * 0.85) return false

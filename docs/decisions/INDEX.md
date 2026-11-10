@@ -841,3 +841,7 @@ decision is reversed, add a new one that says which record it supersedes.
 
 - [Scheduled preparation](2026-11-10-scheduled-preparation.md) — prepare early and deliver at the occurrence.
 - [Disk recovery and speech output](2026-11-10-disk-recovery-and-speech-output.md) — preserve main state during urgent summary recovery and resume interrupted speech.
+
+- [Recover summaries without cache headroom](2026-11-10-recover-summary-without-cache-headroom.md) — disk-preserved bounded emergency extraction after explicit capacity refusal.
+
+- [Continue background summaries after headroom refusal](2026-11-10-background-summary-headroom-fallback.md) — defer capacity fallback until idle, retaining frozen evidence and cancellation.

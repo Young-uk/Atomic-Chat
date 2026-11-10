@@ -8,6 +8,24 @@ const admissionMessages = new Set([
 export const summaryAdmissionMessage = (message: unknown) => typeof message === 'string' && admissionMessages.has(message)
   ? message : 'Background summary deferred by server safety admission; originals retained'
 
+/** Only this explicit capacity refusal may switch recovery strategies. */
+export class SummaryHeadroomError extends Error {
+  constructor() { super('Summary cache has insufficient context headroom; originals retained') }
+}
+export function checkSummaryHeadroom(error: { code?: unknown; message?: unknown } | undefined): void {
+  // Dstar's existing isolated-slot guard predates structured capacity codes.
+  if (error?.code === 'atomic_summary_headroom_exhausted' ||
+      error?.message === 'cached summary exceeds snapshot or context headroom') throw new SummaryHeadroomError()
+}
+
+export class SummaryIdleError extends Error {
+  constructor() { super('Recovery is waiting for the active conversation to finish; originals retained') }
+}
+export function checkSummaryIdle(error: { code?: unknown; message?: unknown } | undefined): void {
+  if (error?.code === 'atomic_summary_admission_refused' &&
+      error.message === 'Recovery is waiting for the active conversation to finish; originals retained') throw new SummaryIdleError()
+}
+
 /** Read only this summary's response; no shared engine polling or foreground usage updates. */
 export async function readSummaryChoice(response: Response, signal: AbortSignal,
   progress?: (value?: SummaryInputProgress) => void) {
@@ -32,6 +50,8 @@ export async function readSummaryChoice(response: Response, signal: AbortSignal,
     if (raw === '[DONE]') { done = true; return }
     const value = JSON.parse(raw)
     if (value.error) {
+      checkSummaryHeadroom(value.error)
+      checkSummaryIdle(value.error)
       if (value.error.code === 'atomic_summary_admission_refused')
         throw new Error(summaryAdmissionMessage(value.error.message))
       throw new Error('Summary stream failed; originals retained')

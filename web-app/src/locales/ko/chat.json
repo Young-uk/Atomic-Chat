@@ -68,6 +68,7 @@
     "archived": "원문이 대화 보관 파일에 저장되어 있어요.",
     "retained": "원문은 그대로 보존되어 있어요.",
     "background": "백그라운드에서 처리하며 서버 대기 시간도 포함해요.",
+    "fallback_headroom": "비상 요약 · 캐시 컨텍스트 공간 부족",
     "method_clone": "대화 캐시 활용 요약",
     "method_segments": "구간 분할 요약",
     "fallback_images": "이미지 입력 포함 · 텍스트 복제 불가",
