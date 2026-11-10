@@ -33,9 +33,15 @@ export function PersonalTaskDeliveryProvider() {
           let messageId: string | undefined
           try {
             if (row.threadId) {
-              const message = scheduledResultMessage(row)
               const saved = await service.messages().fetchMessages(row.threadId)
-              if (!saved.some(existing => existing.id === message.id)) {
+              const existing = saved.find(message => message.id === `scheduled-${row.id}`)
+              const session = useChatSessions.getState().sessions?.[row.threadId]
+              const afterUserId = session?.chat.messages.findLast(message => message.role === 'user')?.id ??
+                useMessages.getState().getMessages(row.threadId).findLast(message => message.role === 'user')?.id ??
+                saved.findLast(message => message.role === 'user')?.id
+              // Retries must replay the persisted anchor, not today's active turn.
+              const message = existing ?? scheduledResultMessage(row, afterUserId)
+              if (!existing) {
                 await trackThreadMessageWrite(row.threadId, service.messages().createMessage(message))
                 // Some legacy storage adapters return optimistically even
                 // after a write error; read back before acknowledging delivery.

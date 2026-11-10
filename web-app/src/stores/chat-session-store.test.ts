@@ -1,4 +1,5 @@
-import type { Chat, UIMessage } from '@ai-sdk/react'
+import { Chat, type UIMessage } from '@ai-sdk/react'
+import type { UIMessageChunk } from 'ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CustomChatTransport } from '@/lib/custom-chat-transport'
 import { useChatSessions } from '@/stores/chat-session-store'
@@ -152,4 +153,38 @@ describe('reply-ready notification', () => {
     expect(useChatSessions.getState().sessions['thread-a'].status).toBe('error')
     expect(notify).not.toHaveBeenCalled()
   })
+})
+
+
+it('shows a scheduled notice during a real SDK stream without duplicating the active response', async () => {
+  useChatSessions.getState().clearSessions()
+  let controller!: ReadableStreamDefaultController<UIMessageChunk>
+  const stream = new ReadableStream<UIMessageChunk>({ start(value) { controller = value } })
+  const chat = new Chat<UIMessage>({ id: 'scheduled-stream', transport: {
+    sendMessages: async () => stream, reconnectToStream: async () => null,
+  } })
+  useChatSessions.getState().ensureSession('scheduled-stream', {} as CustomChatTransport, () => chat)
+  useChatSessions.getState().setRequestActive('scheduled-stream', true)
+  const sending = chat.sendMessage({ text: 'Question' })
+  controller.enqueue({ type: 'start', messageId: 'active-answer' })
+  controller.enqueue({ type: 'start-step' })
+  controller.enqueue({ type: 'text-start', id: 'text' })
+  controller.enqueue({ type: 'text-delta', id: 'text', delta: 'First' })
+  await vi.waitFor(() => expect(chat.messages.at(-1)?.id).toBe('active-answer'))
+  const reminder: UIMessage = { id: 'scheduled-notice', role: 'assistant', metadata: { scheduled: true },
+    parts: [{ type: 'text', text: 'Reminder' }] }
+  useChatSessions.getState().upsertMessage('scheduled-stream', reminder)
+  expect(chat.messages).toContainEqual(reminder)
+  expect(chat.messages.at(-1)?.id).toBe('active-answer')
+  controller.enqueue({ type: 'text-delta', id: 'text', delta: ' and last' })
+  controller.enqueue({ type: 'text-end', id: 'text' })
+  controller.enqueue({ type: 'finish-step' })
+  controller.enqueue({ type: 'finish', finishReason: 'stop' })
+  controller.close()
+  await sending
+  expect(chat.messages.filter(message => message.id === 'active-answer')).toHaveLength(1)
+  expect(chat.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ type: 'text', text: 'First and last' }))
+  expect(chat.messages).toContainEqual(reminder)
+  useChatSessions.getState().setRequestActive('scheduled-stream', false)
+  useChatSessions.getState().clearSessions()
 })

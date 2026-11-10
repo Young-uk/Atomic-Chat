@@ -1,3 +1,4 @@
+import { scheduledMessagesForModel } from './personal-task-delivery'
 import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history-plan'
 import i18n from '@/i18n/setup'
 import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
@@ -936,6 +937,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
   }
 
   async sendMessages(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0]): Promise<ReadableStream<UIMessageChunk>> {
+    // UI delivery stays immediate; inference gets a stable whole-turn order.
+    options = { ...options, messages: scheduledMessagesForModel(options.messages) }
     // Client tool continuations belong to the original engine, even if a new
     // picker selection is waiting. A new user turn/regenerate starts afresh.
     if (options.trigger === 'regenerate-message' || options.messages.at(-1)?.role === 'user') {

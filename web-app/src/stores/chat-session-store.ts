@@ -165,10 +165,16 @@ export const useChatSessions = create<ChatSessionState>((set, get) => ({
     const existing = get().sessions[sessionId];
     if (!existing) return;
 
-    existing.chat.messages = [
-      ...existing.chat.messages.filter((item) => item.id !== message.id),
-      message,
-    ];
+    const messages = existing.chat.messages.filter((item) => item.id !== message.id);
+    const last = messages.at(-1);
+    const scheduled = (message.metadata as { scheduled?: boolean } | undefined)?.scheduled === true;
+    if (scheduled && (get().requestActive[sessionId] || isSessionBusy(existing)) && last?.role === 'assistant') {
+      // The SDK updates its active response only while it is last. Appending
+      // a notice there makes the next delta push a duplicate response ID.
+      existing.chat.messages = [...messages.slice(0, -1), message, last];
+    } else {
+      existing.chat.messages = [...messages, message];
+    }
   },
   updateStatus: (sessionId, status) => {
     set((state) => {

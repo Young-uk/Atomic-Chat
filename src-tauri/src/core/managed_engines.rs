@@ -313,7 +313,7 @@ impl Environment {
                 "--native", first.to_string_lossy(),
                 "--ple-gguf", self.dstar_root.join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf").to_string_lossy(),
                 "--expert-profile", root.join("feature-integration/engine-priority-v7/metal/data/expert-profile.bin").to_string_lossy(),
-                "--expert-cache", "64", "--prefill", "2048", "--spec", "2",
+                "--expert-cache", "64", "--prefill", "4096", "--spec", "2",
                 "--max-context", context.to_string(), "--mmap-experts", "--prompt-cache", "6",
                 "--conversation-cache-mib", "1024", "--kv", "int8", "--suffix-draft", "0", "--vision"
             ],
@@ -323,17 +323,26 @@ impl Environment {
             "effort_position": "end",
             "log": root.join("strata-atomic.log"),
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
-            // This output-policy-only upgrade keeps the exact native/session layout.
+            // Reviewed output-policy and cache-reserve upgrades keep the native/session layout.
             "atomic_disk_session_reviewed_upgrades": if context == DEFAULT_STRATA_CONTEXT { serde_json::json!([
     {
         "current_native": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-        "current_model": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
+        "current_model": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
         "previous": {
             "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
             "atomic_summary_expected_backend_sha256": "4d0753e9ecadd6d28788ef9f7f55df687b50bd531ff7064662ee2003262029fe"
         }
+    },
+{
+    "current_native": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
+    "current_model": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
+    "previous": {
+        "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
+        "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
+        "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
     }
+}
 ]) } else { serde_json::json!([]) },
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
@@ -346,15 +355,17 @@ impl Environment {
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
             "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "STRATA_METAL_PROMPT_EXPERTS": "v2", "STRATA_METAL_F16": "0",
-                "STRATA_METAL_PROMPT_CHUNK": "2048", "STRATA_ROUTE_TAIL_SKIP": "0",
+                "STRATA_METAL_PROMPT_CHUNK": "4096", "STRATA_ROUTE_TAIL_SKIP": "0",
                 "STRATA_PREFILL_CPU_SHARE": "0",
+                // Measured on the personal 64 GiB M1 Max; keep automatic arena sizing.
+                "STRATA_METAL_KEEP_FREE_GB": "8",
                 "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192"
             },
             "vision": {
@@ -1020,16 +1031,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_policy_bridge_is_exact_and_context_scoped() {
+    fn cache_reserve_bridges_are_exact_and_context_scoped() {
         let env = Environment::personal(PathBuf::from("/home/test/dstar"));
         let cfg = env.strata_config(DEFAULT_STRATA_CONTEXT);
         let upgrades = cfg["atomic_disk_session_reviewed_upgrades"].as_array().unwrap();
-        assert_eq!(upgrades.len(), 1);
+        assert_eq!(upgrades.len(), 2);
         let bridge = &upgrades[0];
         assert_eq!(bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
         assert_eq!(bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
         assert_eq!(bridge["previous"]["atomic_summary_expected_native_sha256"], cfg["atomic_summary_expected_native_sha256"]);
-        assert_eq!(bridge["previous"]["atomic_summary_expected_model_fingerprint"], cfg["atomic_summary_expected_model_fingerprint"]);
+        assert_eq!(bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0");
+        let reserve_bridge = &upgrades[1];
+        assert_eq!(reserve_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
+        assert_eq!(reserve_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
+        assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0");
+        assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_backend_sha256"], cfg["atomic_summary_expected_backend_sha256"]);
         assert_eq!(bridge["previous"]["atomic_summary_expected_backend_sha256"], "4d0753e9ecadd6d28788ef9f7f55df687b50bd531ff7064662ee2003262029fe");
         for context in [16_384, 65_537, 131_072, 262_144] {
             assert!(env.strata_config(context)["atomic_disk_session_reviewed_upgrades"].as_array().unwrap().is_empty());
@@ -1334,6 +1350,10 @@ mod tests {
         assert_eq!(config["port"], 18080);
         assert_eq!(config["model_name"], "ista-iq3-xxs");
         assert_eq!(config["effort_position"], "end");
+        assert_eq!(config["env"]["STRATA_METAL_KEEP_FREE_GB"], "8");
+        assert_eq!(config["env"]["STRATA_METAL_PROMPT_CHUNK"], "4096");
+        assert!(config["env"].get("STRATA_METAL_ARENA_GB").is_none());
+        assert!(config["env"].get("STRATA_METAL_LEAVE_SHARE").is_none());
         assert_eq!(
             config["exe"],
             env.strata_root
@@ -1391,7 +1411,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0"
+            "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
@@ -1401,6 +1421,7 @@ mod tests {
         let args = config["args"].as_array().unwrap();
         for pair in [
             ["--max-context", "65536"],
+            ["--prefill", "4096"],
             ["--prompt-cache", "6"],
             ["--conversation-cache-mib", "1024"],
         ] {

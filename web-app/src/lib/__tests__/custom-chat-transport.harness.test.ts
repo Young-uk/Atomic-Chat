@@ -2244,3 +2244,38 @@ it.each((['strata', 'dstar'] as const).flatMap(engine => [true, false].map(probe
     expect(JSON.stringify(calls[0][0].prompt)).toContain('[]')
   } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
 })
+
+
+it.each(['strata', 'dstar'] as const)('keeps scheduled delivery outside an unfinished $engine tool turn in the actual model request (%s)', async (engine) => {
+  vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'false')
+  const provider = engine === 'strata' ? STRATA_PROVIDER : 'dstar'
+  const modelInfo = { id: engine === 'strata' ? STRATA_MODEL : 'qwen3.8-flash-next-chat', capabilities: ['tools'], settings: {} } as Model
+  useModelProvider.setState({ selectedProvider: provider, selectedModel: modelInfo,
+    providers: [{ provider, active: true, api_key: '', base_url: `http://127.0.0.1:${engine === 'strata' ? 18080 : 8010}/v1`, models: [modelInfo], settings: [] }] })
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Capability probe unavailable')))
+  const model = fakeStreamingModel([
+    { type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'answer' },
+    { type: 'text-delta', id: 'answer', delta: 'ok' }, { type: 'text-end', id: 'answer' },
+    { type: 'finish', finishReason: 'stop', usage: { inputTokens: 100, outputTokens: 1, totalTokens: 101 } },
+  ])
+  vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+  const assistant = { id: 'answer', role: 'assistant', parts: [{ type: 'step-start' },
+    { type: 'tool-personal_browser', toolCallId: 'call', state: 'output-available', input: { action: 'read' }, output: 'tool-result' },
+    { type: 'step-start' }, { type: 'text', text: 'Final answer' }] } as UIMessage
+  const reminder: UIMessage = { id: 'scheduled-run', role: 'assistant', parts: [{ type: 'text', text: 'REMINDER' }],
+    metadata: { scheduled: true, scheduled_after_user_id: userMessage.id, scheduled_order: 1 } }
+  const next: UIMessage = { id: 'next-user', role: 'user', parts: [{ type: 'text', text: 'Next question' }] }
+  try {
+    for (const messages of [[userMessage, assistant, reminder], [userMessage, reminder, assistant, next], [userMessage, assistant, reminder, next]]) {
+      await readChunks(await new CustomChatTransport(undefined, 'reminder-cache').sendMessages({
+        chatId: 'reminder-cache', messages, abortSignal: undefined, trigger: 'submit-message', messageId: undefined,
+      }) as ReadableStream<Record<string, unknown>>)
+    }
+    const calls = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls
+    expect(calls).toHaveLength(3)
+    expect(JSON.stringify(calls[0][0].prompt)).not.toContain('REMINDER')
+    expect(JSON.stringify(calls[0][0].prompt)).toContain('tool-result')
+    expect(calls[1][0].prompt).toEqual(calls[2][0].prompt)
+    expect(JSON.stringify(calls[1][0].prompt)).toContain('REMINDER')
+  } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+})

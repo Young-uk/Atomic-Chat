@@ -851,3 +851,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [2026-11-10 — Let summaries finish within real context capacity](2026-11-10-summary-output-uses-context-room.md)
 
 - **2026-11-10** — [Preserve cached memory inside retained dialogue](2026-11-10-preserve-cached-memory-in-retained-dialogue.md)
+
+- **2026-11-10** — [Anchor scheduled delivery after whole model turns](2026-11-10-anchor-scheduled-delivery-after-whole-turns.md)
+
+- **2026-11-10** — [Use measured personal Strata prompt chunks and memory reserve](2026-11-10-measured-personal-strata-cache-reserve.md)
