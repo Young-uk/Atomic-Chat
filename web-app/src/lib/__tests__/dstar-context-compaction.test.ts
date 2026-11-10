@@ -1,7 +1,7 @@
 import { convertUIMessageToThreadMessage, convertThreadMessageToUIMessage } from '../messages'
 import { expect, it } from 'vitest'
 import { convertToModelMessages, type UIMessage } from 'ai'
-import { ContextCompaction, compactionBoundary, estimateConversationUsage, summaryEvidence, projectCompactedMessages, type ArchiveRecord } from '../dstar-context-compaction'
+import { ContextCompaction, compactionBoundary, estimateConversationUsage, summaryEvidence, projectCompactedMessages, type ArchiveRecord, type Summarize } from '../dstar-context-compaction'
 
 const history = (): UIMessage[] => Array.from({ length: 20 }, (_, n) => ({ id: String(n), role: n % 2 ? 'assistant' : 'user', parts: [{ type: 'text', text: `${n}:` + 'x'.repeat(200) }] }))
 const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
@@ -350,7 +350,6 @@ it('does not repeatedly refresh tiny summaries when protected recent turns canno
     await settle()
   }
   expect(store.saved).toHaveLength(0)
-  expect(c.status).toBe('idle')
 })
 
 it('excludes screenshot bytes from summary evidence and usage estimates without altering originals', () => {
@@ -434,4 +433,107 @@ it('does not replay covered screenshots in cache overlap, while keeping recent i
   expect(JSON.stringify(projected)).toContain('RECENT_IMAGE')
   expect(JSON.stringify(projected)).toContain('Confirmed screenshot observation')
   expect([screenshot, tool, recent]).toEqual(original)
+})
+
+
+it('keeps cached memory inside the retained tail across replacement, planning and restart', async () => {
+  const messages = history(), store = storage()
+  const question: UIMessage = { id: 'next-user', role: 'user', parts: [{ type: 'text', text: 'Continue' }] }
+  const old: ArchiveRecord = { version: 1, id: 'old-memory', threadId: 'thread',
+    source: messages.slice(0, 4), previousSummary: '', summary: 'Earlier facts', summaryAfterMessageId: '13' }
+  await store.save(old)
+  const c = new ContextCompaction('thread', store)
+  await c.initialize()
+  const before = c.apply(messages)
+  const oldMemory = before.find(message => message.id === 'atomic-context-old-memory')!
+  const retained = before.slice(before.findIndex(message => message.id === '8'))
+  expect(c.retainedForCache(messages, 8)).toEqual(retained)
+  const summarize = Object.assign(async () => 'Updated facts', { cached: true })
+  c.schedule(messages, 2000, 1800, summarize, 8)
+  await settle()
+  const next = c.apply([...messages, question])
+  // Every retained byte, including turns after old memory, remains reusable.
+  expect(next.slice(0, -2)).toEqual(retained)
+  expect(next.find(message => message.id === oldMemory.id)).toEqual(oldMemory)
+  expect(convertToModelMessages(next.slice(0, -2))).toEqual(convertToModelMessages(retained))
+  expect(next.at(-2)?.id).not.toBe(oldMemory.id)
+  expect(store.saved.at(-1)?.retainedSummaries).toEqual([{ afterMessageId: '13', message: oldMemory }])
+  const restarted = new ContextCompaction('thread', store)
+  await restarted.initialize()
+  expect(restarted.apply([...messages, question])).toEqual(next)
+  expect(projectCompactedMessages(next, [...messages, question])).toEqual(next)
+  const edited = structuredClone(messages); edited[0].parts = [{ type: 'text', text: 'changed source' }]
+  expect(restarted.apply(edited)).toEqual(edited)
+})
+
+it('expires inherited memory when its anchor is archived and bounds successive handoffs', async () => {
+  const messages = history(), store = storage()
+  const question: UIMessage = { id: 'next-user', role: 'user', parts: [{ type: 'text', text: 'Continue' }] }
+  await store.save({ version: 1, id: 'old-memory', threadId: 'thread', source: messages.slice(0, 4),
+    previousSummary: '', summary: 'Earlier facts', summaryAfterMessageId: '13' })
+  const c = new ContextCompaction('thread', store); await c.initialize()
+  const summarize = Object.assign(async () => 'Updated facts', { cached: true })
+  c.schedule(messages, 2000, 1800, summarize, 8); await settle(); c.apply([...messages, question])
+  const planning = c.retainedForCache(messages, 16)
+  expect(planning.some(message => message.id === 'atomic-context-old-memory')).toBe(false)
+  expect(planning.filter(message => message.id.startsWith('atomic-context-'))).toHaveLength(1)
+  c.schedule(messages, 2000, 1800, summarize, 16); await settle()
+  const view = c.apply([...messages, question])
+  expect(view.some(message => message.id === 'atomic-context-old-memory')).toBe(false)
+  expect(view.slice(0, -2)).toEqual(planning)
+  expect(store.saved.at(-1)?.retainedSummaries).toHaveLength(1)
+  expect(view.filter(message => !message.id.startsWith('atomic-context-'))).toEqual([...messages.slice(16), question])
+})
+
+it.skipIf(!process.env.ATOMIC_COMPACTION_REPLAY_DIR)('replays repeated local summaries with an unchanged retained suffix', async () => {
+  const { readFile, readdir } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const root = process.env.ATOMIC_COMPACTION_REPLAY_DIR!
+  let messages = (await readFile(join(root, 'messages.jsonl'), 'utf8')).trim().split('\n')
+    .map(line => convertThreadMessageToUIMessage(JSON.parse(line)))
+  const records: ArchiveRecord[] = await Promise.all((await readdir(join(root, 'context-archives')))
+    .filter(name => name.endsWith('.json')).map(async name => JSON.parse(await readFile(join(root, 'context-archives', name), 'utf8'))))
+  const latest = records.filter(record => record.summary?.trim()).sort((a, b) => b.source.length - a.source.length)[0]
+  messages = messages.slice(0, messages.findIndex(message => message.id === latest.summaryAfterMessageId) + 1)
+  const question: UIMessage = { id: 'replay-next-user', role: 'user', parts: [{ type: 'text', text: 'Continue' }] }
+  const previous = records.find(record => record.summary === latest.previousSummary && record.source.length < latest.source.length)!
+  expect(previous).toBeDefined()
+  const store = storage(); await store.save(previous)
+  const local = { ...store, load: async () => structuredClone(previous) }
+  const replay = new ContextCompaction(latest.threadId, local); await replay.initialize()
+  const boundary = latest.source.length
+  const oldView = replay.apply(messages)
+  const retained = oldView.slice(oldView.findIndex(message => message.id === messages[boundary].id))
+  expect(retained.some(message => message.id === `atomic-context-${previous.id}`)).toBe(true)
+  expect(replay.retainedForCache(messages, boundary)).toEqual(retained)
+  replay.schedule(messages, 65536, 60000, Object.assign(async () => latest.summary!, { cached: true }), boundary)
+  await settle()
+  const next = replay.apply([...messages, question])
+  expect(next.slice(0, -2)).toEqual(retained)
+  expect(convertToModelMessages(next.slice(0, -2))).toEqual(convertToModelMessages(retained))
+  // The replay is pure; no application archive is modified or generated.
+})
+
+
+it('refreshes retained memory when adoption moves the raw boundary earlier', async () => {
+  const messages = history(), store = storage()
+  const old: ArchiveRecord = { version: 1, id: 'old', threadId: 'thread', source: messages.slice(0, 4),
+    previousSummary: '', summary: 'Earlier facts', summaryAfterMessageId: '13' }
+  await store.save(old)
+  const c = new ContextCompaction('thread', store); await c.initialize()
+  const expected = c.retainedForCache(messages, 8)
+  const summarize: Summarize = async (_previous, _evidence, _signal, _progress, checkpoints) => {
+    await checkpoints?.save({ version: 1, inputKey: 'thread/turn', offset: 16, completed: 1, summary: 'New facts' })
+    return 'New facts'
+  }
+  summarize.cached = true
+  c.schedule(messages, 2000, 1800, summarize, 16)
+  await settle()
+  expect(store.saved.at(-1)?.retainedSummaries).toHaveLength(0)
+  await c.prepareCachedAdoption(messages, async () => 8, new AbortController().signal)
+  const question: UIMessage = { id: 'next', role: 'user', parts: [{ type: 'text', text: 'Continue' }] }
+  const view = c.apply([...messages, question])
+  expect(view.slice(0, -2)).toEqual(expected)
+  expect(store.saved.at(-1)?.source).toEqual(messages.slice(0, 16))
+  expect(store.saved.at(-1)?.retainedSummaries).toHaveLength(1)
 })

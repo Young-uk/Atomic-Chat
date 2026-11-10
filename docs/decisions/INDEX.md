@@ -849,3 +849,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [2026-11-10 — Import window and profile fixes](2026-11-10-select-upstream-window-and-profile-fixes.md)
 
 - [2026-11-10 — Let summaries finish within real context capacity](2026-11-10-summary-output-uses-context-room.md)
+
+- **2026-11-10** — [Preserve cached memory inside retained dialogue](2026-11-10-preserve-cached-memory-in-retained-dialogue.md)

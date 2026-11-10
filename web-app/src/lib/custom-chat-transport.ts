@@ -1626,7 +1626,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       (owner: string, history: UIMessage[], boundary: number, archived: number, signal: AbortSignal) =>
         planStrataHistoryBoundary(provider.base_url!, modelId!, owner, history, boundary, archived, signal,
           retained => {
-            const projected = projectCompactedMessages(retained, modelView,
+            const boundary = history.findIndex(message => message.id === retained[0]?.id)
+            const cacheView = compaction && boundary >= 0 ? compaction.retainedForCache(history, boundary) : retained
+            const projected = projectCompactedMessages(cacheView, modelView,
               history.slice(0, summarizedThrough).map(message => message.id))
             const wire = convertToModelMessages(modelToolMessages(applyPolicies(projected, history)))
             return historyPlanMessages(dropSystemForTools && systemWithSkills
