@@ -862,3 +862,6 @@ decision is reversed, add a new one that says which record it supersedes.
 - **2026-11-10** — [Scale the personal conversation cache with context](2026-11-10-scale-conversation-cache-with-context.md)
 
 - [Confirmed busy-engine shutdown](confirmed-managed-engine-stop.md) — Explicit interruption with owned-process cleanup.
+- **2026-11-11** — [Recover Personal tool calls and read real diagnostic logs](2026-11-11-personal-tool-routing-and-logs.md)
+
+- [Isolate local auxiliary work and spill displaced conversation state](2026-11-11-isolated-auxiliary-and-conversation-spill.md)

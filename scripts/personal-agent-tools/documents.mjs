@@ -1,6 +1,7 @@
+import { homedir } from 'node:os'
 import { personalWorkdir } from './verify.mjs'
-import { realpath, stat, readFile } from 'node:fs/promises'
-import { resolve, relative, isAbsolute, sep, extname } from 'node:path'
+import { realpath, stat, readFile, open } from 'node:fs/promises'
+import { resolve, relative, isAbsolute, sep, extname, join } from 'node:path'
 import { pdfExtractor } from './agent-source/documents/pdf-extractor.mjs'
 import { docxExtractor } from './agent-source/documents/docx-extractor.mjs'
 import { docExtractor } from './agent-source/documents/doc-extractor.mjs'
@@ -13,6 +14,7 @@ import { validateZipDirectory } from './agent-source/suite/tools/os/archive/arch
 
 const extractors = { pdf: pdfExtractor, docx: docxExtractor, doc: docExtractor, xlsx: xlsxExtractor, pptx: pptxExtractor, odt: odtExtractor, rtf: rtfExtractor, plain: plainTextExtractor }
 export async function documentCall(args, workspace, threadId) {
+  if (args.action === 'logs') return logTail(args)
   if (args.action !== 'read' || typeof args.path !== 'string' || !args.path.trim()) throw new Error('A document path is required')
   const root = await realpath(workspace)
   const path = await realpath(resolve(personalWorkdir(root, threadId), args.path))
@@ -31,4 +33,43 @@ export async function documentCall(args, workspace, threadId) {
   if (['docx', 'xlsx', 'pptx', 'odt'].includes(format)) validateZipDirectory(data)
   const result = await extractor({ data, sourcePath: path, pagesFrom: args.pagesFrom, pagesTo: args.pagesTo, maxPages: 100 })
   return { ...result, path, text: result.text.slice(0, 40000), truncated: result.text.length > 40000, untrusted: true }
+}
+
+// Fixed local diagnostic sources, separate from general workspace reads.
+export async function logTail(args, home = homedir()) {
+  const support = join(home, 'Library/Application Support')
+  const sources = {
+    app: join(support, 'Atomic Chat/data/logs/app.log'),
+    core: join(support, 'Atomic Chat/data/atomic-core/logs/core.log'),
+    dstar: join(support, 'dstar/logs/atomic-dstar.log'),
+    strata: join(support, 'dstar/logs/atomic-strata.log'),
+    strata_native: join(home, 'strata-iq2-comparison-nov08/strata-atomic.log'),
+    worker: join(support, 'Atomic Chat Personal Tools/worker.log'),
+  }
+  if (!Object.hasOwn(sources, args.source)) throw new Error(`Choose a log source: ${Object.keys(sources).join(', ')}`)
+  if (['path', 'format', 'pagesFrom', 'pagesTo'].some(key => args[key] !== undefined)) throw new Error('Log reads use source and lines, not document paths or formats')
+  const lines = args.lines ?? 100
+  if (!Number.isSafeInteger(lines) || lines < 1 || lines > 500) throw new Error('Log lines must be between 1 and 500')
+  const path = sources[args.source]
+  // Resolve the expected parent independently so a file symlink cannot turn
+  // the diagnostic reader into an arbitrary host-file reader.
+  const parent = await realpath(resolve(path, '..'))
+  const actual = await realpath(path)
+  if (actual !== resolve(parent, path.slice(path.lastIndexOf('/') + 1))) throw new Error('Log file symlinks are not supported')
+  const handle = await open(actual, 'r')
+  try {
+    const info = await handle.stat()
+    if (!info.isFile()) throw new Error('Log must be a regular file')
+    const start = Math.max(0, info.size - 256 * 1024)
+    const data = Buffer.alloc(info.size - start)
+    const { bytesRead } = await handle.read(data, 0, data.length, start)
+    let entries = data.subarray(0, bytesRead).toString('utf8').split(/\r?\n/)
+    if (start) entries.shift()
+    if (entries.at(-1) === '') entries.pop()
+    const truncated = start > 0 || entries.length > lines
+    const text = entries.slice(-lines).join('\n')
+      .replace(/(Bearer\s+)[A-Za-z0-9._~+\/=-]+/gi, '$1[redacted]')
+      .replace(/((?:api[_-]?key|authorization|access[_-]?token)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1[redacted]')
+    return { source: args.source, path, text, truncated, untrusted: true }
+  } finally { await handle.close() }
 }
