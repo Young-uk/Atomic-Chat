@@ -26,8 +26,9 @@ import remarkGfm from 'remark-gfm'
 // Reasoning uses its own renderer. Match the answer renderer's single-tilde
 // policy so conversational tildes and numeric ranges stay literal here too.
 // Keep explicit ~~strikethrough~~ and all other default plugins unchanged.
-const REASONING_GFM: NonNullable<ComponentProps<typeof Streamdown>['remarkPlugins']>[number] =
-  [remarkGfm, { singleTilde: false }]
+const REASONING_GFM: NonNullable<
+  ComponentProps<typeof Streamdown>['remarkPlugins']
+>[number] = [remarkGfm, { singleTilde: false }]
 const REASONING_REMARK_PLUGINS = Object.values({
   ...defaultRemarkPlugins,
   gfm: REASONING_GFM,
@@ -37,6 +38,7 @@ type ReasoningContextValue = {
   isStreaming: boolean
   isOpen: boolean
   preferPlainText: boolean
+  isPreview: boolean
   setIsOpen: (open: boolean) => void
   duration: number | undefined
 }
@@ -57,6 +59,10 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   defaultOpen?: boolean
   onOpenChange?: (open: boolean) => void
   duration?: number
+  /** Bounded automatic preview; an explicit reader toggle takes precedence. */
+  livePreview?: boolean
+  /** Keep automatic previews only while their enclosing assistant turn runs. */
+  isTurnActive?: boolean
 }
 
 const MS_IN_S = 1000
@@ -93,6 +99,8 @@ export const Reasoning = memo(
     isStreaming = false,
     open,
     defaultOpen = true,
+    livePreview = false,
+    isTurnActive = isStreaming,
     onOpenChange,
     duration: durationProp,
     children,
@@ -103,7 +111,16 @@ export const Reasoning = memo(
       defaultProp: defaultOpen,
       onChange: onOpenChange,
     })
-    const findRef = useFindDisclosure(isOpen, setIsOpen)
+    const [userOpen, setUserOpen] = useState<boolean | undefined>()
+    const [sawPreview, setSawPreview] = useState(livePreview && isStreaming)
+    if (livePreview && isStreaming && !sawPreview) setSawPreview(true)
+    const isPreview =
+      livePreview &&
+      isTurnActive &&
+      open === undefined &&
+      userOpen === undefined &&
+      (isStreaming || sawPreview)
+    const visible = isPreview || isOpen
     const [duration, setDuration] = useControllableState({
       prop: durationProp,
       defaultProp: isStreaming ? 1 : undefined,
@@ -152,24 +169,37 @@ export const Reasoning = memo(
       }
     }, [isStreaming, startTime, setDuration, activeElapsed])
 
-    const handleOpenChange = (newOpen: boolean) => {
-      if (!isStreaming && newOpen && !isOpen) setReaderReopened(true)
-      setIsOpen(newOpen)
-    }
+    const handleOpenChange = useCallback(
+      (newOpen: boolean) => {
+        if (!isStreaming && newOpen && !visible) setReaderReopened(true)
+        setUserOpen(newOpen)
+        setIsOpen(newOpen)
+      },
+      [isStreaming, visible, setIsOpen]
+    )
+    const findRef = useFindDisclosure(visible, handleOpenChange)
 
     const contextValue = useMemo(
       () => ({
         isStreaming,
-        isOpen,
-        // A live trace stays as the lightweight streaming render after the
-        // model finishes. Keeping it open preserves the page height and avoids
-        // a scroll jump; closing and opening it explicitly opts into Markdown.
+        isOpen: visible,
+        isPreview,
+        // Keep a phase lightweight while the enclosing turn continues.
+        // Automatic previews collapse at turn end; an explicit reader open
+        // opts into the full trace and survives completion.
         preferPlainText:
           streamedThisMountRef.current && !isStreaming && !readerReopened,
-        setIsOpen,
+        setIsOpen: handleOpenChange,
         duration,
       }),
-      [isStreaming, isOpen, readerReopened, setIsOpen, duration]
+      [
+        isStreaming,
+        visible,
+        isPreview,
+        readerReopened,
+        handleOpenChange,
+        duration,
+      ]
     )
 
     return (
@@ -177,9 +207,14 @@ export const Reasoning = memo(
         <Collapsible
           ref={findRef}
           data-atomic-find-reasoning
-          className={cn('not-prose mb-4', className)}
+          className={cn(
+            'not-prose mb-4',
+            livePreview &&
+              'opacity-[0.67] transition-opacity hover:opacity-100 focus-within:opacity-100',
+            className
+          )}
           onOpenChange={handleOpenChange}
-          open={isOpen}
+          open={visible}
           {...props}
         >
           {children}
@@ -196,17 +231,19 @@ export const ReasoningViewport = ({
   className,
   ...props
 }: ComponentProps<'div'>) => {
-  const { isOpen } = useReasoning()
+  const { isOpen, isPreview } = useReasoning()
   return (
     <div
       {...props}
       data-reasoning-viewport
       data-state={isOpen ? 'open' : 'closed'}
-      data-bounded={!isOpen}
+      data-bounded={!isOpen || isPreview}
       className={cn(
         'relative w-full min-w-0 text-sm transition-[margin] duration-150 ease-out motion-reduce:transition-none',
         isOpen
-          ? 'mt-2 h-auto overflow-visible'
+          ? isPreview
+            ? 'mt-1 max-h-40 overflow-y-auto overscroll-y-auto'
+            : 'mt-2 h-auto overflow-visible'
           : 'mt-0 max-h-0 overflow-hidden',
         className
       )}
@@ -237,12 +274,13 @@ export const ReasoningTrigger = memo(
     getThinkingMessage = defaultGetThinkingMessage,
     ...props
   }: ReasoningTriggerProps) => {
-    const { isStreaming, isOpen, duration } = useReasoning()
+    const { isStreaming, isOpen, isPreview, duration } = useReasoning()
 
     return (
       <CollapsibleTrigger
         className={cn(
           'flex min-h-6 w-full min-w-0 items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground',
+          isPreview && 'text-xs',
           className
         )}
         {...props}
@@ -282,7 +320,7 @@ export const ReasoningContent = memo(
     isStreaming = false,
     ...props
   }: ReasoningContentProps) => {
-    const { isOpen, preferPlainText } = useReasoning()
+    const { isOpen, isPreview, preferPlainText } = useReasoning()
     // Radix keeps the content mounted for the collapse animation, so a panel
     // that is on its way closed would still pay for the full Markdown parse.
     // Only a panel a reader can actually read is worth parsing.
@@ -294,7 +332,7 @@ export const ReasoningContent = memo(
     return (
       <CollapsibleContent
         className={cn(
-          'mt-4 text-sm relative',
+          'mt-1 text-xs relative',
           'data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-muted-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in',
           className
         )}
@@ -305,9 +343,18 @@ export const ReasoningContent = memo(
         here must be styled by the app's `.markdown` stylesheet — without it,
         list markers fall back to `outside` with zero padding and overlap the
         dotted border. */}
-        <div className="markdown ml-2 border-l border-border/60 pl-4">
+        <div
+          className={cn(
+            'markdown',
+            !isPreview && 'ml-2 border-l border-border/60 pl-4'
+          )}
+        >
           {showMarkdown ? (
-            <Streamdown animate={false} remarkPlugins={REASONING_REMARK_PLUGINS} {...props}>
+            <Streamdown
+              animate={false}
+              remarkPlugins={REASONING_REMARK_PLUGINS}
+              {...props}
+            >
               {normalizedChildren}
             </Streamdown>
           ) : (

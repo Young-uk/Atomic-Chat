@@ -130,84 +130,25 @@ describe('MessageItem reasoning is a property of the message, not the setting', 
 })
 
 describe('MessageItem live reasoning viewport', () => {
-  it('keeps one active reasoning lifecycle across tools and later reasoning', () => {
+  it('times distinct reasoning phases without counting the tool wait', () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-
-    const renderTurn = (parts: UIMessage['parts'], requestActive: boolean) => (
-      <MessageItem
-        message={{ id: 'reason-tools-reason', role: 'assistant', parts }}
-        isFirstMessage={false}
-        isLastMessage
-        status={requestActive ? 'streaming' : 'ready'}
-        requestActive={requestActive}
-      />
-    )
-    const activeLabel = () =>
-      screen.getByRole('button', { name: /activity\.thinking/ }).textContent!
-    const elapsed = (label: string) => Number(label.match(/(\d+)/)?.[1] ?? 0)
-
-    const firstReasoning: UIMessage['parts'] = [
-      {
-        type: 'reasoning',
-        text: 'Plan the lookup.',
-        state: 'streaming',
-      },
-    ]
-    const { rerender } = render(renderTurn(firstReasoning, true))
-    act(() => vi.advanceTimersByTime(2_000))
-    const beforeTool = activeLabel()
-    expect(beforeTool).toMatch(/^activity\.thinkingFor/)
-    expect(screen.queryByText(/activity\.thoughtFor/)).not.toBeInTheDocument()
-
-    const duringTool: UIMessage['parts'] = [
-      { ...firstReasoning[0], state: 'done' },
-      {
-        type: 'tool-mcp.search',
-        toolCallId: 'tool-1',
-        state: 'input-available',
-        input: { query: 'lifecycle' },
-      } as UIMessage['parts'][number],
-    ]
-    rerender(renderTurn(duringTool, true))
-    const atTool = activeLabel()
-    expect(atTool).toMatch(/^activity\.thinkingFor/)
-    expect(elapsed(atTool)).toBeGreaterThanOrEqual(elapsed(beforeTool))
-    expect(screen.queryByText(/activity\.thoughtFor/)).not.toBeInTheDocument()
-
-    act(() => vi.advanceTimersByTime(2_000))
-    const laterReasoning: UIMessage['parts'] = [
-      duringTool[0],
-      {
-        ...duringTool[1],
-        state: 'output-available',
-        output: { ok: true },
-      } as UIMessage['parts'][number],
-      {
-        type: 'reasoning',
-        text: 'Use the result.',
-        state: 'streaming',
-      },
-    ]
-    rerender(renderTurn(laterReasoning, true))
-    const afterTool = activeLabel()
-    expect(afterTool).toMatch(/^activity\.thinkingFor/)
-    expect(elapsed(afterTool)).toBeGreaterThanOrEqual(elapsed(atTool))
-    expect(screen.queryByText(/activity\.thoughtFor/)).not.toBeInTheDocument()
-
-    const finalParts: UIMessage['parts'] = [
-      laterReasoning[0],
-      laterReasoning[1],
-      { ...laterReasoning[2], state: 'done' },
-      { type: 'text', text: 'Final answer.' },
-    ]
-    rerender(renderTurn(finalParts, false))
-
-    const finalLabel = screen.getByRole('button', {
-      name: /activity\.thoughtFor/,
-    }).textContent!
-    expect(elapsed(finalLabel)).toBeGreaterThanOrEqual(elapsed(afterTool))
-    expect(screen.queryByText(/activity\.thinkingFor/)).not.toBeInTheDocument()
+    const view=(parts:UIMessage['parts'],active=true)=><MessageItem message={{id:'phases',role:'assistant',parts}} isFirstMessage={false} isLastMessage status={active?'streaming':'ready'} requestActive={active} />
+    const first: UIMessage['parts']=[{type:'reasoning',text:'Plan the lookup.',state:'streaming'}]
+    const {rerender}=render(view(first))
+    act(()=>vi.advanceTimersByTime(2000))
+    const elapsed=screen.getByRole('button',{name:/activity.thinkingFor/}).textContent!.match(/\d+/)![0]
+    const tool={type:'tool-mcp.search',toolCallId:'one',state:'input-available',input:{query:'phase'}} as UIMessage['parts'][number]
+    const during=[{...first[0],state:'done'},tool] as UIMessage['parts']
+    rerender(view(during));act(()=>vi.advanceTimersByTime(10000))
+    expect(screen.queryByText(/activity.thinkingFor/)).toBeNull()
+    expect(screen.getByText(`activity.thoughtFor ${elapsed}`)).toBeInTheDocument()
+    const later=[during[0],{...tool,state:'output-available',output:{}},{type:'reasoning',text:'Use the result.',state:'streaming'}] as UIMessage['parts']
+    rerender(view(later))
+    expect(screen.getByText('activity.thinkingFor 1')).toBeInTheDocument()
+    expect(screen.getByText(`activity.thoughtFor ${elapsed}`)).toBeInTheDocument()
+    rerender(view([...later.slice(0,-1),{...later.at(-1)!,state:'done'},{type:'text',text:'Final answer.'}] as UIMessage['parts'],false))
+    expect(screen.getAllByRole('button',{name:/activity.thoughtFor/})).toHaveLength(2)
+    expect(screen.queryByText(/activity.thinkingFor/)).toBeNull()
     expect(screen.getByText('Final answer.')).toBeVisible()
   })
 
@@ -231,7 +172,7 @@ describe('MessageItem live reasoning viewport', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /activity\.thinking/ }))
+    expect(screen.getByRole('button', { name: /activity\.thinking/ })).toHaveAttribute('aria-expanded','true')
     expect(screen.getByText('Preparing files')).toHaveClass('font-semibold')
     expect(screen.getByText('Creating folder')).toHaveClass('font-semibold')
     expect(
@@ -262,7 +203,7 @@ describe('MessageItem live reasoning viewport', () => {
     expect(container.querySelector('.border-dotted')).toBeNull()
   })
 
-  it('keeps live reasoning closed by default and preserves an explicit open on finish', () => {
+  it('opens a bounded live preview and collapses it when the turn finishes', () => {
     vi.useFakeTimers()
     const text =
       '**Full reasoning starts here**\n\n' +
@@ -291,13 +232,12 @@ describe('MessageItem live reasoning viewport', () => {
     const now = vi.spyOn(performance, 'now').mockReturnValue(1000)
     const { container, rerender } = render(item(true))
     const viewport = container.querySelector('[data-reasoning-viewport]')!
-    expect(viewport).toHaveAttribute('data-state', 'closed')
+    expect(viewport).toHaveAttribute('data-state', 'open')
     expect(viewport).toHaveAttribute('data-bounded', 'true')
     expect(
       screen.getByRole('button', { name: /activity.thinking/ })
-    ).toHaveAttribute('aria-expanded', 'false')
+    ).toHaveAttribute('aria-expanded', 'true')
 
-    fireEvent.click(screen.getByRole('button', { name: /activity\.thinking/ }))
     expect(viewport).toHaveAttribute('data-state', 'open')
 
     // Advance real update intervals; a single large clock jump now models a
@@ -308,31 +248,20 @@ describe('MessageItem live reasoning viewport', () => {
     }
     now.mockReturnValue(6200)
     rerender(item(false))
-    expect(viewport).toHaveAttribute('data-state', 'open')
-    expect(viewport).toHaveAttribute('data-bounded', 'false')
+    expect(viewport).toHaveAttribute('data-state', 'closed')
+    expect(viewport).toHaveAttribute('data-bounded', 'true')
     expect(screen.getByText('Final answer')).toBeVisible()
     expect(
       screen.getByRole('button', { name: 'activity.thoughtFor 6' })
-    ).toHaveAttribute('aria-expanded', 'true')
+    ).toHaveAttribute('aria-expanded', 'false')
     expect(container.querySelector('[data-streamdown="strong"]')).toBeNull()
-    expect(container.querySelector('[data-streaming-reasoning]')).not.toBeNull()
     expect(
       screen.getByRole('button', { name: 'activity.thoughtFor 6' })
         .parentElement
     ).toHaveClass('mb-5')
 
-    // An explicit close/reopen opts into the finished Markdown rendering.
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: /activity.reasoned|activity.thoughtFor/,
-      })
-    )
-    expect(viewport).toHaveAttribute('data-state', 'closed')
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: /activity.reasoned|activity.thoughtFor/,
-      })
-    )
+    // An explicit reopen opts into the finished Markdown rendering.
+    fireEvent.click(screen.getByRole('button', { name: /activity.reasoned|activity.thoughtFor/ }))
     expect(viewport).toHaveAttribute('data-state', 'open')
     expect(viewport).toHaveAttribute('data-bounded', 'false')
     expect(screen.getByText('Full reasoning starts here')).toBeVisible()

@@ -1,0 +1,5 @@
+# Summary sizing and stale cache plans
+
+Raw-history scheduling and retained-turn sizing must count dialogue rather than encoded user attachments. Project file parts to media type and filename before heuristic or tokenizer-only measurement; keep text, reasoning and tool records, and preserve the unmodified archive. Foreground usage and prompt-pressure checks still account for the real vision context. This prevents an old screenshot from scheduling another summary immediately after a successful handoff.
+
+If foreground work changes the cache owner during background boundary planning or clone admission, defer the background clone until a later completed turn. Do not fall back to a nominal stale boundary, create a clone, replace active history or surface the race as a failed summary. Restored-handoff adoption remains best effort and urgent foreground recovery still reports a refusal. Keep tokenizer-only eligibility checks out of summary progress until pressure is confirmed. Verify attachment-size invariance, tokenizer payloads and a successful retry after a stale plan or admission.

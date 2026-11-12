@@ -460,3 +460,27 @@ it('numbers actual summary requests so a new input phase is not mistaken for gen
     { requestSources: turn(1), save: async () => {} })
   expect(requests).toEqual([1, 2])
 })
+
+
+it('counts attachment descriptors rather than inline user image or audio bytes', async () => {
+  const fetcher = vi.fn(async () => Response.json({ input_tokens: 120 }))
+  vi.stubGlobal('fetch', fetcher)
+  const image = 'data:image/png;base64,' + 'QUFB'.repeat(50_000)
+  const audio = 'data:audio/wav;base64,' + 'QkJC'.repeat(50_000)
+  const messages: UIMessage[] = [{ id: 'media-user', role: 'user', parts: [
+    { type: 'text', text: 'Explain this screenshot.' },
+    { type: 'file', mediaType: 'image/png', filename: 'screen.png', url: image },
+    { type: 'file', mediaType: 'audio/wav', filename: 'voice.wav', url: audio },
+  ] }]
+  const original = structuredClone(messages)
+  const summary = summarizeBatchesWithDstar('http://local/v1', 'model', { tokenCounting: true })
+  await expect(summary.batches!.countRawTokens!(messages, new AbortController().signal)).resolves.toBe(120)
+  const body = JSON.parse((fetcher.mock.calls as unknown as [unknown, RequestInit][])[0][1].body as string)
+  const content = body.messages[0].content as string
+  expect(content).toContain('Explain this screenshot.')
+  expect(content).toContain('screen.png')
+  expect(content).toContain('voice.wav')
+  expect(content).not.toContain('data:')
+  expect(content.length).toBeLessThan(1000)
+  expect(messages).toEqual(original)
+})

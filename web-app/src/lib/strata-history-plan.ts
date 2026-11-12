@@ -2,6 +2,7 @@ import { convertToOpenAICompatibleChatMessages } from '@ai-sdk/openai-compatible
 import type { ModelMessage, UIMessage } from 'ai'
 import { fetchDstarContext } from './dstar-context-archive'
 import { logCompactionBudget } from './dstar-context-compaction'
+import { SummaryCacheChangedError } from './summary-stream'
 
 /** Use the installed provider's actual wire serializer, including tool results
  * and reasoning. Planning tokenizes text only; it never calls model generation. */
@@ -38,7 +39,9 @@ export async function planStrataHistoryBoundary(baseUrl: string, model: string, 
       return result.boundary
     }
     logCompactionBudget('cache alignment unavailable', { reason: result.reason, boundary })
+    if (result.reason === 'cache-changed' && !requireMatch) throw new SummaryCacheChangedError()
   } catch (error) {
+    if (error instanceof SummaryCacheChangedError) throw error
     signal.throwIfAborted()
     // Never log request bodies or exception messages containing dialogue.
     logCompactionBudget('cache alignment request failed', {

@@ -261,4 +261,24 @@ describe('useReasoningAutoScroll', () => {
     expect(metrics.scrollTop).toBe(100)
     expect(container).toHaveAttribute('data-overflow-bottom', 'true')
   })
+  it('follows a bounded preview but never scrolls an expanded or closed disclosure', () => {
+    const {rerender}=render(<Harness isStreaming revision={1} />)
+    const container=screen.getByTestId('reasoning')
+    container.setAttribute('data-reasoning-viewport','')
+    container.dataset.state='open';container.dataset.bounded='true'
+    const metrics=installScrollMetrics(container)
+    metrics.scrollHeight=400;act(flushFrames)
+    expect(metrics.scrollTop).toBe(272)
+    fireEvent.scroll(container)
+    metrics.scrollTop=40;fireEvent.scroll(container)
+    metrics.scrollHeight=600;rerender(<Harness isStreaming revision={2} />);act(flushFrames)
+    expect(metrics.scrollTop).toBe(40)
+    container.dataset.bounded='false'
+    metrics.scrollHeight=800;rerender(<Harness isStreaming revision={3} />);act(flushFrames)
+    expect(metrics.scrollTop).toBe(40)
+    container.dataset.bounded='true';container.dataset.state='closed'
+    rerender(<Harness isStreaming revision={4} />);act(flushFrames)
+    expect(metrics.scrollTop).toBe(40)
+  })
+
 })

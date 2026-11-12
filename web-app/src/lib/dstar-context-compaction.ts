@@ -1,4 +1,4 @@
-import { SummaryHeadroomError, SummaryOutputLimitError } from './summary-stream'
+import { SummaryHeadroomError, SummaryOutputLimitError, SummaryCacheChangedError } from './summary-stream'
 import { invoke } from '@tauri-apps/api/core'
 import { renderOpenRequests, type RequestLedger } from './dstar-open-requests'
 import type { SummaryProgress, SummaryInputProgress } from './context-summary-progress'
@@ -122,7 +122,16 @@ const fingerprint = (messages: UIMessage[]) => JSON.stringify(stable(messages.ma
 }))))
 export { fingerprint as contextSourceFingerprint }
 
-const cost = (messages: UIMessage[]) => messages.length === 0 ? 0 : estimateTokens(JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false }).map(({ role, parts }) => ({ role, parts }))))
+/** Size raw dialogue without interpreting encoded attachments as text tokens.
+ * Keep media descriptors and all textual/tool/reasoning parts. Actual vision
+ * positions remain accounted for by foreground prompt usage and pressure. */
+export function rawDialogueTokenText(messages: UIMessage[]): string {
+  return JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false })
+    .map(({ role, parts }) => ({ role, parts: parts.map(part => part.type === 'file'
+      ? { type: part.type, mediaType: part.mediaType, filename: part.filename }
+      : part) })))
+}
+const cost = (messages: UIMessage[]) => messages.length === 0 ? 0 : estimateTokens(rawDialogueTokenText(messages))
 
 /** Keep complete user turns, including every tool call/result in that turn.
  * The newest user turn is always retained, even when it exceeds the target. */
@@ -458,7 +467,6 @@ export class ContextCompaction {
       this.onProgress?.({ ...progress })
     }
     task.inputProgress = input => { progress.input = input; report(input ? 'summarizing' : progress.phase) }
-    report('queued')
     this.pendingCompletion = (async () => {
       try {
         if (summarize.cached && summarize.countRawTokens && recoveryBoundary === undefined && !ledgerMigration) {
@@ -469,6 +477,7 @@ export class ContextCompaction {
             return
           }
         }
+        report('queued')
         if (summarize.cached && summarize.selectBoundary && !resume && !ledgerMigration) {
           const archived = this.active?.source.length ?? 0
           const selected = await summarize.selectBoundary(messages, boundary, archived, controller.signal)
@@ -508,6 +517,14 @@ export class ContextCompaction {
           report('ready')
         }
       } catch (error) {
+        if (error instanceof SummaryCacheChangedError && recoveryBoundary === undefined &&
+            this.pending === task && !controller.signal.aborted) {
+          // Foreground work owns the newer cache. Retry after its next completed
+          // turn; do not allocate a stale clone or present this race as failure.
+          logCompactionBudget('background summary deferred', { threadId: this.threadId, reason: 'cache-changed' })
+          this.onProgress?.(undefined)
+          return
+        }
         const fallback = error instanceof SummaryHeadroomError ? summarize.headroomFallback :
           error instanceof SummaryOutputLimitError ? summarize.outputLimitFallback : undefined
         if (fallback &&

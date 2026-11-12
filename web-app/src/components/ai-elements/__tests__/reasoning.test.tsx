@@ -225,3 +225,40 @@ describe('literal single tildes in reasoning', () => {
     expect(container.querySelector('code')).toHaveTextContent('~code~')
   })
 })
+
+
+it('keeps an automatic preview through answer generation and collapses at turn end', () => {
+  const view = (thinking: boolean, active: boolean) => <Reasoning livePreview defaultOpen={false} isStreaming={thinking} isTurnActive={active}>
+    <ReasoningTrigger /><ReasoningContent isStreaming={thinking}>Live thought.</ReasoningContent>
+  </Reasoning>
+  const {rerender,getByRole}=render(view(true,true))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','true')
+  rerender(view(false,true))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','true')
+  rerender(view(false,false))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','false')
+  fireEvent.click(getByRole('button'))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','true')
+})
+
+it('keeps an explicit reader close or open when the turn completes', () => {
+  const view = (active: boolean) => <Reasoning livePreview defaultOpen={false} isStreaming={active} isTurnActive={active}>
+    <ReasoningTrigger /><ReasoningContent isStreaming={active}>Live thought.</ReasoningContent>
+  </Reasoning>
+  const {rerender,getByRole}=render(view(true))
+  fireEvent.click(getByRole('button'))
+  rerender(view(false))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','false')
+  rerender(view(true))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','false')
+  fireEvent.click(getByRole('button'))
+  rerender(view(false))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','true')
+})
+
+it('keeps completed history collapsed until the reader opens it', () => {
+  const {getByRole}=render(<Reasoning livePreview defaultOpen={false}><ReasoningTrigger /><ReasoningContent>Earlier thought.</ReasoningContent></Reasoning>)
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','false')
+  fireEvent.click(getByRole('button'))
+  expect(getByRole('button')).toHaveAttribute('aria-expanded','true')
+})

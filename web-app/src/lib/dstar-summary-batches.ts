@@ -2,9 +2,8 @@ import { readSummaryChoice, summaryAdmissionMessage, SummaryIdleError, checkSumm
 import type { SummaryInputProgress } from './context-summary-progress'
 import type { SummaryAdmission } from './atomic-summary-admission'
 import type { UIMessage } from 'ai'
-import { prepareToolResultImagesForModel } from './toolResultImages'
 import { fetchDstarContext } from './dstar-context-archive'
-import { summaryEvidence, type Summarize, type SummaryBatch } from './dstar-context-compaction'
+import { rawDialogueTokenText, summaryEvidence, type Summarize, type SummaryBatch } from './dstar-context-compaction'
 import { mergeRequestLedger, requestSources, InvalidRequestSourceError, type RequestLedger } from './dstar-open-requests'
 import { summaryTurnHasToolsPending, runIdleSummaryRequest } from './dstar-summary-idle'
 
@@ -172,8 +171,7 @@ export function summarizeBatchesWithDstar(baseUrl: string, model: string, option
       if (!messages.length) return 0
       // Count the raw model-visible dialogue without image bytes or the
       // growing handoff. JSON retains tool calls/results and reasoning text.
-      const content = JSON.stringify(prepareToolResultImagesForModel(messages, { supportsVision: false })
-        .map(({ role, parts }) => ({ role, parts })))
+      const content = rawDialogueTokenText(messages)
       const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/atomic/summary-token-count`, {
         method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
         headers: { 'Content-Type': 'application/json' },

@@ -8,6 +8,11 @@ const admissionMessages = new Set([
 export const summaryAdmissionMessage = (message: unknown) => typeof message === 'string' && admissionMessages.has(message)
   ? message : 'Background summary deferred by server safety admission; originals retained'
 
+/** A newer foreground request won the cache; a background clone must defer. */
+export class SummaryCacheChangedError extends Error {
+  constructor() { super('Summary cache changed while foreground work continued') }
+}
+
 /** A length finish is incomplete even when its partial JSON happens to parse. */
 export class SummaryOutputLimitError extends Error {
   constructor() { super('Cached summary ended before completion; originals retained') }

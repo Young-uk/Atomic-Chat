@@ -1,5 +1,6 @@
+import { SummaryCacheChangedError } from '../summary-stream'
 import { convertUIMessageToThreadMessage, convertThreadMessageToUIMessage } from '../messages'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { convertToModelMessages, type UIMessage } from 'ai'
 import { ContextCompaction, compactionBoundary, estimateConversationUsage, summaryEvidence, projectCompactedMessages, type ArchiveRecord, type Summarize } from '../dstar-context-compaction'
 
@@ -572,4 +573,76 @@ it('does not rewrite a restored summary when its source cache owner differs or a
   await c.prepareCachedAdoption(messages, async (_h, _b, _a, _s, _v, strict) => { expect(strict).toBe(true); return -1 }, new AbortController().signal, 'thread/18')
   expect(store.saved).toHaveLength(0)
   expect(c.apply(messages)[0].id).toBe('16')
+})
+
+
+it('chooses the same retained boundary regardless of a user attachment payload size', () => {
+  const messages = history()
+  const withFile = (url: string): UIMessage[] => messages.map((message, index) => index === 16
+    ? { ...message, parts: [...message.parts, { type: 'file', mediaType: 'image/png', filename: 'screen.png', url }] }
+    : message)
+  const small = withFile('data:image/png;base64,QUFB')
+  const large = withFile('data:image/png;base64,' + 'QUFB'.repeat(100_000))
+  expect(compactionBoundary(large, 2000)).toBe(compactionBoundary(small, 2000))
+})
+
+
+it('defers a stale background cache plan without failing or replacing the active conversation', async () => {
+  const store = storage()
+  const states: Array<string | undefined> = []
+  const coordinator = new ContextCompaction('thread', store, progress => states.push(progress?.phase))
+  const summarize = Object.assign(vi.fn(async () => 'Verified handoff'), {
+    cached: true,
+    countRawTokens: vi.fn(async () => 5000),
+    selectBoundary: vi.fn().mockRejectedValueOnce(new SummaryCacheChangedError())
+      .mockImplementation(async (_messages, boundary) => boundary),
+  }) as Summarize
+  const messages = history()
+  coordinator.schedule(messages, 2000, 100, summarize)
+  await settle()
+  expect(coordinator.status).toBe('idle')
+  expect(coordinator.error).toBeUndefined()
+  expect(states).not.toContain('failed')
+  expect(store.saved).toHaveLength(0)
+  expect(summarize).not.toHaveBeenCalled()
+  expect(coordinator.apply(messages)).toEqual(messages)
+  coordinator.schedule(messages, 2000, 100, summarize)
+  await settle()
+  expect(summarize).toHaveBeenCalledTimes(1)
+  expect(coordinator.status).toBe('ready')
+})
+
+it('does not announce a summary while tokenizer preflight finds no pressure', async () => {
+  const states: Array<string | undefined> = []
+  const store = storage()
+  const coordinator = new ContextCompaction('thread', store, progress => states.push(progress?.phase))
+  const summarize = Object.assign(vi.fn(async () => 'Unnecessary summary'), {
+    cached: true, countRawTokens: vi.fn(async () => 100),
+  }) as Summarize
+  coordinator.schedule(history(), 2000, 100, summarize)
+  await settle()
+  expect(states.filter(Boolean)).toEqual([])
+  expect(store.saved).toHaveLength(0)
+  expect(summarize).not.toHaveBeenCalled()
+  expect(coordinator.error).toBeUndefined()
+})
+
+
+it('keeps archived evidence and live history when the clone becomes stale after planning', async () => {
+  const store = storage()
+  const phases: Array<string | undefined> = []
+  const coordinator = new ContextCompaction('thread', store, progress => phases.push(progress?.phase))
+  const summarize = Object.assign(vi.fn(async () => { throw new SummaryCacheChangedError() }), {
+    cached: true, countRawTokens: vi.fn(async () => 5000),
+    selectBoundary: vi.fn(async (_messages, boundary) => boundary),
+  }) as Summarize
+  const messages = history()
+  coordinator.schedule(messages, 2000, 100, summarize)
+  await settle()
+  expect(summarize).toHaveBeenCalledTimes(1)
+  expect(store.saved.length).toBeGreaterThan(0)
+  expect(store.saved.every(record => !record.summary)).toBe(true)
+  expect(coordinator.apply(messages)).toEqual(messages)
+  expect(coordinator.error).toBeUndefined()
+  expect(phases).not.toContain('failed')
 })

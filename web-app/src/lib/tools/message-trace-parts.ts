@@ -50,77 +50,68 @@ export function buildTraceBlocks(
     | { agent_run?: AgentRunSummary; activityDurationMs?: number }
     | undefined
   const agentRun = metadata?.agent_run
-  const reasoning: Array<{ key: string; text: string }> = []
-  const tools: ActivityTraceBlock['tools'] = []
-  let reasoningIndex = -1
-  let reasoningState: 'streaming' | 'done' | undefined
-  let answeredAfterReasoning = false
-  let activityIndex =
-    agentRun ||
-    metadata?.activityDurationMs !== undefined ||
-    options.ensureActivity
-      ? 0
-      : -1
+  let activityCount = 0
+  const isLive =
+    options.ensureActivity ??
+    (agentRun !== undefined && isAgentTurnActive(agentRun.status))
 
   for (let i = 0; i < message.parts.length; i++) {
     const part = message.parts[i]
-
+    const previous = blocks.at(-1)
     if (part.type === 'text') {
-      if (part.text?.trim()) {
-        if (reasoning.length > 0) answeredAfterReasoning = true
+      if (part.text?.trim())
         blocks.push({
           kind: 'text',
           key: `${message.id}-${i}`,
           text: part.text,
         })
-      }
-      continue
-    }
-
-    if (part.type === 'reasoning') {
-      if (part.text?.trim()) {
-        if (reasoningIndex < 0) reasoningIndex = blocks.length
-        reasoningState = part.state
-        answeredAfterReasoning = false
-        reasoning.push({
-          key: `${message.id}-${i}`,
-          text: part.text,
+    } else if (part.type === 'reasoning') {
+      if (!part.text?.trim()) continue
+      const block = previous?.kind === 'reasoning' ? previous : undefined
+      const item = { key: `${message.id}-${i}`, text: part.text }
+      if (block) {
+        block.items.push(item)
+        block.streaming = part.state !== 'done'
+      } else
+        blocks.push({
+          kind: 'reasoning',
+          key: `${message.id}-reasoning-${i}`,
+          streaming: part.state !== 'done',
+          items: [item],
         })
-      }
-      continue
-    }
-
-    if (part.type === 'file') {
-      const filePart = part as {
-        type: 'file'
+    } else if (part.type === 'file') {
+      const file = part as {
         url?: string
         mediaType?: string
         filename?: string
       }
-      if (filePart.url && filePart.mediaType?.startsWith('image/')) {
+      if (
+        file.url &&
+        (file.mediaType?.startsWith('image/') ||
+          file.mediaType?.startsWith('audio/'))
+      ) {
         blocks.push({
-          kind: 'file',
+          kind: file.mediaType.startsWith('image/') ? 'file' : 'audio',
           key: `${message.id}-${i}`,
-          url: filePart.url,
-          mediaType: filePart.mediaType,
-          filename: filePart.filename,
-        })
-      } else if (filePart.url && filePart.mediaType?.startsWith('audio/')) {
-        blocks.push({
-          kind: 'audio',
-          key: `${message.id}-${i}`,
-          url: filePart.url,
-          mediaType: filePart.mediaType,
-          filename: filePart.filename,
+          url: file.url,
+          mediaType: file.mediaType,
+          filename: file.filename,
         })
       }
-      continue
-    }
-
-    if (typeof part.type === 'string' && part.type.startsWith('tool-')) {
+    } else if (typeof part.type === 'string' && part.type.startsWith('tool-')) {
       const toolName = part.type.slice('tool-'.length)
       if (toolName === 'reply' || toolName === 'finish') continue
-      if (activityIndex < 0) activityIndex = blocks.length
+      const block: ActivityTraceBlock =
+        previous?.kind === 'activity'
+          ? previous
+          : {
+              kind: 'activity',
+              key: activityCount++
+                ? `${message.id}-activity-${i}`
+                : `${message.id}-activity`,
+              tools: [],
+            }
+      if (block !== previous) blocks.push(block)
       const state = 'state' in part ? part.state : 'output-available'
       const input = 'input' in part ? part.input : undefined
       const output = 'output' in part ? part.output : undefined
@@ -130,8 +121,7 @@ export function buildTraceBlocks(
           : 'error' in part
             ? String(part.error)
             : undefined
-
-      tools.push({
+      block.tools.push({
         key: `${message.id}-${i}`,
         toolName,
         state,
@@ -146,51 +136,42 @@ export function buildTraceBlocks(
     }
   }
 
-  const reasoningStreaming =
-    reasoning.length > 0 &&
-    (reasoningState === 'streaming' ||
-      (reasoningState !== 'done' && !answeredAfterReasoning))
-
-  // Whether the block is still reporting live work: the turn this message
-  // belongs to is in flight, or its agent run has not reached an end state.
-  const isLive =
-    options.ensureActivity ??
-    (agentRun !== undefined && isAgentTurnActive(agentRun.status))
-
-  // What the block is allowed to be:
-  //
-  //  - Something to expand — tool calls, agent loops, a run's error. Shown
-  //    whenever it exists; that list is the only place those are traced.
-  //  - A live "Working" row before the first call and between calls. It remains
-  //    mounted through reasoning and answer streaming so activity never looks
-  //    complete, disappears, and then restarts while the enclosing turn lives.
-  //  - Never a bare "Worked for 2.9s" once the turn is over (ATO-534). With
-  //    nothing to expand it only restated the "Thought for" header right above
-  //    it. The duration stays in the message metadata for telemetry.
-  const hasDetails = activityHasDetails({ tools, agentSummary: agentRun })
-  const showActivity = activityIndex >= 0 && (hasDetails || isLive)
-
-  if (showActivity) {
-    blocks.splice(activityIndex, 0, {
+  // Only adjacent parts form a group. A later remark/tool/thought closes the
+  // earlier thinking phase without moving it above another step in the turn.
+  blocks.forEach((block, index) => {
+    if (block.kind === 'reasoning')
+      block.streaming &&= index === blocks.length - 1
+    if (block.kind === 'activity')
+      block.active =
+        isLive &&
+        (index === blocks.length - 1 ||
+          block.tools.some(
+            (tool) =>
+              tool.state === 'input-streaming' ||
+              tool.state === 'input-available'
+          ))
+  })
+  const activity = blocks.findLast((block) => block.kind === 'activity') as
+    | ActivityTraceBlock
+    | undefined
+  if (activity) {
+    // Turn-wide diagnostics belong once, not on every group of tool calls.
+    activity.durationMs = agentRun?.duration_ms ?? metadata?.activityDurationMs
+    activity.agentSummary = agentRun
+  } else if (
+    isLive ||
+    activityHasDetails({ tools: [], agentSummary: agentRun })
+  ) {
+    // Keep the existing status fallback before an answer or after a thought.
+    // A finished duration-only row adds no information and is omitted.
+    blocks.splice(blocks[0]?.kind === 'reasoning' ? 1 : 0, 0, {
       kind: 'activity',
       key: `${message.id}-activity`,
+      tools: [],
+      active: isLive,
       durationMs: agentRun?.duration_ms ?? metadata?.activityDurationMs,
-      tools,
       agentSummary: agentRun,
     })
   }
-
-  if (reasoning.length > 0) {
-    // Reasoning sits above the activity block so the thinking stream reads as
-    // its own step rather than a detail nested inside "Working".
-    const index = showActivity ? activityIndex : reasoningIndex
-    blocks.splice(index, 0, {
-      kind: 'reasoning',
-      key: `${message.id}-reasoning`,
-      streaming: reasoningStreaming,
-      items: reasoning,
-    })
-  }
-
   return blocks
 }

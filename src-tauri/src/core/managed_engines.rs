@@ -123,16 +123,7 @@ for bridge in upgrades:
     bridge['current_model'] = projected['atomic_summary_expected_model_fingerprint']
 upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                      current_model=projected['atomic_summary_expected_model_fingerprint'], previous=previous_pins))
-# Same Q5_1 weights and session layout; accept only the previous qualified 128K build.
-if context == 131072:
-    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
-                         current_model=projected['atomic_summary_expected_model_fingerprint'],
-                         previous={'atomic_summary_expected_native_sha256': 'a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:6470c3b88913485d1052012484bb3d2849a331bd5beefcd6285d3f4a787a595f', 'atomic_summary_expected_backend_sha256': 'cf611f9afcca989af47fa4b5a0a2cd2825f2183c6de47d37e23d4c0e8aa15452'}))
-# Additive visual-position v3 reader accepts the previously qualified Q5 v1/v2 sessions.
-if context == 131072:
-    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
-                         current_model=projected['atomic_summary_expected_model_fingerprint'],
-                         previous={'atomic_summary_expected_native_sha256': '29415571aff590ee03ff6776834a85faaf26d9fd631e6e8ae09bd09a0f114af7', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:6d70074eb6c620b62ebf1d95ab26abaabdcaed52ab222a665f2a79c03a7ae5f5', 'atomic_summary_expected_backend_sha256': '983af62ea3112ff3b512cb342ec4e72d6f5bd18696a1b01c698e5308115d677e'}))
+# Historical Q5_1 cache bridges are deliberately excluded for the original table.
 projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
@@ -365,8 +356,8 @@ impl Environment {
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
             "log": root.join("strata-atomic.log"),
-            "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3-q5-1"),
-            // The Q5_1 n-gram changes activations: never admit prior IQ4_NL sessions.
+            "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3-iq4nl"),
+            // Original IQ4_NL weights: never import sessions produced with the Q5_1 table.
             "atomic_disk_session_reviewed_upgrades": [],
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
@@ -380,7 +371,7 @@ impl Environment {
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "ad8004f74420d6fe9c50d5959c29e6e713b2f914ee9185b9a9d95c5df7510833",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:db236b64e80aa0f4c9d1bcce042df488ae4a151ebe478ae23ad31982cc8ba0e2",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:531400680a4537dc0e9d7db726b7c147d6c7927701737a64e440506401c8746a",
             "atomic_summary_expected_backend_sha256": "c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
@@ -393,7 +384,7 @@ impl Environment {
                 "STRATA_METAL_KEEP_FREE_GB": "8",
                 "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192",
                 "STRATA_ATOMIC_SUMMARY_CHECKPOINTS": "1",
-                "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3-q5-1")
+                "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3-iq4nl")
             },
             "vision": {
                 "exe": root.join("candidate/strata-vision"),
@@ -1137,12 +1128,12 @@ mod tests {
     }
 
     #[test]
-    fn q5_ngram_keeps_previous_model_sessions_isolated() {
+    fn original_ngram_keeps_q5_model_sessions_isolated() {
         let env = Environment::personal(PathBuf::from("/home/test/dstar"));
         for context in [16_384, 65_536, 131_072, 262_144] {
             let cfg = env.strata_config(context);
             assert!(cfg["atomic_disk_session_reviewed_upgrades"].as_array().unwrap().is_empty());
-            assert!(cfg["atomic_disk_session_dir"].as_str().unwrap().ends_with("kv-cache-strata-iq3-q5-1"));
+            assert!(cfg["atomic_disk_session_dir"].as_str().unwrap().ends_with("kv-cache-strata-iq3-iq4nl"));
             assert_eq!(cfg["atomic_disk_session_dir"], cfg["env"]["STRATA_CONVERSATION_DISK_DIR"]);
         }
     }
@@ -1506,7 +1497,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:db236b64e80aa0f4c9d1bcce042df488ae4a151ebe478ae23ad31982cc8ba0e2"
+            "strata-stat-v2:531400680a4537dc0e9d7db726b7c147d6c7927701737a64e440506401c8746a"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],

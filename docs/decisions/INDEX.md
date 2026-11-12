@@ -873,3 +873,13 @@ decision is reversed, add a new one that says which record it supersedes.
 - **2026-11-12** — [Image-aware history reuse and review capability gating](2026-11-12-image-aware-history-and-review-alias.md)
 
 - **2026-11-12** — [Recheck restored summary adoption](2026-11-12-recheck-restored-summary-adoption.md)
+
+- **2026-11-12** — [Natural working commentary](2026-11-12-natural-working-commentary.md)
+
+- **2026-11-12** — [Live working timeline and thinking preview](2026-11-12-live-working-timeline.md)
+
+- [Restore the original personal n-gram table](2026-11-12-restore-original-ngram.md)
+
+- [Collapse automatic thinking previews at turn end](2026-11-13-collapse-automatic-thinking-at-turn-end.md)
+
+- [Summary sizing and stale cache plans](2026-11-13-summary-sizing-and-stale-cache-plans.md)

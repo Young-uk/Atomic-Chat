@@ -127,7 +127,7 @@ describe('buildTraceBlocks activity projection', () => {
     ])
   })
 
-  it('keeps a tool-backed activity visible while reasoning streams', () => {
+  it('finishes earlier reasoning when the following tool starts', () => {
     const message = {
       id: 'assistant-reasoning-tools',
       role: 'assistant',
@@ -143,7 +143,7 @@ describe('buildTraceBlocks activity projection', () => {
     } as UIMessage
 
     expect(buildTraceBlocks(message, { ensureActivity: true })).toEqual([
-      expect.objectContaining({ kind: 'reasoning', streaming: true }),
+      expect.objectContaining({ kind: 'reasoning', streaming: false }),
       expect.objectContaining({
         kind: 'activity',
         tools: [expect.objectContaining({ toolName: 'mcp.search' })],
@@ -325,4 +325,22 @@ describe('buildTraceBlocks activity projection', () => {
       expect(buildTraceBlocks(message)).toEqual([])
     }
   )
+})
+
+it('keeps alternating thoughts, remarks and tool groups in their recorded order', () => {
+  const message = { id: 'timeline', role: 'assistant', parts: [
+    { type: 'reasoning', text: 'First thought.', state: 'done' },
+    { type: 'text', text: 'A useful observation.' },
+    { type: 'tool-search', toolCallId: 'one', state: 'output-available', input: {}, output: {} },
+    { type: 'reasoning', text: 'Second thought.', state: 'streaming' },
+    { type: 'text', text: 'The approach changed.' },
+    { type: 'tool-search', toolCallId: 'two', state: 'input-available', input: {} },
+  ] } as UIMessage
+  const blocks = buildTraceBlocks(message, { ensureActivity: true })
+  expect(blocks.map(block => block.kind)).toEqual(['reasoning', 'text', 'activity', 'reasoning', 'text', 'activity'])
+  expect(blocks.filter(block => block.kind === 'reasoning').map(block => block.items[0].text)).toEqual(['First thought.', 'Second thought.'])
+  expect(blocks.filter(block => block.kind === 'reasoning').every(block => !block.streaming)).toBe(true)
+  expect(blocks.filter(block => block.kind === 'activity').map(block => block.active)).toEqual([false, true])
+  const grown = buildTraceBlocks({ ...message, parts: [...message.parts, { type: 'reasoning', text: 'Third thought.', state: 'streaming' }] }, { ensureActivity: true })
+  expect(grown.slice(0, blocks.length).map(block => block.key)).toEqual(blocks.map(block => block.key))
 })

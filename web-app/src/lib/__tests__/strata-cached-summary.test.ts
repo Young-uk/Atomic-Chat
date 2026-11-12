@@ -1,5 +1,5 @@
 import { beginDstarForeground, noteDstarCacheOwner } from '../dstar-summary-idle'
-import { SummaryHeadroomError, SummaryOutputLimitError } from '../summary-stream'
+import { SummaryHeadroomError, SummaryOutputLimitError, SummaryCacheChangedError } from '../summary-stream'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import { bindStrataHistory, strataHistoryHash, resumeRestoredStrataSummary, summarizeWithStrataCache } from '../strata-cached-summary'
@@ -45,7 +45,7 @@ it('retains originals and does not retry an unrelated foreground cache', async (
   vi.stubGlobal('fetch', fetcher)
   const save = vi.fn(async (_checkpoint: import('../dstar-context-compaction').SummaryCheckpoint) => {})
   await expect(summarizeWithStrataCache('http://local/v1', 'm', 'thread/turn', {})('', '', new AbortController().signal,
-    undefined, { save, requestSources: history() })).rejects.toThrow('Cache changed')
+    undefined, { save, requestSources: history() })).rejects.toBeInstanceOf(SummaryCacheChangedError)
   expect(save).not.toHaveBeenCalled()
   expect(fetcher).toHaveBeenCalledTimes(1)
 })

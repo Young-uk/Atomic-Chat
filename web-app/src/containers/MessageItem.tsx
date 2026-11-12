@@ -504,17 +504,16 @@ export const MessageItem = memo(
     }
 
     const renderReasoningBlock = (block: ReasoningTraceBlock) => {
-      // A reasoning part commonly reports `done` while the same turn pauses
-      // for tools. The disclosure belongs to the enclosing turn, so it must
-      // not finalize and restart as individual reasoning parts come and go.
-      const reasoningActive = isRequestActive
+      const reasoningActive = isRequestActive && block.streaming
 
       return (
         <Reasoning
           key={block.key}
           className="mb-5"
           isStreaming={reasoningActive}
+          isTurnActive={isRequestActive}
           defaultOpen={false}
+          livePreview
         >
           <ReasoningTrigger getThinkingMessage={getThinkingMessage} />
           <ReasoningViewport
@@ -530,7 +529,7 @@ export const MessageItem = memo(
     }
 
     const renderActivityBlock = (block: ActivityTraceBlock) => {
-      const active = isRequestActive
+      const active = isRequestActive && (block.active ?? true)
       const error = block.agentSummary?.error
       // Pending agent calls already have input-available parts. Permission
       // waits must still say Working until the run resumes executing them.

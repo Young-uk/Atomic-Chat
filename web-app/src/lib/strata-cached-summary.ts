@@ -5,7 +5,7 @@ import type { UIMessage } from 'ai'
 import { contextSourceFingerprint, type ContextCompaction, type Summarize } from './dstar-context-compaction'
 import type { SummaryInputProgress } from './context-summary-progress'
 import { mergeRequestLedger, requestSources } from './dstar-open-requests'
-import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom, SummaryOutputLimitError } from './summary-stream'
+import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom, SummaryOutputLimitError, SummaryCacheChangedError } from './summary-stream'
 import type { SummaryAdmission } from './atomic-summary-admission'
 
 /** The conversation is already in the bound native clone. Send only the task,
@@ -79,6 +79,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
       }
       if (!response.ok) {
         const error = await response.json().catch(() => null)
+        if (error?.error?.code === 'atomic_summary_clone_stale') throw new SummaryCacheChangedError()
         checkSummaryHeadroom(error?.error)
         if (error?.error?.code === 'atomic_summary_admission_refused') {
           options.admission?.refuse()

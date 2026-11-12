@@ -85,6 +85,8 @@ export type TraceBlock =
     }
   | {
       kind: 'activity'
+      /** This group owns live work, rather than a later phase in the turn. */
+      active?: boolean
       key: string
       durationMs?: number
       tools: Array<{

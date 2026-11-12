@@ -37,3 +37,13 @@ it('requires a positive cache match before changing a restored historical view',
  vi.stubGlobal('fetch',vi.fn(async()=>Response.json({reason:'cache-unavailable'})))
  expect(await planStrataHistoryBoundary('http://local/v1','model','thread/turn',history,8,2,new AbortController().signal,()=>[],{},true)).toBe(-1)
 })
+
+
+it('defers a background clone if foreground work changed the cache owner', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ reason: 'cache-changed' })))
+  await expect(planStrataHistoryBoundary('http://local/v1', 'model', 'thread/old-turn', history, 8, 2,
+    new AbortController().signal, () => [], {})).rejects.toThrow(/cache changed/i)
+  // Startup adoption remains a read-only best effort, not a failed summary.
+  expect(await planStrataHistoryBoundary('http://local/v1', 'model', 'thread/old-turn', history, 8, 2,
+    new AbortController().signal, () => [], {}, true)).toBe(-1)
+})

@@ -103,11 +103,8 @@ async function prepare(
   const result = render(<Harness text={text} />)
   await act(async () => {
     await document.fonts.ready
-    if (open) {
-      fireEvent.click(
-        result.container.querySelector('[data-slot="collapsible-trigger"]')!
-      )
-    }
+    const trigger = result.container.querySelector('[data-slot="collapsible-trigger"]')!
+    if ((trigger.getAttribute('aria-expanded') === 'true') !== open) fireEvent.click(trigger)
     await frame()
     const outer = screen.getByTestId('history').parentElement!.parentElement!
     const deadline = performance.now() + 3000
@@ -205,7 +202,7 @@ describe('Live reasoning geometry (Chromium)', () => {
         await frame()
         await frame()
       })
-      const thinking = screen.getByRole('button', { name: /Thinking for/ })
+      const thinking = screen.getByRole('button', { name: /Thinking for|Thought for|Reasoned/ })
       const activity = screen
         .getByTestId('tool-activity-group')
         .querySelector('button')!
@@ -225,7 +222,7 @@ describe('Live reasoning geometry (Chromium)', () => {
         )
         expect(thinking).toBe(
           screen.getByRole('button', {
-            name: phase.active ? /Thinking for/ : /Thought for/,
+            name: /Thinking for|Thought for|Reasoned/,
           })
         )
         expect(thinking.querySelector('.text-transparent')).toBeNull()
@@ -272,7 +269,7 @@ describe('Live reasoning geometry (Chromium)', () => {
       }
       expect(screen.getAllByText('Completed 2 actions')).toHaveLength(1)
       expect(
-        screen.getAllByRole('button', { name: /Thought for/ })
+        screen.getAllByRole('button', { name: /Thought for|Reasoned/ })
       ).toHaveLength(1)
     }
   )
@@ -332,7 +329,7 @@ describe('Live reasoning geometry (Chromium)', () => {
     expectNoHorizontalOverflow(container)
   })
 
-  it('starts as one compact closed status row', async () => {
+  it('keeps a manually closed status row compact', async () => {
     const result = await prepare(cases[0], longText, false)
     const panel = viewport(result.container)
 
@@ -389,7 +386,7 @@ describe('Live reasoning geometry (Chromium)', () => {
   )
 
   it.each(cases)(
-    '$width / $fontSize / $theme: finishing preserves an explicitly opened trace without jolting the bottom anchor',
+    '$width / $fontSize / $theme: finishing collapses the automatic preview and keeps the answer anchored',
     async (testCase) => {
       const { container, rerender, panel } = await prepare(testCase)
       const liveHeight = panel.getBoundingClientRect().height
@@ -412,33 +409,22 @@ describe('Live reasoning geometry (Chromium)', () => {
       expect(Math.max(...samples.map((s) => s.height))).toBeLessThanOrEqual(
         liveHeight + 1
       )
-      // Allow the first frame's newly inserted answer; never a trace-sized excursion.
+      // Permit the intentional bounded collapse, never a full-trace excursion.
       expect(
         Math.max(...samples.map((s) => Math.abs(s.anchor - anchor)))
-      ).toBeLessThan(60)
-      expect(panel.getBoundingClientRect().height).toBeCloseTo(liveHeight, 0)
+      ).toBeLessThan(liveHeight + 60)
+      expect(panel.getBoundingClientRect().height).toBe(0)
       expect(end.getBoundingClientRect().bottom).toBeCloseTo(anchor, 0)
       expect(screen.getByText('The final answer.')).toBeTruthy()
       expect(
         container
           .querySelector('[data-slot="collapsible-trigger"]')!
           .getAttribute('aria-expanded')
-      ).toBe('true')
+      ).toBe('false')
       expectNoHorizontalOverflow(container)
 
-      fireEvent.click(
-        container.querySelector('[data-slot="collapsible-trigger"]')!
-      )
-      await act(async () => {
-        await settle()
-      })
-      expect(panel.getBoundingClientRect().height).toBe(0)
-      fireEvent.click(
-        container.querySelector('[data-slot="collapsible-trigger"]')!
-      )
-      await act(async () => {
-        await settle()
-      })
+      fireEvent.click(container.querySelector('[data-slot="collapsible-trigger"]')!)
+      await act(async () => { await settle() })
       expect(panel.getBoundingClientRect().height).toBeGreaterThan(0)
       expect(panel.scrollHeight).toBeLessThanOrEqual(panel.clientHeight + 1)
       expect(panel.querySelector('[data-streamdown="strong"]')).not.toBeNull()
@@ -534,7 +520,7 @@ it.each((['reading', 'thinking', 'generating'] as const).flatMap(phase => [16, 2
     await settle(column)
     expect(screen.getAllByRole('status')).toHaveLength(1)
     expect(screen.queryAllByRole('progressbar')).toHaveLength(phase === 'reading' ? 1 : 0)
-    expect(screen.getByRole('button', { name: 'Reasoning details' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Reasoning details|Reasoned/ })).toBeVisible()
     expect(screen.queryByText(/^Working/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Thinking for/)).not.toBeInTheDocument()
     expectNoHorizontalOverflow(column)
@@ -605,7 +591,7 @@ it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].fla
       </div>
     ))
     await settle(container)
-    const anchor = answering ? screen.getByText('The response is arriving.') : screen.getByRole('button', { name: 'Reasoning details' })
+    const anchor = answering ? screen.getByText('The response is arriving.') : screen.getByRole('button', { name: /Reasoning details|Reasoned/ })
     const gap = screen.getByRole('status').getBoundingClientRect().top - anchor.getBoundingClientRect().bottom
     expect(gap).toBeLessThanOrEqual(size * 3)
     expect(container.querySelector('[data-testid="assistant-message-actions"]')).toBeNull()
@@ -636,7 +622,7 @@ it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].map
     const { container, rerender } = render(view(true))
     await settle(container)
     const liveGap = screen.getByRole('status').getBoundingClientRect().top -
-      screen.getByRole('button', { name: 'Reasoning details' }).getBoundingClientRect().bottom
+      screen.getByRole('button', { name: /Reasoning details|Reasoned/ }).getBoundingClientRect().bottom
     rerender(view(false))
     await settle(container)
     const finishedGap = screen.getByText('The final answer.').getBoundingClientRect().top -
