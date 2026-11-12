@@ -869,3 +869,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Personal Q5_1 n-gram trial](2026-11-11-personal-q5-ngram-trial.md)
 
 - **2026-11-12** — [Personal background learning review channel](2026-11-12-personal-background-review-channel.md)
+
+- **2026-11-12** — [Image-aware history reuse and review capability gating](2026-11-12-image-aware-history-and-review-alias.md)
+
+- **2026-11-12** — [Recheck restored summary adoption](2026-11-12-recheck-restored-summary-adoption.md)

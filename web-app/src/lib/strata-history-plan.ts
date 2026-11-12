@@ -16,7 +16,7 @@ export function historyPlanMessages(messages: ModelMessage[]): unknown[] {
  * user turns, so alignment never discards additional recent dialogue. */
 export async function planStrataHistoryBoundary(baseUrl: string, model: string, owner: string,
   history: UIMessage[], boundary: number, archived: number, signal: AbortSignal,
-  wire: (retained: UIMessage[]) => unknown[], request: Record<string, unknown>): Promise<number> {
+  wire: (retained: UIMessage[]) => unknown[], request: Record<string, unknown>, requireMatch = false): Promise<number> {
   const boundaries = [boundary, ...history.flatMap((message, index) =>
     index > archived && index < boundary && message.role === 'user' ? [index] : []).reverse()].slice(0, 16)
   try {
@@ -28,7 +28,7 @@ export async function planStrataHistoryBoundary(baseUrl: string, model: string, 
     })
     if (!response.ok) {
       logCompactionBudget('cache alignment request refused', { status: response.status, boundary })
-      return boundary
+      return requireMatch ? -1 : boundary
     }
     const result = await response.json()
     if (result.reason === 'aligned' && boundaries.includes(result.boundary)) {
@@ -45,5 +45,5 @@ export async function planStrataHistoryBoundary(baseUrl: string, model: string, 
       boundary, error: error instanceof Error ? error.name : 'UnknownError',
     })
   }
-  return boundary
+  return requireMatch ? -1 : boundary
 }

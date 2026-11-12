@@ -1,10 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { UIMessage } from 'ai'
-import { capturePersonalMemory, withPersonalMemorySnapshots, PERSONAL_MEMORY_METADATA } from '../personal-memory-context'
+import { capturePersonalMemory, withPersonalMemorySnapshots, PERSONAL_MEMORY_METADATA, supportsPersonalMemoryRuntime } from '../personal-memory-context'
 
 const user = (id: string): UIMessage => ({ id, role: 'user', parts: [{ type: 'text', text: id }] })
 
 describe('immutable personal recall', () => {
+  it('recognizes managed Strata clones independently of model aliases without enabling arbitrary servers', () => {
+    expect(supportsPersonalMemoryRuntime(false, { engine: 'strata', summaryClone: true })).toBe(true)
+    expect(supportsPersonalMemoryRuntime(false, { engine: 'strata', summaryClone: false })).toBe(false)
+    expect(supportsPersonalMemoryRuntime(false, { engine: 'other', summaryClone: true })).toBe(false)
+    expect(supportsPersonalMemoryRuntime(false)).toBe(false)
+    expect(supportsPersonalMemoryRuntime(true)).toBe(true)
+  })
   it('replays the old evidence unchanged when later memories change', async () => {
     const evidence = await capturePersonalMemory('canary', async () => ({ entries: [{ id: 1, content: 'old fact', sessionId: 'source/1' }] }))
     const a = { ...user('a'), metadata: { [PERSONAL_MEMORY_METADATA]: evidence } }

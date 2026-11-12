@@ -537,3 +537,39 @@ it('refreshes retained memory when adoption moves the raw boundary earlier', asy
   expect(store.saved.at(-1)?.source).toEqual(messages.slice(0, 16))
   expect(store.saved.at(-1)?.retainedSummaries).toHaveLength(1)
 })
+
+it('replans a restored unadopted summary against its exact predecessor and retains the recent image', async () => {
+  const messages = history(), store = storage()
+  messages[16].parts.push({ type: 'file', mediaType: 'image/png', url: 'data:image/png;base64,fixture' })
+  const previous: ArchiveRecord = { version: 1, id: 'previous', threadId: 'thread', source: messages.slice(0, 4), previousSummary: '', summary: 'Old facts', summaryAfterMessageId: '13' }
+  const latest: ArchiveRecord = { version: 1, id: 'latest', threadId: 'thread', source: messages.slice(0, 16), previousSummary: 'Old facts', summary: 'New facts', summaryAfterMessageId: '19', checkpoint: { version: 1, inputKey: 'thread/18', offset: 16, completed: 1, summary: 'New facts' } }
+  const c = new ContextCompaction('thread', { ...store, loadCandidates: async () => structuredClone([latest, previous]) })
+  await c.initialize()
+  let calls = 0
+  await c.prepareCachedAdoption(messages, async (_history, boundary, archived, _signal, view, requireMatch) => {
+    calls++; expect(boundary).toBe(16); expect(archived).toBe(4); expect(requireMatch).toBe(true)
+    expect(view!(8).some(message => message.id === 'atomic-context-previous')).toBe(true)
+    expect(view!(8).some(message => message.id === 'atomic-context-latest')).toBe(false)
+    return 8
+  }, new AbortController().signal, 'thread/18')
+  const view = c.apply(messages)
+  expect(view[0].id).toBe('8')
+  expect(view.filter(message => message.id.startsWith('atomic-context-')).map(message => message.id)).toEqual(['atomic-context-previous', 'atomic-context-latest'])
+  expect(view.find(message => message.id === '16')?.parts.some(part => part.type === 'file')).toBe(true)
+  expect(store.saved.at(-1)?.source).toEqual(messages.slice(0, 16))
+  expect(store.saved.at(-1)?.cacheRetainFrom).toBe(8)
+  await c.prepareCachedAdoption(messages, async () => { calls++; return 6 }, new AbortController().signal, 'thread/18')
+  expect(calls).toBe(1)
+})
+
+it('does not rewrite a restored summary when its source cache owner differs or alignment is refused', async () => {
+  const messages = history(), store = storage()
+  const record: ArchiveRecord = { version: 1, id: 'latest', threadId: 'thread', source: messages.slice(0, 16), previousSummary: '', summary: 'Facts', summaryAfterMessageId: '19', checkpoint: { version: 1, inputKey: 'thread/18', offset: 16, completed: 1, summary: 'Facts' } }
+  const c = new ContextCompaction('thread', { ...store, loadCandidates: async () => [record] }); await c.initialize()
+  let called = false
+  await c.prepareCachedAdoption(messages, async () => { called = true; return 8 }, new AbortController().signal, 'thread/other')
+  expect(called).toBe(false)
+  await c.prepareCachedAdoption(messages, async (_h, _b, _a, _s, _v, strict) => { expect(strict).toBe(true); return -1 }, new AbortController().signal, 'thread/18')
+  expect(store.saved).toHaveLength(0)
+  expect(c.apply(messages)[0].id).toBe('16')
+})

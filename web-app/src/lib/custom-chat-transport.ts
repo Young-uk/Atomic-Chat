@@ -1,3 +1,4 @@
+import { supportsPersonalMemoryRuntime } from './personal-memory-context'
 import { captureBackgroundReviewEvidence } from './background-review-evidence'
 import { scheduledMessagesForModel } from './personal-task-delivery'
 import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history-plan'
@@ -1358,7 +1359,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // why it failed; it is no reply for the model to see.
     const personalMemoryThread = this.threadId ?? options.chatId
     const personalMemoryEnabled = import.meta.env.VITE_PERSONAL_BUILD === 'true' &&
-      usesAppendOnlyDstarEffort(provider.base_url, modelId) && personalMemoryThread !== TEMPORARY_CHAT_ID
+      supportsPersonalMemoryRuntime(appendOnlyDstar, runtime) && personalMemoryThread !== TEMPORARY_CHAT_ID
     if (personalMemoryEnabled && options.messages.at(-1)?.role === 'user' && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
       const user = options.messages.at(-1)!
       await waitForThreadMessageWrites(personalMemoryThread)
@@ -1626,12 +1627,14 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       ? undefined
       : systemWithSkills
 
-    const cacheBoundaryPlanner = (modelView: UIMessage[], summarizedThrough = 0) =>
+    const cacheBoundaryPlanner = (modelView: UIMessage[], summarizedThrough = 0,
+      restoredView?: (boundary: number) => UIMessage[], requireMatch = false) =>
       (owner: string, history: UIMessage[], boundary: number, archived: number, signal: AbortSignal) =>
         planStrataHistoryBoundary(provider.base_url!, modelId!, owner, history, boundary, archived, signal,
           retained => {
             const boundary = history.findIndex(message => message.id === retained[0]?.id)
-            const cacheView = compaction && boundary >= 0 ? compaction.retainedForCache(history, boundary) : retained
+            const cacheView = restoredView && boundary >= 0 ? restoredView(boundary)
+              : compaction && boundary >= 0 ? compaction.retainedForCache(history, boundary) : retained
             const projected = projectCompactedMessages(cacheView, modelView,
               history.slice(0, summarizedThrough).map(message => message.id))
             const wire = convertToModelMessages(modelToolMessages(applyPolicies(projected, history)))
@@ -1639,7 +1642,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               ? foldSystemIntoFirstUserMessage(wire, systemWithSkills)
               : [...(effectiveSystemMessage ? [{ role: 'system' as const, content: effectiveSystemMessage }] : []), ...wire])
           }, { tools: toOpenAiTools(activeTools),
-            ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}) })
+            ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}) }, requireMatch)
 
     const checkpointSourcePlanner = (modelView: UIMessage[], history: UIMessage[]) =>
       async (owner: string, source: UIMessage[]): Promise<Record<string, unknown> | undefined> => {
@@ -1679,9 +1682,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             const cacheUser = completed.findLast(message => message.role === 'user')
             if (cacheUser) {
               await compaction.prepareCachedAdoption(original,
-                (history, boundary, archived, signal) => cacheBoundaryPlanner(preparedMessages, boundary)(
+                (history, boundary, archived, signal, retainedView, requireMatch) => cacheBoundaryPlanner(preparedMessages, boundary, retainedView, requireMatch)(
                   `${snapshotThreadId}/${cacheUser.id}`, history, boundary, archived, signal),
-                options.abortSignal ?? new AbortController().signal)
+                options.abortSignal ?? new AbortController().signal, `${snapshotThreadId}/${cacheUser.id}`)
             }
           }
           const startupView = compaction.apply(original, options.messages.at(-1)?.role === 'user')

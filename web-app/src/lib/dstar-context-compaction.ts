@@ -237,6 +237,7 @@ export class ContextCompaction {
   private pending?: { record: ArchiveRecord; sourceKey: string; controller: AbortController; recovery?: boolean; inputProgress?: (input?: SummaryInputProgress) => void }
   private ready?: { record: ArchiveRecord; sourceKey: string }
   private archiveCandidates: ArchiveRecord[] = []
+  private restoredAdoption?: ArchiveRecord
   private initialization?: Promise<void>
   private pendingCompletion?: Promise<void>
   private batchWaiters = new Set<() => void>()
@@ -279,7 +280,7 @@ export class ContextCompaction {
         : this.store.load(this.threadId).then(record => record ? [record] : [])).then(records => {
         this.archiveCandidates = records
         const record = records[0]
-        if (record?.summary?.trim()) this.active = record
+        if (record?.summary?.trim()) { this.active = record; this.restoredAdoption = record }
         return this.store.loadPending?.(this.threadId).then(pending => { this.resumable = pending })
       }).catch(error => { this.initialization = undefined; throw error })
     }
@@ -296,34 +297,52 @@ export class ContextCompaction {
    * dialogue rather than pretending the summary covered a different segment.
    * This runs before a new user request, never during its tool continuation. */
   async prepareCachedAdoption(messages: UIMessage[],
-    select: (messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>,
-    signal: AbortSignal): Promise<void> {
+    select: (messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal,
+      retainedView?: (boundary: number) => UIMessage[], requireMatch?: boolean) => Promise<number>,
+    signal: AbortSignal, cacheOwner?: string): Promise<void> {
     const ready = this.ready
-    if (!ready || this.pending || !this.matches(ready.record, messages) ||
-        !ready.record.checkpoint?.inputKey.startsWith(`${this.threadId}/`)) return
-    const record = ready.record
+    const restored = !ready && this.active === this.restoredAdoption &&
+      cacheOwner !== undefined && this.active?.checkpoint?.inputKey === cacheOwner
+    const record = ready?.record ?? (restored ? this.active : undefined)
+    if (!record || this.pending || !this.matches(record, messages) ||
+        !record.checkpoint?.inputKey.startsWith(`${this.threadId}/`)) return
+    // A restored cache owned by the summary's source turn still contains the
+    // previous model view. Replay its historical summary placements exactly.
+    const previous = restored ? this.archiveCandidates.find(candidate =>
+      candidate.source.length < record.source.length && candidate.summary === record.previousSummary &&
+      this.matches(candidate, messages)) : this.active
+    if (restored && record.previousSummary && !previous) return
     const boundary = record.cacheRetainFrom ?? record.source.length
-    const archived = this.active?.source.length ?? 0
-    const selected = await select(messages, boundary, archived, signal)
+    const archived = previous?.source.length ?? 0
+    const placements = this.summaryPlacements(messages, previous ?? null)
+    const current = () => ready ? this.ready === ready : this.active === record && this.restoredAdoption === record
+    const selected = restored
+      ? await select(messages, boundary, archived, signal, at => insertRetainedSummaries(messages.slice(at), placements), true)
+      : await select(messages, boundary, archived, signal)
     signal.throwIfAborted()
-    if (this.ready !== ready || !this.matches(record, messages)) return
+    if (!current() || !this.matches(record, messages)) return
     if (!Number.isSafeInteger(selected) || selected <= archived || selected > boundary ||
         (selected !== boundary && messages[selected]?.role !== 'user')) return
     logCompactionBudget('cached handoff boundary checked', {
       threadId: this.threadId, sourceMessages: record.source.length,
-      retainedFrom: selected, additionalRawMessages: record.source.length - selected,
+      retainedFrom: selected, additionalRawMessages: record.source.length - selected, restored,
     })
     const retainedIds = new Set(messages.slice(selected).map(message => message.id))
-    const retainedSummaries = this.summaryPlacements(messages).filter(item => retainedIds.has(item.afterMessageId))
-    if (selected === boundary && JSON.stringify(retainedSummaries) === JSON.stringify(record.retainedSummaries ?? [])) return
+    const retainedSummaries = placements.filter(item => retainedIds.has(item.afterMessageId))
+    if (selected === boundary && JSON.stringify(retainedSummaries) === JSON.stringify(record.retainedSummaries ?? [])) {
+      if (restored) this.restoredAdoption = undefined
+      return
+    }
     const updated = { ...record, cacheRetainFrom: selected, retainedSummaries }
     await this.store.save(updated)
     signal.throwIfAborted()
-    if (this.ready === ready && this.matches(record, messages)) ready.record = updated
+    if (current() && this.matches(record, messages)) {
+      if (ready) ready.record = updated
+      else { this.active = updated; this.restoredAdoption = undefined }
+    }
   }
 
-  private summaryPlacements(messages: UIMessage[]): RetainedSummary[] {
-    const record = this.active
+  private summaryPlacements(messages: UIMessage[], record: ArchiveRecord | null | undefined = this.active): RetainedSummary[] {
     if (!record?.summary || !this.matches(record, messages)) return []
     const anchors = new Set(messages.slice(record.cacheRetainFrom ?? record.source.length).map(message => message.id))
     return [...(record.retainedSummaries ?? []), ...(record.summaryAfterMessageId

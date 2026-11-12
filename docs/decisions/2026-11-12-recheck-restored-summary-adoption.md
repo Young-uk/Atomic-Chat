@@ -1,0 +1,7 @@
+# Recheck restored summary adoption
+
+A completed summary loaded as active at startup bypassed the pre-adoption cache boundary check. A disk session can therefore contain the preceding summary view while the next request sends the newer compacted view, beginning at a recent image and losing most text reuse.
+
+Recheck a restored summary only when its checkpoint source owner matches the last completed user turn. Reconstruct planning candidates with the exact matching predecessor's historical summary placements. A successful match may retain earlier whole raw turns without changing what the new summary covers. Persist that overlap and the predecessor placements; retain recent images. Never infer a predecessor from unrelated or edited archives.
+
+Restored adoption requires an explicitly positive cache alignment result. Refused, unavailable, aborted or stale planning leaves the saved view unchanged. A different cache owner does not trigger this migration. Normal live summary adoption keeps its existing behavior, and tool continuations never run the pre-adoption check. Image-bearing approximate history uses additive session format v3 to preserve all three rotary axes and verified image ownership. Text-only v2 and ordinary v1 files remain readable, and ordinary v1 output bytes stay unchanged. Restarts are tested both before and after visual compaction. Exact native/backend pins and reviewed same-Q5 disk-session bridges are updated.

@@ -32,3 +32,8 @@ it('keeps the existing boundary when a server cannot plan',async()=>{
  vi.stubGlobal('fetch',vi.fn(async()=>Response.json({}, {status:404})))
  expect(await planStrataHistoryBoundary('http://local/v1','model','thread/turn',history,8,2,new AbortController().signal,()=>[],{})).toBe(8)
 })
+
+it('requires a positive cache match before changing a restored historical view', async () => {
+ vi.stubGlobal('fetch',vi.fn(async()=>Response.json({reason:'cache-unavailable'})))
+ expect(await planStrataHistoryBoundary('http://local/v1','model','thread/turn',history,8,2,new AbortController().signal,()=>[],{},true)).toBe(-1)
+})

@@ -123,6 +123,16 @@ for bridge in upgrades:
     bridge['current_model'] = projected['atomic_summary_expected_model_fingerprint']
 upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                      current_model=projected['atomic_summary_expected_model_fingerprint'], previous=previous_pins))
+# Same Q5_1 weights and session layout; accept only the previous qualified 128K build.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                         current_model=projected['atomic_summary_expected_model_fingerprint'],
+                         previous={'atomic_summary_expected_native_sha256': 'a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:6470c3b88913485d1052012484bb3d2849a331bd5beefcd6285d3f4a787a595f', 'atomic_summary_expected_backend_sha256': 'cf611f9afcca989af47fa4b5a0a2cd2825f2183c6de47d37e23d4c0e8aa15452'}))
+# Additive visual-position v3 reader accepts the previously qualified Q5 v1/v2 sessions.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                         current_model=projected['atomic_summary_expected_model_fingerprint'],
+                         previous={'atomic_summary_expected_native_sha256': '29415571aff590ee03ff6776834a85faaf26d9fd631e6e8ae09bd09a0f114af7', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:6d70074eb6c620b62ebf1d95ab26abaabdcaed52ab222a665f2a79c03a7ae5f5', 'atomic_summary_expected_backend_sha256': '983af62ea3112ff3b512cb342ec4e72d6f5bd18696a1b01c698e5308115d677e'}))
 projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
@@ -312,8 +322,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-conversation-spill-v77/serve/server.py",
-            "feature-integration/engine-conversation-spill-v77/strata",
+            "feature-integration/runtime-restored-handoff-v92/serve/server.py",
+            "feature-integration/engine-restored-handoff-v92/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -338,7 +348,7 @@ impl Environment {
             .dstar_root
             .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf");
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-conversation-spill-v77/strata"),
+            "exe": root.join("feature-integration/engine-restored-handoff-v92/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -350,7 +360,7 @@ impl Environment {
                 "--prompt-cache-spread", "--prompt-cache-every", "4096",
                 "--conversation-cache-min-tokens", "1024"
             ],
-            "cwd": root.join("feature-integration/runtime-conversation-spill-v77"),
+            "cwd": root.join("feature-integration/runtime-restored-handoff-v92"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
@@ -369,9 +379,9 @@ impl Environment {
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:70809abac7ccc11cad98f02d05679714446ce7b52deb26311f9fd2fe9a816562",
-            "atomic_summary_expected_backend_sha256": "cf611f9afcca989af47fa4b5a0a2cd2825f2183c6de47d37e23d4c0e8aa15452",
+            "atomic_summary_expected_native_sha256": "ad8004f74420d6fe9c50d5959c29e6e713b2f914ee9185b9a9d95c5df7510833",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:db236b64e80aa0f4c9d1bcce042df488ae4a151ebe478ae23ad31982cc8ba0e2",
+            "atomic_summary_expected_backend_sha256": "c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": {
@@ -400,7 +410,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-conversation-spill-v77"),
+                    .join("feature-integration/runtime-restored-handoff-v92"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -557,7 +567,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-conversation-spill-v77"),
+                        .join("feature-integration/runtime-restored-handoff-v92"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1442,14 +1452,14 @@ mod tests {
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-conversation-spill-v77/strata")
+                .join("feature-integration/engine-restored-handoff-v92/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-conversation-spill-v77")
+                .join("feature-integration/runtime-restored-handoff-v92")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1492,15 +1502,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b"
+            "ad8004f74420d6fe9c50d5959c29e6e713b2f914ee9185b9a9d95c5df7510833"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:70809abac7ccc11cad98f02d05679714446ce7b52deb26311f9fd2fe9a816562"
+            "strata-stat-v2:db236b64e80aa0f4c9d1bcce042df488ae4a151ebe478ae23ad31982cc8ba0e2"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "cf611f9afcca989af47fa4b5a0a2cd2825f2183c6de47d37e23d4c0e8aa15452"
+            "c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

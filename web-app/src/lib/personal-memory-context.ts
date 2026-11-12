@@ -3,6 +3,11 @@ import type { UIMessage } from 'ai'
 export const PERSONAL_MEMORY_METADATA = 'atomic_personal_memory_v1'
 const MAX_CONTEXT_CHARS = 4000
 
+/** Managed runtime capability, not the user-facing model alias, controls review. */
+export function supportsPersonalMemoryRuntime(appendOnlyDstar: boolean, runtime?: { engine: string; summaryClone?: boolean } | null): boolean {
+  return appendOnlyDstar || (runtime?.engine === 'strata' && runtime.summaryClone === true)
+}
+
 export function isPersonalMemorySnapshot(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_CONTEXT_CHARS
 }
