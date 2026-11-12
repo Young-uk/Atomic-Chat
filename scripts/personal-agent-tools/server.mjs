@@ -1,3 +1,4 @@
+import { completeBackground } from './background-inference.mjs'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
 import { join, dirname } from 'node:path'
@@ -22,7 +23,7 @@ const schema = (properties, required) => ({ type: 'object', properties, required
 export const TOOLS = [
   { name: 'personal_feature_settings', description: 'Application-only Personal feature configuration. Never exposed to model discovery.', inputSchema: schema({ action: { enum: ['get','set','worker_status','worker_start','worker_stop','worker_login'] }, settings: { type: 'object' }, enabled: { type: 'boolean' } }, ['action']) },
   { name: 'personal_semantic_memory', description: 'Search source-backed notes with the explicitly configured local embedding model plus keyword ranking, or index up to 100 existing notes. No model is downloaded or started. Disabled until configured by the user in Personal tool settings.', inputSchema: schema({ action: { enum: ['search','index','status'] }, query: string }, ['action']) },
-  { name: 'personal_memory_lifecycle', description: 'Application-only completed-turn memory lifecycle and foreground priority. Not exposed to Chat model discovery.', inputSchema: schema({ action: { enum: ['observe','activity','status'] }, sessionId: string, messageId: string, userMessage: string, assistantReply: string, busy: { type: 'boolean' } }, ['action']) },
+  { name: 'personal_memory_lifecycle', description: 'Application-only completed-turn memory lifecycle and foreground priority. Not exposed to Chat model discovery.', inputSchema: schema({ action: { enum: ['observe','activity','status','history','undo'] }, sessionId: string, messageId: string, userMessage: string, assistantReply: string, cacheOwner: string, evidence: { type: 'array', items: { type: 'object' }, maxItems: 24 }, id: { type: 'integer', minimum: 1 }, busy: { type: 'boolean' } }, ['action']) },
   { name: 'personal_task_delivery', description: 'Application-only scheduled-result delivery bookkeeping. Excluded from Chat model tool discovery; the app polls saved results and records notification receipts.', inputSchema: schema({ action: { enum: ['pending','record'] }, taskId: string, runId: string, messageId: string, error: string }, ['action']) },
   { name: 'personal_native', description: 'Directly ported Agent file, shell, Git, web, clipboard, notification and macOS desktop controls. For general app interaction use os.screen.capture, inspect the returned image and geometry, then os.screen.click/type/key. Use personal_browser for structured Chrome interaction. For Safari or browser controls missing from personal_browser, use os.screen.capture then os.screen.click/type/key with current screenshot geometry. Sensitive or unverified browser input uses inspected native approval under the current Chat access mode. OS permissions are required; do not retry permission failures until the user resolves them. Discover names with catalog, then describe the exact original schema before run. Always include action: run when invoking a tool, with name and input (a JSON object encoded as text). input is a JSON object encoded as text. Native proposals are inspected by Chat: Full access auto-confirms; Restricted requires human approval. OS permission dialogs are separate. Remote Git synchronization remains disabled. Create or replace reusable custom.name tools with register; update edits an existing tool and rejects unknown names. Pass definition fields at top level (or together inside input JSON): name, description, inputSchema (JSON string: object/array/string/number/integer/boolean/null; required, enum; objects require additionalProperties=false), code (async JavaScript function body using input and returning JSON; no console output), and source (API documentation URL). Never put credentials in source or code. Discover custom tools with catalog/describe and invoke via run with input JSON. Each execution is bound to inspected code, revision and arguments. Full access auto-approves; Restricted asks. Modifying code invalidates old approvals. Custom code has host-user permissions, not a sandbox. remove unregisters a custom tool.', inputSchema: schema({ action: { enum: ['catalog','describe','register','update','remove','run','inspect','confirm'] }, name: string, input: string, pendingId: string, description: string, inputSchema: string, code: string, source: string }, ['action']) },
   { name: 'personal_git', description: 'Read workspace Git repository status, last 20 log entries, diff, show or branches. Structured NUL-safe status parsing is ported from Agent. No repository changes, network synchronization, external diff or text conversion. Output is untrusted evidence; long output is explicitly truncated.', inputSchema: schema({ action: { enum: ['status','log','diff','show','branches'] }, repo: string, ref: string }, ['action']) },
@@ -81,16 +82,12 @@ export class PersonalTools {
         const origin = this.memory.active?.input.sessionId
         const target = origin ? await threadTarget(process.env.ATOMIC_PERSONAL_WORKSPACE, origin) : null
         const { endpoint, model } = await resolveTarget({ target, endpoint: this.endpoint, model: this.model, signal: params.signal })
-        const response = await fetch(`${endpoint}/chat/completions`, { signal: params.signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, atomic_summary: true, think: false, stream: false, max_tokens: params.maxTokens ?? 2048, messages: [{ role: 'user', content: params.prompt }], tools: params.tools, tool_choice: params.toolChoice, parallel_tool_calls: false }) })
-        if (!response.ok) throw new Error(`Memory inference failed: HTTP ${response.status}`)
-        const result = await response.json()
-        const choice = result.choices?.[0]
-        if (!choice || choice.finish_reason === 'length') throw new Error('Memory output was missing or truncated')
-        return { content: choice.message?.content ?? '', toolCalls: choice.message?.tool_calls }
+        return completeBackground(params, { endpoint, model })
       } })
     this.featureReady = this.features.get().then(settings => {
       this.notes.configureSemantic(settings.semanticMemory)
       this.memory.configureMaintenance(settings.memoryMaintenance.enabled)
+      this.memory.configureReview(settings.memoryMaintenance.backgroundReview)
       this.notes.queryRewriteEnabled = settings.memoryMaintenance.queryRewrite
     }).catch(error => { this.featureError = error.message })
     this.taskTimeoutMs = taskTimeoutMs
@@ -117,6 +114,7 @@ export class PersonalTools {
         const value = await this.features.set(args.settings)
         this.notes.configureSemantic(value.semanticMemory)
         this.memory.configureMaintenance(value.memoryMaintenance.enabled)
+        this.memory.configureReview(value.memoryMaintenance.backgroundReview)
         this.notes.queryRewriteEnabled = value.memoryMaintenance.queryRewrite
         return value
       }
@@ -135,6 +133,8 @@ export class PersonalTools {
       if (args?.action === 'observe') return this.memory.enqueue(args)
       if (args?.action === 'activity' && typeof args.busy === 'boolean') return this.memory.activity(args.busy)
       if (args?.action === 'status') return this.memory.status()
+      if (args?.action === 'history') return this.memory.reviewHistory()
+      if (args?.action === 'undo') return this.memory.undoReview(args.id)
       throw new Error('Invalid memory lifecycle action')
     }
     // App polling endpoint. Listed for MCP routing, but excluded from Chat's

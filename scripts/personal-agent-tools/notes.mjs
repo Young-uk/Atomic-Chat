@@ -1,3 +1,4 @@
+import { ReviewStore } from './review-store.mjs'
 import { ProfileLinks } from './profile-links.mjs'
 import { semanticMemory } from './semantic-memory.mjs'
 import { join } from 'node:path'
@@ -59,8 +60,9 @@ export class PersonalNotes {
       // Use the original grounded-name and contextual-keyword gates. The
       // immutable per-turn host snapshot remains the final byte budget.
       const facts = selectProfileFacts(this.profile.listForPrompt(), { userMessage: args.query })
+      const learned = new ReviewStore(this).context(args.query)
       const profile = facts.slice(0, 3).map(fact => ({ id: `profile:${fact.id}`, content: `${fact.key}: ${fact.value}`, sessionId: `personal-profile:${fact.id}:${fact.validFrom}` }))
-      return this.semantic?.enabled ? this.semanticSearch(args.query).then(result => ({ ...result, entries: [...profile, ...result.entries] })) : { mode: 'profile+fts5', entries: [...profile, ...store.recall(args.query, { k: 5, scope: 'all' })] }
+      return this.semantic?.enabled ? this.semanticSearch(args.query).then(result => ({ ...result, entries: [...profile, ...learned, ...result.entries] })) : { mode: 'profile+fts5', entries: [...profile, ...learned, ...store.recall(args.query, { k: 5, scope: 'all' })] }
     }
     if (args.action === 'list') return store.listIndex({ limit: 100, scope: 'all' })
     if (!Number.isSafeInteger(args.id) || args.id < 1) throw new Error('A positive note id is required')

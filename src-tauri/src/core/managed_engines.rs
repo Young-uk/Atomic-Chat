@@ -123,14 +123,6 @@ for bridge in upgrades:
     bridge['current_model'] = projected['atomic_summary_expected_model_fingerprint']
 upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                      current_model=projected['atomic_summary_expected_model_fingerprint'], previous=previous_pins))
-# Reviewed spill/auxiliary update: native session layout and arithmetic are unchanged.
-# Accept only the exact previously running 128K artifact triple.
-if context == 131072:
-    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
-                         current_model=projected['atomic_summary_expected_model_fingerprint'],
-                         previous={'atomic_summary_expected_native_sha256': 'adf7d27d20e8add573d70a4ceb436a73af0750c57cfabeb067bfb2c4cdcf5c74', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:02139ae761e522329c816fd12e5c2aba7b1afe498e8e6d88a213766a022ef21f', 'atomic_summary_expected_backend_sha256': 'c04d9d981b5d1c45f4329bd7eaaee988cb8d81169c056c2fd9175103f98e3642'}))
-if context == 131072:
-    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'], current_model=projected['atomic_summary_expected_model_fingerprint'], previous={'atomic_summary_expected_native_sha256': '46adb06d9aebdd014fe8676d5e3d3570be2c8cb91e1d6063327747e09276c42a', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:a07976d1db2741fbffc806e492e555c86220cef98996418eaab37ca992568a2b', 'atomic_summary_expected_backend_sha256': 'cf611f9afcca989af47fa4b5a0a2cd2825f2183c6de47d37e23d4c0e8aa15452'}))
 projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
@@ -363,46 +355,9 @@ impl Environment {
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
             "log": root.join("strata-atomic.log"),
-            "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3"),
-            // Reviewed output-policy and cache-reserve upgrades keep the native/session layout.
-            "atomic_disk_session_reviewed_upgrades": if context == DEFAULT_STRATA_CONTEXT { serde_json::json!([
-    {
-        "current_native": "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b",
-        "current_model": "strata-stat-v2:a135aac81e94a7cfc8b25886e479da59ed5e7c06f5021776e99f7e3084b6adbe",
-        "previous": {
-            "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
-            "atomic_summary_expected_backend_sha256": "4d0753e9ecadd6d28788ef9f7f55df687b50bd531ff7064662ee2003262029fe"
-        }
-    },
-    {
-        "current_native": "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b",
-        "current_model": "strata-stat-v2:a135aac81e94a7cfc8b25886e479da59ed5e7c06f5021776e99f7e3084b6adbe",
-        "previous": {
-            "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0",
-            "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
-        }
-    },
-    {
-        "current_native": "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b",
-        "current_model": "strata-stat-v2:a135aac81e94a7cfc8b25886e479da59ed5e7c06f5021776e99f7e3084b6adbe",
-        "previous": {
-            "atomic_summary_expected_native_sha256": "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c",
-            "atomic_summary_expected_backend_sha256": "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4"
-        }
-    },
-    {
-        "current_native": "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b",
-        "current_model": "strata-stat-v2:a135aac81e94a7cfc8b25886e479da59ed5e7c06f5021776e99f7e3084b6adbe",
-        "previous": {
-            "atomic_summary_expected_native_sha256": "85f853021e5c8dbb81d554f3d993a9dc18548f3ad156c660b625e155014796e8",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:a53714342790166df88d17f628584f9f52be3d7815c9a8d2de2f37d7dc2e113c",
-            "atomic_summary_expected_backend_sha256": "293ab773e56162f0afdd7d517b3e3f8c4e23fce43d65693e7239502f1cb067d4"
-        }
-    }
-]) } else { serde_json::json!([]) },
+            "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3-q5-1"),
+            // The Q5_1 n-gram changes activations: never admit prior IQ4_NL sessions.
+            "atomic_disk_session_reviewed_upgrades": [],
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
@@ -415,7 +370,7 @@ impl Environment {
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "a86b01958f43909d8340503aede78cd858d5d8ff87bc5b90c2b31de6d4cfb70b",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:a135aac81e94a7cfc8b25886e479da59ed5e7c06f5021776e99f7e3084b6adbe",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:70809abac7ccc11cad98f02d05679714446ce7b52deb26311f9fd2fe9a816562",
             "atomic_summary_expected_backend_sha256": "cf611f9afcca989af47fa4b5a0a2cd2825f2183c6de47d37e23d4c0e8aa15452",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
@@ -428,7 +383,7 @@ impl Environment {
                 "STRATA_METAL_KEEP_FREE_GB": "8",
                 "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192",
                 "STRATA_ATOMIC_SUMMARY_CHECKPOINTS": "1",
-                "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3")
+                "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3-q5-1")
             },
             "vision": {
                 "exe": root.join("candidate/strata-vision"),
@@ -1172,38 +1127,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_reserve_bridges_are_exact_and_context_scoped() {
+    fn q5_ngram_keeps_previous_model_sessions_isolated() {
         let env = Environment::personal(PathBuf::from("/home/test/dstar"));
-        let cfg = env.strata_config(DEFAULT_STRATA_CONTEXT);
-        let upgrades = cfg["atomic_disk_session_reviewed_upgrades"].as_array().unwrap();
-        assert_eq!(upgrades.len(), 4);
-        let bridge = &upgrades[0];
-        assert_eq!(bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
-        assert_eq!(bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
-        assert_eq!(bridge["previous"]["atomic_summary_expected_native_sha256"], "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa");
-        assert_eq!(bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0");
-        let reserve_bridge = &upgrades[1];
-        assert_eq!(reserve_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
-        assert_eq!(reserve_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
-        assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:8f56e786d6127505976a98f0b39ca509d56f016ddd76f2fd81a77f82bce516b0");
-        assert_eq!(reserve_bridge["previous"]["atomic_summary_expected_backend_sha256"], "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4");
-        assert_eq!(bridge["previous"]["atomic_summary_expected_backend_sha256"], "4d0753e9ecadd6d28788ef9f7f55df687b50bd531ff7064662ee2003262029fe");
-        let capacity_bridge = &upgrades[2];
-        assert_eq!(capacity_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
-        assert_eq!(capacity_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
-        assert_eq!(capacity_bridge["previous"]["atomic_summary_expected_native_sha256"], "158acde80c2a6930d7291306277be07f4aaf94568e8f78e0a1119fbdf1cdddaa");
-        assert_eq!(capacity_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:ff8d8a502a721d0d1ebccdcaa1391526157b884ebad41cbefbdc2fc45d51384c");
-        assert_eq!(capacity_bridge["previous"]["atomic_summary_expected_backend_sha256"], "d8cfef596edea2fa600a6d00a1a718cc055c2626a1196c37b57aa41911a1b8d4");
-        let checkpoint_bridge = &upgrades[3];
-        assert_eq!(checkpoint_bridge["current_native"], cfg["atomic_summary_expected_native_sha256"]);
-        assert_eq!(checkpoint_bridge["current_model"], cfg["atomic_summary_expected_model_fingerprint"]);
-        assert_eq!(checkpoint_bridge["previous"]["atomic_summary_expected_native_sha256"], "85f853021e5c8dbb81d554f3d993a9dc18548f3ad156c660b625e155014796e8");
-        assert_eq!(checkpoint_bridge["previous"]["atomic_summary_expected_model_fingerprint"], "strata-stat-v2:a53714342790166df88d17f628584f9f52be3d7815c9a8d2de2f37d7dc2e113c");
-        assert_eq!(checkpoint_bridge["previous"]["atomic_summary_expected_backend_sha256"], "293ab773e56162f0afdd7d517b3e3f8c4e23fce43d65693e7239502f1cb067d4");
-        assert_eq!(cfg["atomic_summary_checkpoint_enabled"], true);
-        assert_eq!(cfg["env"]["STRATA_ATOMIC_SUMMARY_CHECKPOINTS"], "1");
-        for context in [16_384, 65_537, 131_072, 262_144] {
-            assert!(env.strata_config(context)["atomic_disk_session_reviewed_upgrades"].as_array().unwrap().is_empty());
+        for context in [16_384, 65_536, 131_072, 262_144] {
+            let cfg = env.strata_config(context);
+            assert!(cfg["atomic_disk_session_reviewed_upgrades"].as_array().unwrap().is_empty());
+            assert!(cfg["atomic_disk_session_dir"].as_str().unwrap().ends_with("kv-cache-strata-iq3-q5-1"));
+            assert_eq!(cfg["atomic_disk_session_dir"], cfg["env"]["STRATA_CONVERSATION_DISK_DIR"]);
         }
     }
 
@@ -1566,7 +1496,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:a135aac81e94a7cfc8b25886e479da59ed5e7c06f5021776e99f7e3084b6adbe"
+            "strata-stat-v2:70809abac7ccc11cad98f02d05679714446ce7b52deb26311f9fd2fe9a816562"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],

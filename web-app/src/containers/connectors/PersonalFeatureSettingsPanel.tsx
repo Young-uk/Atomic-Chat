@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
+import BackgroundReviewHistory from './BackgroundReviewHistory'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 
-type Features = { version: 1; memoryMaintenance: { enabled: boolean; queryRewrite: boolean }; semanticMemory: { enabled: boolean; url: string; model: string; dimensions: number } }
+type Features = { version: 1; memoryMaintenance: { enabled: boolean; queryRewrite: boolean; backgroundReview: boolean }; semanticMemory: { enabled: boolean; url: string; model: string; dimensions: number } }
 export default function PersonalFeatureSettingsPanel() {
   const service = useServiceHub(), { t } = useTranslation()
   const [settings, setSettings] = useState<Features>()
@@ -40,6 +41,10 @@ export default function PersonalFeatureSettingsPanel() {
       <label className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1">{t('tools:features.queryRewrite')}</span>
         <Switch aria-label={t('tools:features.queryRewrite')} checked={settings.memoryMaintenance?.queryRewrite ?? false} onCheckedChange={queryRewrite => setSettings({ ...settings, memoryMaintenance: { ...settings.memoryMaintenance, queryRewrite } })} /></label>
       <p className="text-xs text-muted-foreground">{t('tools:features.maintenanceDescription')}</p>
+      <label className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1">{t('tools:features.backgroundReview')}</span>
+        <Switch aria-label={t('tools:features.backgroundReview')} checked={settings.memoryMaintenance?.backgroundReview ?? false} onCheckedChange={backgroundReview => setSettings({ ...settings, memoryMaintenance: { ...settings.memoryMaintenance, backgroundReview } })} /></label>
+      <p className="text-xs text-muted-foreground">{t('tools:features.reviewDescription')}</p>
+      <BackgroundReviewHistory />
       <Button className="self-start" disabled={busy} onClick={() => {
         setBusy(true); setError('')
         void call('set', settings).then(setSettings).catch(cause => setError(String(cause))).finally(() => setBusy(false))

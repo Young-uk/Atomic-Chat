@@ -865,3 +865,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - **2026-11-11** — [Recover Personal tool calls and read real diagnostic logs](2026-11-11-personal-tool-routing-and-logs.md)
 
 - [Isolate local auxiliary work and spill displaced conversation state](2026-11-11-isolated-auxiliary-and-conversation-spill.md)
+
+- [Personal Q5_1 n-gram trial](2026-11-11-personal-q5-ngram-trial.md)
+
+- **2026-11-12** — [Personal background learning review channel](2026-11-12-personal-background-review-channel.md)

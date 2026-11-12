@@ -1,3 +1,4 @@
+import { captureBackgroundReviewEvidence } from './background-review-evidence'
 import { scheduledMessagesForModel } from './personal-task-delivery'
 import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history-plan'
 import i18n from '@/i18n/setup'
@@ -1886,7 +1887,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             // or model-authored tool output as evidence of a user preference.
             if (userMessage.trim() && assistantReply.trim()) void this.serviceHub.mcp().callTool({
               serverName: 'atomic-personal-tools', toolName: 'personal_memory_lifecycle',
-              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply },
+              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply, cacheOwner: `${personalMemoryThread}/${user!.id}`, evidence: captureBackgroundReviewEvidence([...options.messages, responseMessage]) },
             }).catch(error => console.warn('[personal-memory]', error))
           }
         }

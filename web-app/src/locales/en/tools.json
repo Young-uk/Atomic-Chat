@@ -65,6 +65,16 @@
     "failed": "Could not update Personal feature settings.",
     "maintenance": "Consolidate memories while idle",
     "maintenanceDescription": "Disabled by default. Distills related older notes into lessons and procedures on the existing background model. Original notes remain archived. Pauses for conversation.",
-    "queryRewrite": "Resolve references in memory searches"
+    "queryRewrite": "Resolve references in memory searches",
+    "backgroundReview": "Background learning review",
+    "reviewDescription": "Reviews corrections and successful workflows while idle. Conversation and summarization take priority. Learned changes can be inspected and undone.",
+    "reviewHistory": "Learned changes",
+    "reviewRefresh": "Refresh",
+    "reviewEmpty": "No learned changes yet.",
+    "reviewUndo": "Undo review",
+    "reviewUndone": "Undone",
+    "reviewFailed": "Could not load or undo this review. Undo newer related changes first.",
+    "reviewEvidence": "Source evidence",
+    "reviewLoading": "Loading…"
   }
 }

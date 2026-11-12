@@ -53,6 +53,16 @@
     "failed": "Personal 기능 설정을 변경하지 못했습니다.",
     "maintenance": "대기 중 기억 통합",
     "maintenanceDescription": "기본은 꺼져 있습니다. 기존 백그라운드 모델로 관련된 오래된 메모를 교훈과 절차로 통합합니다. 원문 메모는 보관하고 대화를 우선합니다.",
-    "queryRewrite": "기억 검색에서 앞선 대화 참조 보완"
+    "queryRewrite": "기억 검색에서 앞선 대화 참조 보완",
+    "backgroundReview": "백그라운드 학습 리뷰",
+    "reviewDescription": "유휴 시간에 교정 사항과 성공한 작업 절차를 검토합니다. 대화와 요약이 우선이며, 학습한 변경 내용을 확인하고 되돌릴 수 있습니다.",
+    "reviewHistory": "학습한 변경 내용",
+    "reviewRefresh": "새로고침",
+    "reviewEmpty": "아직 학습한 변경 내용이 없습니다.",
+    "reviewUndo": "리뷰 되돌리기",
+    "reviewUndone": "되돌림",
+    "reviewFailed": "리뷰를 불러오거나 되돌리지 못했습니다. 관련된 최신 변경부터 되돌려 주세요.",
+    "reviewEvidence": "근거 기록",
+    "reviewLoading": "불러오는 중…"
   }
 }
