@@ -883,3 +883,11 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Collapse automatic thinking previews at turn end](2026-11-13-collapse-automatic-thinking-at-turn-end.md)
 
 - [Summary sizing and stale cache plans](2026-11-13-summary-sizing-and-stale-cache-plans.md)
+
+- [M1 Max prefill tiles and native progress](2026-11-13-m1-prefill-tiles.md) — measured personal Metal tiling, genuine watchdog progress, and exact disk-cache upgrade pins.
+
+- [Completed cache receipts and personal build verification](2026-11-13-completed-cache-receipts.md) — Attest complete turns independently of summaries and verify personal feature gates in the built artifact.
+
+- [Cache-prefix and expert I/O diagnostics](2026-11-13-cache-prefix-io-diagnostics.md) — Hash-only input change tracing and sampled, overlapping Metal I/O counters.
+
+- [Recent disk checkpoint and prepared Metal resources](2026-11-13-recent-checkpoint-startup-resources.md) — Keep a nearby recovery anchor and move allocation-only expert preparation into startup.

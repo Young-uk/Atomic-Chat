@@ -79,7 +79,7 @@ const CONTEXT_PIN_SCRIPT: &str = r#"
 import hashlib, json, pathlib, sys
 cfg = json.load(sys.stdin)
 root = pathlib.Path(cfg['cwd']) / 'serve'
-names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py', 'history_plan.py')
+names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py', 'history_plan.py', 'prompt_trace.py')
 hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
 backend = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 if backend != cfg['atomic_summary_expected_backend_sha256']:
@@ -124,6 +124,22 @@ for bridge in upgrades:
 upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                      current_model=projected['atomic_summary_expected_model_fingerprint'], previous=previous_pins))
 # Historical Q5_1 cache bridges are deliberately excluded for the original table.
+# The reviewed M1 tile update changes execution tiling, not serialized state or weights.
+# Preserve only the previously qualified original-IQ4 128K production identity.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                         current_model=projected['atomic_summary_expected_model_fingerprint'],
+                         previous={'atomic_summary_expected_native_sha256': 'ad8004f74420d6fe9c50d5959c29e6e713b2f914ee9185b9a9d95c5df7510833', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:a8c338b44b5bbc2f505099897aa101586d7b4ab5b5c90281b503edf261659d6c', 'atomic_summary_expected_backend_sha256': 'c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388'}))
+# Diagnostic-only native/backend update: accept only the exact prior 128K policy.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                         current_model=projected['atomic_summary_expected_model_fingerprint'],
+                         previous={'atomic_summary_expected_native_sha256': '61b60c255386e6cccbefa60a7082637c9ca75b7474b0bb5f9cf82759c21cb9a8', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:d4e806f0fd11722677c6b4e0afbe9cda7f5916d75225c68de3ded1363114f2c7', 'atomic_summary_expected_backend_sha256': 'c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388'}))
+# Same session format and arithmetic; exact preceding 128K diagnostic policy only.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                         current_model=projected['atomic_summary_expected_model_fingerprint'],
+                         previous={'atomic_summary_expected_native_sha256': '616fcc0d38b8c07b524b4ab7b7a52318a028b8199bac5d9fff3b3a44cbb657c9', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:6391cf078ac5f7d01d8b37b0ab3bcfae1ae3b5aa9bb7b3246f167df972f24de4', 'atomic_summary_expected_backend_sha256': '126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd'}))
 projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
@@ -313,8 +329,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-restored-handoff-v92/serve/server.py",
-            "feature-integration/engine-restored-handoff-v92/strata",
+            "feature-integration/runtime-cache-diagnostics-v113/serve/server.py",
+            "feature-integration/engine-startup-checkpoints-v115/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -338,8 +354,23 @@ impl Environment {
         let first = self
             .dstar_root
             .join("models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf");
+        let env = serde_json::json!({
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "STRATA_METAL_PROMPT_EXPERTS": "v2", "STRATA_METAL_F16": "0",
+                "STRATA_METAL_PROMPT_CHUNK": "4096", "STRATA_ROUTE_TAIL_SKIP": "0",
+                // M1 Max: identical v2 gate/up values, measured with the existing 4096-row policy.
+                "STRATA_METAL_PROMPT_GU_K": "32",
+                "STRATA_ATOMIC_PROMPT_TRACE": "1", "STRATA_METAL_IO_PROFILE": "1",
+                "STRATA_ATOMIC_RECENT_CHECKPOINT": "1", "STRATA_METAL_PREPARE_BEFORE_READY": "1",
+                "STRATA_PREFILL_CPU_SHARE": "0",
+                // Measured on the personal 64 GiB M1 Max; keep automatic arena sizing.
+                "STRATA_METAL_KEEP_FREE_GB": "8",
+                "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192",
+                "STRATA_ATOMIC_SUMMARY_CHECKPOINTS": "1",
+                "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3-iq4nl")
+            });
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-restored-handoff-v92/strata"),
+            "exe": root.join("feature-integration/engine-startup-checkpoints-v115/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -351,7 +382,7 @@ impl Environment {
                 "--prompt-cache-spread", "--prompt-cache-every", "4096",
                 "--conversation-cache-min-tokens", "1024"
             ],
-            "cwd": root.join("feature-integration/runtime-restored-handoff-v92"),
+            "cwd": root.join("feature-integration/runtime-cache-diagnostics-v113"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
@@ -370,22 +401,12 @@ impl Environment {
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "ad8004f74420d6fe9c50d5959c29e6e713b2f914ee9185b9a9d95c5df7510833",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:531400680a4537dc0e9d7db726b7c147d6c7927701737a64e440506401c8746a",
-            "atomic_summary_expected_backend_sha256": "c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388",
+            "atomic_summary_expected_native_sha256": "dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:6bcbf59f0ce2030b1c586525d5b7a1ae7a1d23c7b041039d89239aba61f95f78",
+            "atomic_summary_expected_backend_sha256": "126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
-            "env": {
-                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-                "STRATA_METAL_PROMPT_EXPERTS": "v2", "STRATA_METAL_F16": "0",
-                "STRATA_METAL_PROMPT_CHUNK": "4096", "STRATA_ROUTE_TAIL_SKIP": "0",
-                "STRATA_PREFILL_CPU_SHARE": "0",
-                // Measured on the personal 64 GiB M1 Max; keep automatic arena sizing.
-                "STRATA_METAL_KEEP_FREE_GB": "8",
-                "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192",
-                "STRATA_ATOMIC_SUMMARY_CHECKPOINTS": "1",
-                "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3-iq4nl")
-            },
+            "env": env,
             "vision": {
                 "exe": root.join("candidate/strata-vision"),
                 "mmproj": self.dstar_root.join("models/mmproj-Qwen3.8-Flash-Next-Q8_0.gguf"),
@@ -401,7 +422,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-restored-handoff-v92"),
+                    .join("feature-integration/runtime-cache-diagnostics-v113"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -558,7 +579,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-restored-handoff-v92"),
+                        .join("feature-integration/runtime-cache-diagnostics-v113"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1438,19 +1459,25 @@ mod tests {
         assert_eq!(config["effort_position"], "end");
         assert_eq!(config["env"]["STRATA_METAL_KEEP_FREE_GB"], "8");
         assert_eq!(config["env"]["STRATA_METAL_PROMPT_CHUNK"], "4096");
+        assert_eq!(config["env"]["STRATA_METAL_PROMPT_GU_K"], "32");
+        assert_eq!(config["env"]["STRATA_ATOMIC_PROMPT_TRACE"], "1");
+        assert_eq!(config["env"]["STRATA_METAL_IO_PROFILE"], "1");
+        assert_eq!(config["env"]["STRATA_ATOMIC_RECENT_CHECKPOINT"], "1");
+        assert_eq!(config["env"]["STRATA_METAL_PREPARE_BEFORE_READY"], "1");
+        assert_eq!(config["mtp"], false);
         assert!(config["env"].get("STRATA_METAL_ARENA_GB").is_none());
         assert!(config["env"].get("STRATA_METAL_LEAVE_SHARE").is_none());
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-restored-handoff-v92/strata")
+                .join("feature-integration/engine-startup-checkpoints-v115/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-restored-handoff-v92")
+                .join("feature-integration/runtime-cache-diagnostics-v113")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1493,15 +1520,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "ad8004f74420d6fe9c50d5959c29e6e713b2f914ee9185b9a9d95c5df7510833"
+            "dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:531400680a4537dc0e9d7db726b7c147d6c7927701737a64e440506401c8746a"
+            "strata-stat-v2:6bcbf59f0ce2030b1c586525d5b7a1ae7a1d23c7b041039d89239aba61f95f78"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "c5c78ab6550e2a3bd9536c21b0336d8098269682e50e15cb1b94d72e2516b388"
+            "126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

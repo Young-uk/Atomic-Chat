@@ -2279,3 +2279,41 @@ it.each(['strata', 'dstar'] as const)('keeps scheduled delivery outside an unfin
     expect(JSON.stringify(calls[1][0].prompt)).toContain('REMINDER')
   } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
 })
+
+
+describe('Strata completed cache receipts', () => {
+  it.each(['stop', 'length', 'tool-calls'] as const)('binds only completed turns with summaries disabled: %s', async finishReason => {
+    vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'false')
+    const info = { id: STRATA_MODEL, capabilities: [], settings: {} } as Model
+    useModelProvider.setState({ selectedProvider: STRATA_PROVIDER, selectedModel: info,
+      providers: [{ provider: STRATA_PROVIDER, active: true, api_key: '', base_url: 'http://127.0.0.1:18080/v1', models: [info], settings: [] }] })
+    let acknowledge!: () => void
+    const pending = new Promise<void>(resolve => { acknowledge = resolve })
+    const receipt = vi.fn(async () => { await pending; return Response.json({ saved: true }) })
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/atomic/cache-receipt')) return receipt()
+      return Response.json({ data: [{ id: STRATA_MODEL, context_length: 65536 }], runtime_id: 'receipt-runtime', atomic_model_fingerprint: 'receipt-config',
+        atomic_summary_slot: true, atomic_summary_clone: true, atomic_summary_context: 16384, atomic_summary_token_count: true,
+        atomic_summary_protocol: 3, atomic_summary_cold_start: true, atomic_summary_scratch_reserve_bytes: 1073741824,
+        atomic_summary_qualified_envelope: qualifiedSummaryEnvelope, atomic_summary_isolation: 'serial-snapshot-v1' })
+    }))
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(fakeStreamingModel([
+      { type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'answer' },
+      { type: 'text-delta', id: 'answer', delta: 'READY' }, { type: 'text-end', id: 'answer' },
+      { type: 'finish', finishReason, usage: { inputTokens: 100, outputTokens: 1, totalTokens: 101 } },
+    ]))
+    let finished = false
+    try {
+      const stream = await new CustomChatTransport(undefined, 'receipt-thread').sendMessages({ chatId: 'receipt-thread', messages: [userMessage],
+        abortSignal: undefined, trigger: 'submit-message', messageId: undefined })
+      const reading = readChunks(stream as ReadableStream<Record<string, unknown>>).then(chunks => { finished = true; return chunks })
+      if (finishReason === 'stop') {
+        await vi.waitFor(() => expect(receipt).toHaveBeenCalledOnce())
+        expect(finished).toBe(false)
+      }
+      acknowledge()
+      await reading
+      expect(receipt).toHaveBeenCalledTimes(finishReason === 'stop' ? 1 : 0)
+    } finally { acknowledge(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+})

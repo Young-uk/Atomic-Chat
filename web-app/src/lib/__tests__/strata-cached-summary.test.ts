@@ -587,3 +587,9 @@ it('keeps checkpoint source proof outside the inference prompt and awaits it bef
   expect(body.atomic_summary_recovery).toBe(true)
   expect(body.max_tokens).toBe(0)
 })
+
+
+it('rejects a successful HTTP response when the owner changed before acknowledgment', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ saved: false })))
+  await expect(bindStrataHistory('http://local/v1', 'thread/u9', history())).rejects.toThrow('owner changed')
+})

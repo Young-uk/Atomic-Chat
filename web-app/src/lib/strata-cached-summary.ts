@@ -140,6 +140,7 @@ export async function bindStrataHistory(baseUrl: string, owner: string, history:
     body: JSON.stringify({ owner, history_hash: historyHash }),
   })
   if (!response.ok) throw new Error(`Cache history receipt was not saved (${response.status})`)
+  if ((await response.json()).saved !== true) throw new Error('Cache history receipt owner changed before acknowledgment')
 }
 
 /** Resume only an idle, restored cache bound to this exact completed turn.

@@ -74,6 +74,19 @@ export default defineConfig(({ mode }) => {
         autoCodeSplitting: true,
         routeFileIgnorePattern: '.((test).ts)|test-page',
       }),
+      {
+        name: 'atomic-build-capabilities',
+        apply: 'build',
+        generateBundle() {
+          // Record only public feature gates, never environment values such as keys.
+          this.emitFile({ type: 'asset', fileName: 'atomic-build.json', source: JSON.stringify({
+            version: 1,
+            personal: env.VITE_PERSONAL_BUILD === 'true',
+            appendEffort: env.VITE_DSTAR_APPEND_EFFORT === 'true',
+            backgroundCompaction: env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true',
+          }) })
+        },
+      },
       react(),
       tailwindcss(),
       nodePolyfills({

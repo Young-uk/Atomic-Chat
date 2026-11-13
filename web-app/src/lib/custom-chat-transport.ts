@@ -1739,11 +1739,6 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           const history = [...original.filter(m => m.id !== response.id), response]
           const modelView = [...preparedMessages.filter(m => m.id !== response.id), response]
           const cacheUser = history.findLast(message => message.role === 'user')
-          if (runtime?.summaryClone && cacheUser) {
-            void bindStrataHistory(provider.base_url!, `${snapshotThreadId}/${cacheUser.id}`, history).catch(() => {
-              console.warn('[context-compaction] disk clone history receipt unavailable')
-            })
-          }
           const afterTurnEstimate = estimatePromptTokensHeuristic({ messages: convertToModelMessages(modelToolMessages(modelView)), tools: activeTools })
           const summaryAdapter = runtime?.summaryClone && cacheUser
               ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
@@ -1874,12 +1869,28 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     // Whether this request failed, so its finish does not count as an answer.
     let requestFailed = false
 
-    const finishResponse = ({ responseMessage, isAborted, finishReason }: { responseMessage: UIMessage; isAborted: boolean; finishReason?: string }) => {
+    const finishResponse = async ({ responseMessage, isAborted, finishReason }: { responseMessage: UIMessage; isAborted: boolean; finishReason?: string }) => {
         const toolsPending = summaryTurnHasToolsPending(responseMessage)
-        completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)
         if (!requestFailed && !isAborted && !toolsPending && finishReason === 'stop' && responseMessage) {
           if (completedForegroundTokens !== undefined) {
             summaryAdmission?.observeForeground(completedForegroundTokens, foregroundObservationId)
+          }
+          // A cache receipt belongs to a completed conversation, independently
+          // of compaction admission or the background-summary setting. Await its
+          // bounded acknowledgment before releasing this foreground request so
+          // a ready chat followed by normal shutdown can persist the binding.
+          const cacheUser = options.messages.findLast(message => message.role === 'user')
+          if (runtime?.engine === 'strata' && runtime.summaryClone && cacheUser) {
+            const history = replayDstarToolSnapshots(options.messages,
+              useMessages.getState().getMessages(compactionThread))
+            try {
+              await bindStrataHistory(provider.base_url!, `${compactionThread}/${cacheUser.id}`,
+                [...history.filter(message => message.id !== responseMessage.id), responseMessage])
+            } catch {
+              // Retain the successful answer and ordinary inference cache. A
+              // refused receipt must never be advertised as a verified clone.
+              console.warn('[context-compaction] disk clone history receipt unavailable')
+            }
           }
           summaryAfterTurn?.(responseMessage)
           if (personalMemoryEnabled && this.serviceHub && useMCPServers.getState().mcpServers['atomic-personal-tools']?.active) {
@@ -1894,6 +1905,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             }).catch(error => console.warn('[personal-memory]', error))
           }
         }
+        completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)
         // The provider answered in full, so its key works: drop a stale
         // "Key rejected" or "not verified".
         if (!requestFailed && !isAborted && finishReason !== 'error') {
