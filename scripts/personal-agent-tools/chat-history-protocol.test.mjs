@@ -48,6 +48,18 @@ test('history discovery and search/context work through the real MCP worker prot
     const read = await call({ action: 'context', threadId: hit.threadId, messageId: hit.messageId, ...binding })
     assert.equal(JSON.parse(read.content[0].text).messages[0].text, 'Cold weather, thin jacket.')
     assert.equal((await call({ action: 'search', query: 'weather', unexpected: true, ...binding })).isError, true)
+    const legacy = join(root, 'threads', 'legacy'); await mkdir(legacy)
+    await writeFile(join(legacy, 'thread.json'), JSON.stringify({ id: 'legacy', title: 'previous assistant version', assistants: [{ id: 'winter-old' }] }))
+    await writeFile(join(legacy, 'messages.jsonl'), JSON.stringify({ id: 'old', thread_id: 'legacy', role: 'user', created_at: Date.parse('2026-11-08T01:00:00Z'), content: [{ type: 'text', text: { value: 'Legacy sentinel' } }] }) + '\n')
+    const settings = JSON.parse((await request('tools/call', { name: 'personal_feature_settings', arguments: { action: 'get' } })).result.content[0].text)
+    const configured = await request('tools/call', { name: 'personal_feature_settings', arguments: { action: 'set', settings: { ...settings, chatHistory: { assistantGroups: [['winter', 'winter-old']] } } } })
+    assert.notEqual(configured.result.isError, true)
+    const linked = JSON.parse((await call({ action: 'search', query: 'sentinel', day: '2026-11-08', withContext: true, ...binding })).content[0].text)
+    assert.equal(linked.scope, 'linked-assistants-and-project')
+    assert.equal(linked.hits[0].threadId, 'legacy')
+    assert.equal(linked.context.messages[0].text, 'Legacy sentinel')
+    assert.equal(linked.scopeInfo.retention, 'no-age-limit')
+
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       const ended = new Promise(resolve => child.once('exit', resolve))

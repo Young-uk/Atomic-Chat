@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 
-type Features = { version: 1; memoryMaintenance: { enabled: boolean; queryRewrite: boolean; backgroundReview: boolean }; semanticMemory: { enabled: boolean; url: string; model: string; dimensions: number } }
+type Features = { version: 1; chatHistory?: { assistantGroups: string[][] }; memoryMaintenance: { enabled: boolean; queryRewrite: boolean; backgroundReview: boolean }; semanticMemory: { enabled: boolean; url: string; model: string; dimensions: number } }
 export default function PersonalFeatureSettingsPanel() {
   const service = useServiceHub(), { t } = useTranslation()
   const [settings, setSettings] = useState<Features>()

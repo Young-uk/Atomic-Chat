@@ -897,3 +897,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Visible updates during local model work](2026-11-14-visible-working-updates.md) — explicit public updates without extracting reasoning or rewriting history.
 
 - [Retrieve original dialogue across related chats](2026-11-14-search-original-chat-history.md) — same-assistant/project source search, neighboring context and message citations.
+
+- [Link explicit history identities and explain empty results](2026-11-14-link-explicit-history-identities.md)
