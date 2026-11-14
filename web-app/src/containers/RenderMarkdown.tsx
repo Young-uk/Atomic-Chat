@@ -1,3 +1,4 @@
+import { openHistoryLink } from '@/lib/chat-history-links'
 import { Components } from 'react-markdown'
 import {
   isValidElement,
@@ -383,6 +384,10 @@ function RenderMarkdownComponent({
     }) => (
       <a
         {...props}
+        onClick={event => {
+          props.onClick?.(event)
+          if (!event.defaultPrevented && openHistoryLink(props.href)) event.preventDefault()
+        }}
         target="_blank"
         rel="noopener noreferrer"
         className={cn(

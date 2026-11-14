@@ -16,6 +16,19 @@ Object.assign(navigator, {
 })
 
 describe('RenderMarkdown', () => {
+  it('opens a history source inside Chat without opening an external page', () => {
+    const listener = vi.fn()
+    window.addEventListener('atomic-chat-history-open', listener)
+    try {
+      const { container } = render(<RenderMarkdown content="[Yesterday weather](/threads/room-one?historyMessage=outfit)" enableHtmlPreview />)
+      const link = container.querySelector('a')!
+      expect(link.getAttribute('href')).toBe('/threads/room-one?historyMessage=outfit')
+      fireEvent.click(link)
+      expect(listener).toHaveBeenCalledTimes(1)
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toBe('/threads/room-one?historyMessage=outfit')
+    } finally { window.removeEventListener('atomic-chat-history-open', listener) }
+  })
+
   it.each([false, true])('preserves tilde ranges while streaming=%s', (isStreaming) => {
     const content = '12~15시: 17~18°C, 맑음. ~~취소~~ and `~code~`'
     const { container } = render(<RenderMarkdown content={content} isStreaming={isStreaming} />)

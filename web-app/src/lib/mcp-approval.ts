@@ -39,8 +39,10 @@ export function resolveExecAutoApprove(threadId: string): boolean {
 export async function approveChatToolCall(
   toolName: string,
   threadId: string,
-  input: object
+  input: object,
+  signal?: AbortSignal
 ): Promise<boolean> {
+  signal?.throwIfAborted()
   // Confirmation previews come from the worker's immutable pending proposal,
   // never from model-authored text that could misdescribe the native action.
   const nativeConfirmation = toolName === 'personal_native' && (input as { action?: string }).action === 'confirm'
@@ -74,12 +76,28 @@ export async function approveChatToolCall(
     ? resolveExecAutoApprove(threadId)
     : resolveMcpAutoApprove(threadId)
   const persistentTarget = storedTarget ?? (!autoApprove && !nativeConfirmation ? await toolPermissionTarget(toolName) : undefined)
+  signal?.throwIfAborted()
   if (autoApprove) return true
-  const approved = await useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
+  const pending = useToolApproval.getState().showApprovalModal(toolName, threadId, input, {
         bypassGlobalAutoApprove: true,
         ...(persistentTarget ? { persistentTarget } : {}),
         ...(nativeConfirmation ? { requireFreshApproval: true } : {}),
       })
+  let abort: (() => void) | undefined
+  let approved: boolean
+  try {
+    approved = signal ? await new Promise<boolean>((resolve, reject) => {
+      abort = () => {
+        const modal = useToolApproval.getState().modalProps
+        if (modal?.threadId === threadId && modal.toolName === toolName && modal.toolParameters === input) modal.onDeny()
+        reject(signal.reason ?? new DOMException('Cancelled', 'AbortError'))
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+      pending.then(resolve, reject)
+    }) : await pending
+    signal?.throwIfAborted()
+  } finally { if (signal && abort) signal.removeEventListener('abort', abort) }
   // Configuration may change while the user reads the modal. A decision for
   // the old provider must never authorize a replacement under the same name.
   if (approved && persistentTarget && (await toolPermissionTarget(toolName))?.key !== (persistentTarget.providerKey ?? persistentTarget.key)) return false
@@ -97,6 +115,6 @@ export function resolveAgentMcpAutoApprove(threadId: string): boolean {
  * until it implements the same per-action approval contract. Its built-in
  * file/Git tools keep their existing native approval path. */
 export function agentDisabledMcpTools(disabled: string[]): string[] {
-  return [...new Set([...disabled, ...['personal_native', 'personal_memory_lifecycle', 'personal_task_delivery', 'personal_feature_settings']
+  return [...new Set([...disabled, ...['personal_native', 'personal_memory_lifecycle', 'personal_task_delivery', 'personal_feature_settings', 'personal_chat_history']
     .map(name => `atomic-personal-tools::${name}`)])]
 }

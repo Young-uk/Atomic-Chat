@@ -4,6 +4,7 @@ import { useAssistant } from '@/hooks/useAssistant'
 /** Capture the same live assistant instructions as the normal chat route.
  * Model-authored task text cannot replace the originating thread or voice. */
 export function personalTaskInput(toolName: string, threadId: string, input: object): object {
+  if (toolName === 'personal_chat_history') return { ...input, originThreadId: threadId, originTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }
   // Bind file verification to Chat's actual execution directory, never a model override.
   if (['personal_verify', 'personal_document', 'personal_watch', 'personal_git'].includes(toolName)) return { ...input, originThreadId: threadId }
   if (toolName !== 'personal_tasks' || (input as { action?: string }).action !== 'create') return input

@@ -13,6 +13,10 @@ describe('scheduled task context', () => {
   it('binds verification paths to the actual chat rather than a model override', () => {
     for (const tool of ['personal_verify', 'personal_document', 'personal_watch', 'personal_git']) expect(personalTaskInput(tool, 'real', { action: 'syntax', files: ['winter_test.py'], originThreadId: 'fake' })).toEqual({ action: 'syntax', files: ['winter_test.py'], originThreadId: 'real' })
   })
+  it('binds history lookup to the real chat and host time zone', () => {
+    const result = personalTaskInput('personal_chat_history', 'real', { action: 'search', query: 'weather', originThreadId: 'fake', originTimeZone: 'fake' })
+    expect(result).toEqual({ action: 'search', query: 'weather', originThreadId: 'real', originTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+  })
   it('gives repeated delivery the same message id and keeps native millisecond timestamps', () => {
     const row = { taskId: 'task', id: 'run', threadId: 'real', finishedAt: 1793574012517, result: 'Reminder text' }
     expect(scheduledResultMessage(row)).toEqual(scheduledResultMessage(row))

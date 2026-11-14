@@ -1,3 +1,4 @@
+import { useChatHistoryNavigation } from '@/lib/chat-history-links'
 import { useConversationFind } from '@/lib/conversation-find'
 import { useChatSpeech } from '@/hooks/useChatSpeech'
 import { useDesktopControlOverlay } from '@/hooks/useDesktopControlOverlay'
@@ -281,6 +282,7 @@ const agentAttachmentsFromMessage = (
 }
 
 type SearchParams = {
+  historyMessage?: string
   threadModel?: ThreadModel
 }
 
@@ -290,6 +292,7 @@ export const Route = createFileRoute('/threads/$threadId')({
   validateSearch: (search: Record<string, unknown>): SearchParams => {
     return {
       threadModel: search.threadModel as ThreadModel | undefined,
+      historyMessage: typeof search.historyMessage === 'string' && /^[A-Za-z0-9_-]{1,250}$/.test(search.historyMessage) ? search.historyMessage : undefined,
     }
   },
 })
@@ -2083,6 +2086,10 @@ function ThreadDetail() {
     })
   const conversationFindRef = useRef<HTMLDivElement>(null)
   useConversationFind(conversationFindRef, chatMessages)
+  const openHistorySource = useCallback(({ threadId: sourceThread, messageId }: { threadId: string; messageId: string }) => {
+    void navigate({ to: '/threads/$threadId', params: { threadId: sourceThread }, search: { historyMessage: messageId } })
+  }, [navigate])
+  useChatHistoryNavigation(conversationFindRef, threadId, search.historyMessage, chatMessages, openHistorySource)
   const lastChatMessage = chatMessages[chatMessages.length - 1]
   const hasActiveAssistantMessage = lastChatMessage?.role === 'assistant'
   const latestUserMessageId = useMemo(() => {

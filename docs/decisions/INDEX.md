@@ -895,3 +895,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Personal Strata two-layer expert read-ahead trial](2026-11-14-personal-strata-lookahead-trial.md) — Trial two-layer expert prefetch with an exact prior-policy cache bridge.
 
 - [Visible updates during local model work](2026-11-14-visible-working-updates.md) — explicit public updates without extracting reasoning or rewriting history.
+
+- [Retrieve original dialogue across related chats](2026-11-14-search-original-chat-history.md) — same-assistant/project source search, neighboring context and message citations.

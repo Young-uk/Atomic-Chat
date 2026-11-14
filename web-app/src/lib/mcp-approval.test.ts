@@ -14,7 +14,7 @@ import {
 it('keeps host-only endpoints and the custom proposal adapter out of the other runner', () => {
   expect(agentDisabledMcpTools(['other::disabled'])).toEqual([
     'other::disabled', 'atomic-personal-tools::personal_native',
-    'atomic-personal-tools::personal_memory_lifecycle', 'atomic-personal-tools::personal_task_delivery', 'atomic-personal-tools::personal_feature_settings',
+    'atomic-personal-tools::personal_memory_lifecycle', 'atomic-personal-tools::personal_task_delivery', 'atomic-personal-tools::personal_feature_settings', 'atomic-personal-tools::personal_chat_history',
   ])
 })
 
@@ -81,6 +81,24 @@ describe('approveChatToolCall', () => {
 
   afterEach(() => {
     useChatExecStatus.setState({ status: null })
+  })
+
+  it('cancels its pending history approval before a read can start', async () => {
+    const abort = new AbortController()
+    const input = { action: 'search', query: 'past' }
+    let modalReady!: () => void
+    const ready = new Promise<void>(resolve => { modalReady = resolve })
+    showApprovalModal.mockImplementationOnce((toolName, threadId, toolParameters) => new Promise(resolve => {
+      useToolApproval.setState({ modalProps: { toolName, threadId, toolParameters, onApprove: () => resolve(true), onDeny: () => { useToolApproval.setState({ modalProps: null }); resolve(false) } } })
+      modalReady()
+    }))
+    const decision = approveChatToolCall('personal_chat_history', 't1', input, abort.signal)
+    const rejected = expect(decision).rejects.toThrow()
+    await ready
+    abort.abort()
+    await rejected
+    expect(useToolApproval.getState().modalProps).toBeNull()
+    await expect(approveChatToolCall('personal_chat_history', 't1', input, abort.signal)).rejects.toThrow()
   })
 
   it('asks before a command even while every MCP tool is auto-approved', async () => {

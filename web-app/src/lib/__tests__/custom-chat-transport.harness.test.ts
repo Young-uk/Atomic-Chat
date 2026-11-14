@@ -1,3 +1,5 @@
+import { webcrypto } from 'node:crypto'
+import { useAgentMode } from '@/hooks/useAgentMode'
 import { STRATA_PROVIDER, STRATA_MODEL } from '@/services/managed-local-engine'
 import { useMessages } from '@/hooks/useMessages'
 import { DSTAR_TOOL_PREAMBLE_METADATA, DSTAR_TOOLS_METADATA } from '../dstar-tools'
@@ -2315,5 +2317,38 @@ describe('Strata completed cache receipts', () => {
       await reading
       expect(receipt).toHaveBeenCalledTimes(finishReason === 'stop' ? 1 : 0)
     } finally { acknowledge(); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
+  })
+})
+
+
+describe('Host-initiated past conversation lookup', () => {
+  it('reads actual neighboring context before generation and replays the persisted evidence', async () => {
+    vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+    vi.stubGlobal('crypto', webcrypto)
+    useAgentMode.setState({ approvalModes: { 'history-thread': 'skip' } })
+    useModelProvider.setState({ selectedModel: { id: 'fixture-model', capabilities: ['tools'], settings: {} } as never })
+    const current: UIMessage = { id: 'history-user', role: 'user', parts: [{ type: 'text', text: 'What did I say in the other chat yesterday?' }] }
+    useMessages.getState().setMessages('history-thread', [{ id: current.id, thread_id: 'history-thread', role: 'user', metadata: {}, content: [{ type: 'text', text: { value: current.parts[0].type === 'text' ? current.parts[0].text : '' } }] } as never])
+    const evidence = { hits: [{ threadId: 'old', messageId: 'm1' }], context: { threadId: 'old', messages: [{ id: 'm1', text: 'thin coat' }, { id: 'm2', text: 'actually thick coat' }] } }
+    const callToolWithCancellation = vi.fn((_args: { arguments: Record<string, unknown> }) => ({ promise: Promise.resolve({ content: [{ type: 'text', text: JSON.stringify(evidence) }] }), cancel: async () => {} }))
+    seedServiceHub({ rag: { getTools: vi.fn().mockResolvedValue([]) } as never, messages: { modifyMessage: vi.fn(async message => message) } as never, mcp: { callToolWithCancellation } as never })
+    useMCPServers.setState({ mcpServers: { 'atomic-personal-tools': { command: 'node', args: [], env: {}, active: true } } })
+    useAppState.setState({ tools: [{ name: 'personal_chat_history', server: 'atomic-personal-tools', description: 'Read old chats', inputSchema: { type: 'object', properties: {} } }], mcpToolNames: new Set(['personal_chat_history']) })
+    const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } }])
+    vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+    const transport = new CustomChatTransport(undefined, 'history-thread')
+    const send = async () => readChunks(await transport.sendMessages({ chatId: 'sdk-id', messages: [current], abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+    try {
+      await send()
+      useMCPServers.setState({ mcpServers: {} })
+      await send()
+      const calls = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls
+      expect(JSON.stringify(calls[0][0].prompt)).toContain('actually thick coat')
+      expect(calls[1][0].prompt).toEqual(calls[0][0].prompt)
+      expect(callToolWithCancellation).toHaveBeenCalledTimes(1)
+      expect(callToolWithCancellation.mock.calls[0][0].arguments).toMatchObject({ originThreadId: 'history-thread', withContext: true })
+      expect(useMessages.getState().getMessages('history-thread')[0].metadata?.atomic_chat_history_v1).toMatchObject({ version: 1 })
+      expect(current.parts).toEqual([{ type: 'text', text: 'What did I say in the other chat yesterday?' }])
+    } finally { useAgentMode.setState({ approvalModes: {} }); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
 })

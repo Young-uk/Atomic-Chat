@@ -1,3 +1,6 @@
+import { CHAT_HISTORY_METADATA, chatHistoryLookupPlan, captureChatHistorySnapshot, matchesChatHistorySnapshot, withChatHistorySnapshots } from './chat-history-recall'
+import { approveChatToolCall } from './mcp-approval'
+import { personalTaskInput } from './personal-task-context'
 import { supportsPersonalMemoryRuntime } from './personal-memory-context'
 import { captureBackgroundReviewEvidence } from './background-review-evidence'
 import { scheduledMessagesForModel } from './personal-task-delivery'
@@ -1388,8 +1391,43 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         store.setMessages(personalMemoryThread, useMessages.getState().getMessages(personalMemoryThread).map(message => message.id === updated.id ? updated : message))
       }
     }
-    const memoryMessages = personalMemoryEnabled ? withPersonalMemorySnapshots(options.messages,
+    const historyRecallEnabled = import.meta.env.VITE_PERSONAL_BUILD === 'true' && personalMemoryThread !== TEMPORARY_CHAT_ID
+    if (historyRecallEnabled && this.serviceHub && chatHistoryLookupPlan(options.messages) &&
+        useMCPServers.getState().mcpServers['atomic-personal-tools']?.active && await this.isToolCurrentlyAvailable('personal_chat_history')) {
+      const user = options.messages.at(-1)!
+      await waitForThreadMessageWrites(personalMemoryThread)
+      const stored = useMessages.getState().getMessages(personalMemoryThread).find(message => message.id === user.id)
+      if (!stored) throw new Error('Save the current conversation before looking up past chats')
+      if (!await matchesChatHistorySnapshot(stored.metadata?.[CHAT_HISTORY_METADATA], user)) {
+        const captured = await captureChatHistorySnapshot(options.messages,
+          (args, signal) => approveChatToolCall('personal_chat_history', personalMemoryThread, args, signal),
+          async (args, signal) => {
+            signal?.throwIfAborted()
+            const pending = this.serviceHub!.mcp().callToolWithCancellation({ serverName: 'atomic-personal-tools', toolName: 'personal_chat_history',
+              arguments: personalTaskInput('personal_chat_history', personalMemoryThread, args), threadId: personalMemoryThread })
+            const cancel = () => { void pending.cancel().catch(() => {}) }
+            signal?.addEventListener('abort', cancel, { once: true })
+            try {
+              if (signal?.aborted) { cancel(); signal.throwIfAborted() }
+              const reply = await pending.promise
+              signal?.throwIfAborted()
+              if (reply.error || ('isError' in reply && reply.isError)) throw new Error('Past conversation lookup failed; no historical evidence was used')
+              const text = reply.content?.filter(part => 'text' in part).map(part => (part as { text: string }).text).join('\n') ?? ''
+              return JSON.parse(text)
+            } finally { signal?.removeEventListener('abort', cancel) }
+          }, options.abortSignal)
+        options.abortSignal?.throwIfAborted()
+        const fresh = useMessages.getState().getMessages(personalMemoryThread).find(message => message.id === user.id)
+        if (!fresh || !await matchesChatHistorySnapshot(captured, convertThreadMessagesToUIMessages([fresh])[0])) throw new DOMException('Conversation changed during lookup', 'AbortError')
+        const updated = { ...fresh, metadata: { ...fresh.metadata, [CHAT_HISTORY_METADATA]: captured } }
+        await trackThreadMessageWrite(personalMemoryThread, this.serviceHub.messages().modifyMessage(updated))
+        useMessages.getState().setMessages(personalMemoryThread, useMessages.getState().getMessages(personalMemoryThread).map(message => message.id === updated.id ? updated : message))
+      }
+    }
+    const recalledMessages = historyRecallEnabled ? await withChatHistorySnapshots(options.messages,
       useMessages.getState().getMessages(personalMemoryThread)) : options.messages
+    const memoryMessages = personalMemoryEnabled ? withPersonalMemorySnapshots(recalledMessages,
+      useMessages.getState().getMessages(personalMemoryThread)) : recalledMessages
     const sanitizedMessages = stripAgentRunToolParts(
       withMessageClocksForModel(withoutEmptyFailedTurns(memoryMessages))
     )
