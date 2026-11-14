@@ -891,3 +891,7 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Cache-prefix and expert I/O diagnostics](2026-11-13-cache-prefix-io-diagnostics.md) — Hash-only input change tracing and sampled, overlapping Metal I/O counters.
 
 - [Recent disk checkpoint and prepared Metal resources](2026-11-13-recent-checkpoint-startup-resources.md) — Keep a nearby recovery anchor and move allocation-only expert preparation into startup.
+
+- [Personal Strata two-layer expert read-ahead trial](2026-11-14-personal-strata-lookahead-trial.md) — Trial two-layer expert prefetch with an exact prior-policy cache bridge.
+
+- [Visible updates during local model work](2026-11-14-visible-working-updates.md) — explicit public updates without extracting reasoning or rewriting history.

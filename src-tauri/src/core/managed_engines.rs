@@ -140,6 +140,18 @@ if context == 131072:
     upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                          current_model=projected['atomic_summary_expected_model_fingerprint'],
                          previous={'atomic_summary_expected_native_sha256': '616fcc0d38b8c07b524b4ab7b7a52318a028b8199bac5d9fff3b3a44cbb657c9', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:6391cf078ac5f7d01d8b37b0ab3bcfae1ae3b5aa9bb7b3246f167df972f24de4', 'atomic_summary_expected_backend_sha256': '126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd'}))
+# Read-ahead changes scheduling, not arithmetic or the serialized running state.
+# Admit only the identical context/weights/cache policy without this one opt-in.
+lookahead_previous = copy.deepcopy(cfg)
+if lookahead_previous['env'].pop('STRATA_METAL_PREFETCH2', None) != '2':
+    raise ValueError('strataContextPinMismatch')
+lookahead_previous_pins = prepare_summary_qualification_pins(lookahead_previous, offline=True)
+for key in ('atomic_summary_expected_native_sha256', 'atomic_summary_expected_backend_sha256'):
+    if lookahead_previous_pins.get(key) != cfg.get(key):
+        raise ValueError('strataContextPinMismatch')
+upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                     current_model=projected['atomic_summary_expected_model_fingerprint'],
+                     previous=lookahead_previous_pins))
 projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
@@ -360,6 +372,8 @@ impl Environment {
                 "STRATA_METAL_PROMPT_CHUNK": "4096", "STRATA_ROUTE_TAIL_SKIP": "0",
                 // M1 Max: identical v2 gate/up values, measured with the existing 4096-row policy.
                 "STRATA_METAL_PROMPT_GU_K": "32",
+                // User-selected trial: read two predicted experts from the layer after next.
+                "STRATA_METAL_PREFETCH2": "2",
                 "STRATA_ATOMIC_PROMPT_TRACE": "1", "STRATA_METAL_IO_PROFILE": "1",
                 "STRATA_ATOMIC_RECENT_CHECKPOINT": "1", "STRATA_METAL_PREPARE_BEFORE_READY": "1",
                 "STRATA_PREFILL_CPU_SHARE": "0",
@@ -402,7 +416,7 @@ impl Environment {
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:6bcbf59f0ce2030b1c586525d5b7a1ae7a1d23c7b041039d89239aba61f95f78",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:de555f92fabc4467dd86c7f74b34dfeafa024ddd278e1ac210a3230da4cb831a",
             "atomic_summary_expected_backend_sha256": "126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
@@ -1460,6 +1474,7 @@ mod tests {
         assert_eq!(config["env"]["STRATA_METAL_KEEP_FREE_GB"], "8");
         assert_eq!(config["env"]["STRATA_METAL_PROMPT_CHUNK"], "4096");
         assert_eq!(config["env"]["STRATA_METAL_PROMPT_GU_K"], "32");
+        assert_eq!(config["env"]["STRATA_METAL_PREFETCH2"], "2");
         assert_eq!(config["env"]["STRATA_ATOMIC_PROMPT_TRACE"], "1");
         assert_eq!(config["env"]["STRATA_METAL_IO_PROFILE"], "1");
         assert_eq!(config["env"]["STRATA_ATOMIC_RECENT_CHECKPOINT"], "1");
@@ -1524,7 +1539,7 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:6bcbf59f0ce2030b1c586525d5b7a1ae7a1d23c7b041039d89239aba61f95f78"
+            "strata-stat-v2:de555f92fabc4467dd86c7f74b34dfeafa024ddd278e1ac210a3230da4cb831a"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],

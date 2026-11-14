@@ -1910,7 +1910,7 @@ describe('managed endpoint request routing', () => {
 })
 
 describe('Strata advertised plain tool policy', () => {
-  it.each([true, false])('keeps original history and real SDK progress with advertised policy=%s', async advertised => {
+  it.each([[true, true], [true, false], [false, true], [false, false]])('keeps history and progress with advertised policy=%s and tools=%s', async (advertised, toolsEnabled) => {
     const { STRATA_PROVIDER, STRATA_MODEL } = await import('@/services/managed-local-engine')
     const { ContextCompaction } = await import('../dstar-context-compaction')
     vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true')
@@ -1923,12 +1923,12 @@ describe('Strata advertised plain tool policy', () => {
       ...(advertised ? { atomic_tool_policy: 'plain-system-v1' } : {}),
       data: [{ id: STRATA_MODEL, context_length: 65536 }] }) })
     vi.stubGlobal('fetch', fetcher)
-    useAppState.setState({ tools: [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }], mcpToolNames: new Set(['search']) })
+    useAppState.setState({ tools: toolsEnabled ? [{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }] : [], mcpToolNames: new Set(toolsEnabled ? ['search'] : []) })
     const model = fakeStreamingModel([
       { type: 'stream-start', warnings: [] },
       { type: 'text-start', id: 'preamble' }, { type: 'text-delta', id: 'preamble', delta: 'I will check the source.' }, { type: 'text-end', id: 'preamble' },
-      { type: 'tool-call', toolCallId: 'actual-call', toolName: 'search', input: '{"query":"source"}' },
-      { type: 'finish', finishReason: 'tool-calls', usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } },
+      ...(toolsEnabled ? [{ type: 'tool-call' as const, toolCallId: 'actual-call', toolName: 'search', input: '{"query":"source"}' }] : []),
+      { type: 'finish', finishReason: toolsEnabled ? 'tool-calls' : 'stop', usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } },
     ])
     vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
     const original: UIMessage = { ...userMessage, metadata: { [DSTAR_TOOLS_METADATA]: '[]', [DSTAR_TOOL_PREAMBLE_METADATA]: 'v4' } }
@@ -1939,10 +1939,10 @@ describe('Strata advertised plain tool policy', () => {
       expect(chat.error).toBeUndefined()
       const response = chat.messages.at(-1)!
       expect(response.parts.filter(p => p.type === 'text').map(p => p.text).join('')).toBe('I will check the source.')
-      expect(response.parts.some(p => p.type === 'tool-search' || p.type === 'dynamic-tool')).toBe(true)
+      expect(response.parts.some(p => p.type === 'tool-search' || p.type === 'dynamic-tool')).toBe(toolsEnabled)
       expect(original).toEqual(before)
       const prompt = JSON.stringify((model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0].prompt)
-      expect(prompt.includes('While working, prefer speaking to the user as you go')).toBe(advertised)
+      expect(prompt.includes('Talk with the user while carrying out their request.')).toBe(advertised)
       expect(prompt).not.toContain('atomic-tools:v1:')
       expect(prompt).not.toContain('atomic-tool-preamble:')
       expect(prompt).not.toContain('atomic-effort:')
@@ -2042,7 +2042,7 @@ describe('independent Strata completion review isolated transport fixtures', () 
       expect(response.parts.filter(p => p.type === 'text').map(p => p.text).join('')).toBe('I will check the source.')
       expect(response.parts.some(p => p.type === 'tool-search' || p.type === 'dynamic-tool')).toBe(decision === 'needs_tool')
       expect(doStream).toHaveBeenCalledTimes(decision === 'needs_tool' ? 2 : 1)
-      expect(JSON.stringify(doStream.mock.calls[0][0].prompt)).toContain('While working, prefer speaking to the user as you go')
+      expect(JSON.stringify(doStream.mock.calls[0][0].prompt)).toContain('Talk with the user while carrying out their request.')
       expect(JSON.stringify(doStream.mock.calls[0][0].prompt)).not.toContain('atomic-tool-preamble:')
       expect(fetcher.mock.calls.filter(call => call[0].endsWith('/chat/completions'))).toHaveLength(decision === 'unadvertised' ? 0 : 1)
       expect(schedule).not.toHaveBeenCalled()

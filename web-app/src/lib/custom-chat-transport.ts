@@ -1618,7 +1618,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         : undefined
     const systemWithSkills = composeSystemMessage(
       composeSystemMessage(renderInstructions(this.systemMessage), skillsBlock),
-      composeSystemMessage(documentsHint, runtime?.toolPolicy === 'plain-system-v1' && shouldEnableTools ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
+      composeSystemMessage(documentsHint, (appendOnlyDstar || runtime?.toolPolicy === 'plain-system-v1') ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
     )
 
     const dropSystemForTools =
