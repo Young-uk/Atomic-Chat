@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { assertManagedPromptFits } from '../managed-prompt-budget'
+import { assertManagedPromptFits, measureManagedPrompt } from '../managed-prompt-budget'
 
 describe('managed exact prompt preflight', () => {
   const body = JSON.stringify({ messages: [{ role: 'tool', content: 'large result' }], tools: [{ function: { name: 'read' } }], think: false })
@@ -22,4 +22,12 @@ describe('managed exact prompt preflight', () => {
     expect(JSON.parse(prepared)).toEqual({ model: 'model', messages, think: false })
   })
 
+})
+
+it('publishes actual tokenizer counts rather than the lower display estimate', async () => {
+ const measured = vi.fn()
+ const fetcher = vi.fn().mockImplementation(async () => Response.json({ input_tokens: 74867, context_length: 131072, reserved_tokens: 1032 }))
+ await assertManagedPromptFits('http://local/v1', '{}', fetcher, undefined, measured)
+ expect(measured).toHaveBeenCalledWith(74867)
+ expect((await measureManagedPrompt('http://local/v1', '{}', fetcher)).input_tokens).toBe(74867)
 })

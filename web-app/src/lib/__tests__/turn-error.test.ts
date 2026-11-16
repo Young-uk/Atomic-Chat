@@ -34,6 +34,19 @@ const authFailure = new Error(
 )
 
 describe('finishedAssistantMessage', () => {
+  it('removes a preceding failure when the recovered response succeeds', () => {
+    const message: UIMessage = {
+      id: 'recovered-answer', role: 'assistant',
+      parts: [{ type: 'text', text: 'Recovered answer' }],
+      metadata: { turn_error: { message: 'the request exceeds the available context size.' }, finishReason: 'stop' },
+    }
+    const stored = finishedAssistantMessage({ message, threadId: 'thread-1', isAbort: false, isError: false })!
+    expect(stored.status).toBe(MessageStatus.Ready)
+    expect(turnErrorOf(stored)).toBeUndefined()
+    expect(stored.metadata).toMatchObject({ finishReason: 'stop' })
+    expect((message.metadata as Record<string, unknown>).turn_error).toBeDefined()
+  })
+
   it('keeps a failed turn as an Error message with the reason it failed', () => {
     const stored = finishedAssistantMessage({
       message: failedBeforeAnyChunk,

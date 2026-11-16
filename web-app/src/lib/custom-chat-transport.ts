@@ -5,6 +5,7 @@ import { supportsPersonalMemoryRuntime } from './personal-memory-context'
 import { captureBackgroundReviewEvidence } from './background-review-evidence'
 import { scheduledMessagesForModel } from './personal-task-delivery'
 import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history-plan'
+import { measureManagedPrompt } from './managed-prompt-budget'
 import i18n from '@/i18n/setup'
 import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
 import { SummaryAdmission, summarySchedulingContext } from './atomic-summary-admission'
@@ -13,7 +14,7 @@ import { localEngineCoordinator, localEngineTarget } from '@/services/managed-lo
 import { convertThreadMessagesToUIMessages } from './messages'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
 import { strataHistoryHash, bindStrataHistory, resumeRestoredStrataSummary, summarizeWithStrataCache } from './strata-cached-summary'
-import { beginCompletionReviewProgress, publishContextUsage } from './inference-progress'
+import { beginCompletionReviewProgress, publishContextUsage, useInferenceProgress } from './inference-progress'
 import { completionReviewPartCount, reviewToolCompletion, toolReviewBlocked, TOOL_REVIEW_METADATA, TOOL_REVIEW_NOTICE, withToolCompletionReviews, withStableToolResultOrder } from './tool-completion-review'
 import { beginDstarForeground, summaryTurnHasToolsPending } from './dstar-summary-idle'
 import { publishSummaryProgress } from './context-summary-progress'
@@ -1543,7 +1544,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             compaction = new ContextCompaction(compactionThread, archiveStore(runtime.archiveScope ?? usageScope))
             threadCompactions.set(compactionKey, compaction)
           }
-          compaction.setProgressListener(progress => {
+          compaction.requireVerifiedCacheAdoption(runtime?.engine === 'strata' && runtime.summaryClone === true)
+          compaction.setProgressListener(async progress => {
             const selected = useModelProvider.getState()
             if (selected.selectedProvider !== providerId || selected.selectedModel?.id !== modelId ||
                 threadCompactions.get(compactionKey) !== compaction) return
@@ -1555,18 +1557,26 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               const history = convertThreadMessagesToUIMessages(useMessages.getState().getMessages(compactionThread))
               const coordinator = threadCompactions.get(compactionKey)
               if (coordinator) {
-                const view = coordinator.previewReady(history)
                 // Use the same image/document projection as the actual request.
                 // Persisted screenshot base64 is not text context usage.
                 const preparedHistory = withStableToolResultOrder(prepareToolResultImagesForModel(
                   stripUnsupportedFileParts(this.mapUserInlineAttachments(history)),
                   { supportsVision: true }))
+                if (runtime?.engine === 'strata' && runtime.summaryClone) {
+                  await coordinator.prepareCachedAdoption(history, (source, boundary, archived, signal, restoredView, requireMatch) =>
+                    cacheBoundaryPlanner(preparedHistory, 0, restoredView, requireMatch)(`${compactionThread}/${source.findLast(message => message.role === 'user')?.id}`, source, boundary, archived, signal), new AbortController().signal)
+                }
+                const view = coordinator.previewReady(history)
                 const projected = projectCompactedMessages(view, preparedHistory)
                 const wire = applyPolicies(projected, history)
-                publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope, estimated: true,
-                  tokens: estimatePromptTokensHeuristic({ system: systemWithSkills,
-                    messages: convertToModelMessages(modelToolMessages(wire)),
-                    tools: activeTools, omitInlineMediaFromTextEstimate: true }) })
+                const priorUsage = useInferenceProgress.getState().contextByThread?.[compactionThread]
+                const modelMessages = convertToModelMessages(modelToolMessages(wire))
+                const count = await measureManagedPrompt(provider.base_url!, JSON.stringify({ model: modelId,
+                  messages: historyPlanMessages([...(systemWithSkills ? [{ role: 'system' as const, content: systemWithSkills }] : []), ...modelMessages]),
+                  tools: toOpenAiTools(activeTools), ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}) }), fetchDstarContext)
+                if (useInferenceProgress.getState().contextByThread?.[compactionThread] === priorUsage) {
+                  publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope, estimated: false, tokens: count.input_tokens })
+                }
               }
             } catch {
               // A display estimate must never fail a durably saved summary.
@@ -1665,6 +1675,22 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       ? undefined
       : systemWithSkills
 
+    const measuredEnvelopes = new Map<string, ReturnType<typeof measureManagedPrompt>>()
+    const measureEnvelope = (messages: import('ai').ModelMessage[]) => {
+      const body = JSON.stringify({ model: modelId,
+        messages: historyPlanMessages([...(effectiveSystemMessage ? [{ role: 'system' as const, content: effectiveSystemMessage }] : []), ...messages]),
+        tools: toOpenAiTools(activeTools), ...(this.lastChatTemplateKwargs ? { chat_template_kwargs: this.lastChatTemplateKwargs } : {}),
+        atomic_output_reserve: Math.min((getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048),
+      })
+      let measurement = measuredEnvelopes.get(body)
+      if (!measurement) { measurement = measureManagedPrompt(provider.base_url!, body, fetchDstarContext, options.abortSignal); measuredEnvelopes.set(body, measurement) }
+      return measurement
+    }
+    const measureView = (view: UIMessage[], history: UIMessage[]) => {
+      const messages = convertToModelMessages(modelToolMessages(applyPolicies(projectCompactedMessages(view, preparedMessages), history)))
+      return measureEnvelope(dropSystemForTools && systemWithSkills ? foldSystemIntoFirstUserMessage(messages, systemWithSkills) : messages)
+    }
+
     const cacheBoundaryPlanner = (modelView: UIMessage[], summarizedThrough = 0,
       restoredView?: (boundary: number) => UIMessage[], requireMatch = false) =>
       (owner: string, history: UIMessage[], boundary: number, archived: number, signal: AbortSignal) =>
@@ -1724,14 +1750,17 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
                   `${snapshotThreadId}/${cacheUser.id}`, history, boundary, archived, signal),
                 options.abortSignal ?? new AbortController().signal, `${snapshotThreadId}/${cacheUser.id}`)
             }
+            if (compaction.hasPreparedSummary) {
+              const budget = await measureView(compaction.apply(original, false), original)
+              await compaction.adoptPreparedAtMeasuredPressure(original, budget.input_tokens, budget.context_length)
+            }
           }
           const startupView = compaction.apply(original, options.messages.at(-1)?.role === 'user')
+          const startupBudget = await measureView(startupView, original)
           await resumeRestoredStrataSummary(provider.base_url!, modelId!, snapshotThreadId,
             original, projectCompactedMessages(startupView, preparedMessages), compactionContext, compaction, options.abortSignal ?? new AbortController().signal,
             { sourcePrefix: checkpointSourcePlanner(preparedMessages, original), coldRecovery: runtime?.engine === 'strata', selectBoundary: cacheBoundaryPlanner(preparedMessages), admission: summaryAdmission, inputProgress: (input, signal) => compaction!.reportInput(signal, input) },
-            estimatePromptTokensHeuristic({ system: systemWithSkills,
-              messages: convertToModelMessages(modelToolMessages(projectCompactedMessages(startupView, preparedMessages))),
-              tools: activeTools }) + Math.min((getSamplingParamsForThread(this.threadId).params?.max_output_tokens as number | undefined) ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048))
+            startupBudget.input_tokens + startupBudget.reserved_tokens)
         }
         // Tool continuations use the same active summary as their opening
         // request. A newly completed summary waits for the next user turn.
@@ -1859,23 +1888,31 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     if (compaction && compactionContext > 0) {
       // Historical usage describes a different request (and can aggregate tool
       // steps). Never let it override the current compacted wire envelope.
-      const input = estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
-        messages: finalModelMessages, tools: activeTools })
-      const reserve = Math.min(maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS, 2048)
+      const budget = await measureEnvelope(finalModelMessages)
+      const input = budget.input_tokens
+      const reserve = budget.reserved_tokens
+      publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope,
+        estimated: false, tokens: input, outputTokens: 0 })
       logCompactionBudget('foreground budget', {
         threadId: compactionThread, inputTokens: input, reserveTokens: reserve,
-        context: compactionContext, fits: input + reserve <= compactionContext,
+        context: budget.context_length, fits: input + reserve <= budget.context_length, measured: true,
         summaryStatus: compaction.status,
       })
-      if (input + reserve > compactionContext) {
-        recoveryOverflow = input + reserve - compactionContext
-        throw new Error(`${OUT_OF_CONTEXT_SIZE} This conversation needs more space than the current context window. ${compaction.status === 'summarizing' ? 'A background summary is still being prepared; wait for it before retrying.' : 'No verified summary is ready. Start a new conversation or increase the context size.'}`)
+      if (input + reserve > budget.context_length) {
+        recoveryOverflow = input + reserve - budget.context_length
+        throw new Error(`${OUT_OF_CONTEXT_SIZE} Prompt has ${input} tokens plus ${reserve} reserved output tokens; context limit is ${budget.context_length}`)
       }
     }
 
-    if (appendOnlyDstar) publishContextUsage(compactionThread, { modelId, usageScope, runtimeScope, estimated: true,
-      tokens: estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
-        messages: finalModelMessages, tools: activeTools }) })
+    if (appendOnlyDstar || runtime) {
+      const prior = useInferenceProgress.getState().contextByThread?.[compactionThread]
+      const sameScope = prior?.modelId === modelId && prior?.usageScope === usageScope && prior?.runtimeScope === runtimeScope
+      // Preserve an existing measured display while the final serialized body
+      // is counted. Seed the runtime identity for the count publisher on startup.
+      publishContextUsage(compactionThread, sameScope ? prior! : { modelId, usageScope, runtimeScope, estimated: true,
+        tokens: estimatePromptTokensHeuristic({ system: effectiveSystemMessage,
+          messages: finalModelMessages, tools: activeTools }) })
+    }
 
     const requestModel = this.model
     const result = streamText({
@@ -1939,8 +1976,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             // or model-authored tool output as evidence of a user preference.
             if (userMessage.trim() && assistantReply.trim()) void this.serviceHub.mcp().callTool({
               serverName: 'atomic-personal-tools', toolName: 'personal_memory_lifecycle',
-              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply, cacheOwner: `${personalMemoryThread}/${user!.id}`, evidence: captureBackgroundReviewEvidence([...options.messages, responseMessage]) },
-            }).catch(error => console.warn('[personal-memory]', error))
+              arguments: { action: 'observe', sessionId: personalMemoryThread, messageId: responseMessage.id, userMessage, assistantReply, cacheOwner: `${personalMemoryThread}/${user!.id}`, turnCount: options.messages.filter(message => message.role === 'user').length, workCount: new Set([...options.messages, responseMessage].flatMap(message => message.parts).filter(part => part.type === 'dynamic-tool' || part.type.startsWith('tool-')).map(part => (part as { toolCallId: string }).toolCallId)).size, evidence: captureBackgroundReviewEvidence([...options.messages, responseMessage]) },
+            }).then(result => { if (result.error || ('isError' in result && result.isError)) console.warn('[personal-memory] completed-turn observation refused') }).catch(error => console.warn('[personal-memory]', error))
           }
         }
         completed(toolsPending && !requestFailed && !isAborted && finishReason === 'stop' ? 'tool-calls' : finishReason)

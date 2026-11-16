@@ -63,6 +63,8 @@
     "reviewUndone": "되돌림",
     "reviewFailed": "리뷰를 불러오거나 되돌리지 못했습니다. 관련된 최신 변경부터 되돌려 주세요.",
     "reviewEvidence": "근거 기록",
-    "reviewLoading": "불러오는 중…"
+    "reviewLoading": "불러오는 중…",
+    "reviewCompleted": "백그라운드 리뷰 완료",
+    "reviewSavedChanges": "기억·스킬 변경 {{count}}건을 저장했습니다. 학습 변경 내역에서 확인하거나 되돌릴 수 있습니다."
   }
 }

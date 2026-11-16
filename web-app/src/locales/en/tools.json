@@ -75,6 +75,8 @@
     "reviewUndone": "Undone",
     "reviewFailed": "Could not load or undo this review. Undo newer related changes first.",
     "reviewEvidence": "Source evidence",
-    "reviewLoading": "Loading…"
+    "reviewLoading": "Loading…",
+    "reviewCompleted": "Self-improvement review completed",
+    "reviewSavedChanges": "Saved {{count}} memory or skill updates. Inspect or undo them in Learned changes."
   }
 }

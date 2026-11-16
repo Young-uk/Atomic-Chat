@@ -2238,6 +2238,10 @@ function ThreadDetail() {
                       const activeError = shownError
                       const rawMessage = activeError?.message
                       const isContextError = isContextLimitError(activeError)
+                      // Context pressure belongs to automatic summary recovery.
+                      // Do not render the obsolete full-window card, including
+                      // failures persisted before recovery completed.
+                      if (isContextError) return null
                       // A managed engine: the limit, and the setting that raises it; no reload here.
                       const fixedContext = contextOverflowGuidance(
                         selectedProvider,

@@ -899,3 +899,13 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Retrieve original dialogue across related chats](2026-11-14-search-original-chat-history.md) — same-assistant/project source search, neighboring context and message citations.
 
 - [Link explicit history identities and explain empty results](2026-11-14-link-explicit-history-identities.md)
+
+- [Run isolated review agents with source-grounded memory and skills](2026-11-14-run-isolated-review-agents.md)
+
+- [Verify summary adoption and token counts](2026-11-14-verify-summary-adoption-and-token-counts.md) — keep the prior cache until a handoff is proven and display tokenizer measurements.
+
+- [Adopt prepared summaries under measured pressure](2026-11-14-adopt-ready-summaries-under-measured-pressure.md) — use the existing 85% threshold to end cache-only deferral before the window fills.
+
+- [Normalize images before cache planning and token counting](2026-11-14-normalize-images-before-cache-planning.md)
+
+- [Preserve foreground usage identity during streaming](2026-11-14-preserve-foreground-usage-identity.md)

@@ -1,7 +1,7 @@
 import { assertManagedPromptFits } from './managed-prompt-budget'
 import { localEngineTarget } from '@/services/managed-local-engine'
 import { usesAppendOnlyDstarEffort } from '@/lib/dstar-effort'
-import { observeInferenceProgress } from '@/lib/inference-progress'
+import { observeInferenceProgress, publishContextUsage, useInferenceProgress } from '@/lib/inference-progress'
 /**
  * Model Factory
  *
@@ -508,7 +508,12 @@ export function createLocalStreamingFetch(
     // Count the final serialized body, after all provider overrides. This also
     // runs for every tool continuation; never infer its size from old usage.
     if (tokenCountBaseUrl && urlStr.endsWith('/chat/completions') && bodyStr) {
-      bodyStr = await assertManagedPromptFits(tokenCountBaseUrl, bodyStr, fallbackFetch, init?.signal ?? undefined)
+      bodyStr = await assertManagedPromptFits(tokenCountBaseUrl, bodyStr, fallbackFetch, init?.signal ?? undefined, tokens => {
+        if (!progressThreadId) return
+        const prior = useInferenceProgress.getState().contextByThread?.[progressThreadId]
+        const modelId = typeof merged?.model === 'string' ? merged.model : undefined
+        publishContextUsage(progressThreadId, { ...(prior?.modelId === modelId ? prior : {}), modelId, tokens, outputTokens: 0, estimated: false })
+      })
     }
 
     const hdrs: Record<string, string> = {}
@@ -522,8 +527,16 @@ export function createLocalStreamingFetch(
       else for (const [k, v] of Object.entries(h)) hdrs[k] = String(v)
     }
 
+    const progressModelId = typeof merged?.model === 'string' ? merged.model : undefined
+    const seededUsage = progressThreadId
+      ? useInferenceProgress.getState().contextByThread?.[progressThreadId] : undefined
+    // The transport seeds the verified server identity before serialization.
+    // Preserve it through SSE updates; otherwise scoped UI rejects live counts
+    // and falls back to the previous completed request's occupancy.
+    const progressIdentity = progressModelId && seededUsage?.modelId === progressModelId
+      ? seededUsage : undefined
     const progress = progressThreadId
-      ? observeInferenceProgress(progressThreadId, typeof merged?.model === 'string' ? merged.model : undefined)
+      ? observeInferenceProgress(progressThreadId, progressModelId, progressIdentity?.usageScope, progressIdentity?.runtimeScope)
       : undefined
     const chunks: string[] = []
     let done = false

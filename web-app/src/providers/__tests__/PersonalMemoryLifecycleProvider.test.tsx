@@ -1,3 +1,4 @@
+import { useMessages } from '@/hooks/useMessages'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 const mocks = vi.hoisted(() => ({ call: vi.fn(), chats: { requestActive: {} as Record<string, boolean>, sessions: {} as Record<string, unknown> }, summary: { byThread: {} as Record<string, unknown> }, listeners: [] as (() => void)[] }))
@@ -9,6 +10,7 @@ vi.mock('@/lib/context-summary-progress', () => ({ useContextSummaryProgress: { 
 import { PersonalMemoryLifecycleProvider, personalMemoryMustPause } from '../PersonalMemoryLifecycleProvider'
 beforeEach(() => {
   vi.stubEnv('VITE_PERSONAL_BUILD', 'true')
+  useMessages.setState({ messages: {} })
   mocks.listeners = []
   mocks.chats = { requestActive: {}, sessions: {} }
   mocks.summary = { byThread: {} }
@@ -27,5 +29,20 @@ it('immediately pauses background memory when chat starts and waits until summar
   mocks.summary.byThread.thread = { phase: 'ready' }
   mocks.listeners.forEach(listener => listener())
   await waitFor(() => expect(mocks.call).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: { action: 'activity', busy: false } })))
+  view.unmount()
+})
+
+it('delivers a persisted completed turn even when the transport completion callback was missed', async () => {
+  useMessages.getState().setMessages('thread', [
+    { id: 'u', thread_id: 'thread', role: 'user', created_at: Date.now(), content: [{ type: 'text', text: { value: 'Please verify results.' } }] },
+    { id: 'a', thread_id: 'thread', role: 'assistant', created_at: Date.now(), metadata: { finishReason: 'stop' }, content: [{ type: 'text', text: { value: 'Verified.' } }] },
+  ] as never)
+  const view = render(<PersonalMemoryLifecycleProvider />)
+  await waitFor(() => expect(mocks.call.mock.calls.some(call => call[0].arguments.action === 'observe')).toBe(true))
+  const observation = mocks.call.mock.calls.find(call => call[0].arguments.action === 'observe')![0].arguments
+  expect(observation).toMatchObject({ sessionId: 'thread', messageId: 'a', cacheOwner: 'thread/u', userMessage: 'Please verify results.', assistantReply: 'Verified.', turnCount: 1 })
+  expect(observation.evidence.map((row: { id: string }) => row.id)).toEqual(['u', 'a'])
+  mocks.listeners.forEach(listener => listener())
+  await waitFor(() => expect(mocks.call.mock.calls.filter(call => call[0].arguments.action === 'observe')).toHaveLength(1))
   view.unmount()
 })

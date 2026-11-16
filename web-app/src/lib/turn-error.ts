@@ -163,6 +163,9 @@ export function finishedAssistantMessage({
     ...(!isAbort && !isError ? { atomic_model_steps_v1: [...new Set(stepBoundaries)] } : {}),
     ...(isError ? { [TURN_ERROR_METADATA_KEY]: describeTurnError(error) } : {}),
   }
+  // A recovered attempt can inherit metadata persisted by its failed step.
+  // A successful finish owns the final outcome, not the old failure.
+  if (!isAbort && !isError) delete metadata[TURN_ERROR_METADATA_KEY]
   return {
     type: 'text',
     role: ChatCompletionRole.Assistant,

@@ -79,8 +79,8 @@ const CONTEXT_PIN_SCRIPT: &str = r#"
 import hashlib, json, pathlib, sys
 cfg = json.load(sys.stdin)
 root = pathlib.Path(cfg['cwd']) / 'serve'
-names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py', 'history_plan.py', 'prompt_trace.py')
-hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
+names = ('server.py', 'atomic_summary.py', 'priority.py', 'priority_client.py', 'disk_session.py', 'history_plan.py', 'prompt_trace.py', 'auxiliary_agent.py')
+hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names if (root / name).is_file()}
 backend = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 if backend != cfg['atomic_summary_expected_backend_sha256']:
     raise ValueError('strataContextPinMismatch')
@@ -152,6 +152,12 @@ for key in ('atomic_summary_expected_native_sha256', 'atomic_summary_expected_ba
 upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                      current_model=projected['atomic_summary_expected_model_fingerprint'],
                      previous=lookahead_previous_pins))
+# Reviewed review-agent backend update: identical native weights and session layout.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'], current_model=projected['atomic_summary_expected_model_fingerprint'], previous={'atomic_summary_expected_native_sha256': 'dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:102d680b2ada532286d67517d1fdc92dadc6797b316de2d791180e6e5617ce54', 'atomic_summary_expected_backend_sha256': '126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd'}))
+# Original IQ3 table restored from a SHA-256-verified backup; only file identity changed.
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'], current_model=projected['atomic_summary_expected_model_fingerprint'], previous={'atomic_summary_expected_native_sha256': 'dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:07a1beb65dff4aa3b673c5abc3d61825fe3e60d66c496fe27e0ed925499a5567', 'atomic_summary_expected_backend_sha256': '0b1e737c56bc21b5c5c81fc5c43b06dbb6ef0aaff22b02abac0ff445d2c09f1e'}))
 projected['atomic_disk_session_reviewed_upgrades'] = upgrades
 print(json.dumps(projected))
 "#;
@@ -341,7 +347,7 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-cache-diagnostics-v113/serve/server.py",
+            "feature-integration/runtime-review-agent-v123/serve/server.py",
             "feature-integration/engine-startup-checkpoints-v115/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
@@ -396,7 +402,7 @@ impl Environment {
                 "--prompt-cache-spread", "--prompt-cache-every", "4096",
                 "--conversation-cache-min-tokens", "1024"
             ],
-            "cwd": root.join("feature-integration/runtime-cache-diagnostics-v113"),
+            "cwd": root.join("feature-integration/runtime-review-agent-v123"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
@@ -416,8 +422,8 @@ impl Environment {
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:de555f92fabc4467dd86c7f74b34dfeafa024ddd278e1ac210a3230da4cb831a",
-            "atomic_summary_expected_backend_sha256": "126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:07085c3924d50f9fe91a43ad3de16f54b81a683982987ffaec8292d3b714eae7",
+            "atomic_summary_expected_backend_sha256": "0b1e737c56bc21b5c5c81fc5c43b06dbb6ef0aaff22b02abac0ff445d2c09f1e",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": env,
@@ -436,7 +442,7 @@ impl Environment {
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-cache-diagnostics-v113"),
+                    .join("feature-integration/runtime-review-agent-v123"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -593,7 +599,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-cache-diagnostics-v113"),
+                        .join("feature-integration/runtime-review-agent-v123"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1492,7 +1498,7 @@ mod tests {
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-cache-diagnostics-v113")
+                .join("feature-integration/runtime-review-agent-v123")
                 .to_string_lossy()
                 .as_ref()
         );
@@ -1539,11 +1545,11 @@ mod tests {
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:de555f92fabc4467dd86c7f74b34dfeafa024ddd278e1ac210a3230da4cb831a"
+            "strata-stat-v2:07085c3924d50f9fe91a43ad3de16f54b81a683982987ffaec8292d3b714eae7"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "126bf3a8399a1fd1867c67b92469be108891586675f840a9ab8a5b3626e637dd"
+            "0b1e737c56bc21b5c5c81fc5c43b06dbb6ef0aaff22b02abac0ff445d2c09f1e"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

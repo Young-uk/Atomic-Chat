@@ -646,3 +646,118 @@ it('keeps archived evidence and live history when the clone becomes stale after 
   expect(coordinator.error).toBeUndefined()
   expect(phases).not.toContain('failed')
 })
+
+it('defers a saved Strata summary until a retained cache boundary is verified', async () => {
+  const messages = history(), store = storage(), c = new ContextCompaction('thread', store)
+  c.requireVerifiedCacheAdoption(true)
+  await c.initialize()
+  const summarize: Summarize = async (_p, _e, _s, _progress, checkpoints) => {
+    await checkpoints?.save({ version: 1, inputKey: 'thread/turn', offset: 16, completed: 1, summary: 'Saved facts' })
+    return 'Saved facts'
+  }
+  summarize.cached = true
+  c.schedule(messages, 2000, 1800, summarize, 16); await settle()
+  expect(c.previewReady(messages)).toEqual(messages)
+  await c.prepareCachedAdoption(messages, async (_h, _b, _a, _s, _v, strict) => { expect(strict).toBe(true); return -1 }, new AbortController().signal)
+  expect(c.apply(messages)).toEqual(messages)
+  expect(c.previewReady(messages)).toEqual(messages)
+  expect(store.saved.some(row => row.summary === 'Saved facts')).toBe(true)
+  await c.prepareCachedAdoption(messages, async () => 16, new AbortController().signal)
+  expect(c.previewReady(messages).some(row => row.id.startsWith('atomic-context-'))).toBe(true)
+  expect(c.apply(messages).some(row => row.id.startsWith('atomic-context-'))).toBe(true)
+})
+
+it('restores the prior view when a saved handoff cannot match the restored source cache', async () => {
+  const messages = history(), store = storage()
+  const previous: ArchiveRecord = { version: 1, id: 'previous', threadId: 'thread', source: messages.slice(0, 4), previousSummary: '', summary: 'Previous facts', summaryAfterMessageId: '13' }
+  const latest: ArchiveRecord = { version: 1, id: 'latest', threadId: 'thread', source: messages.slice(0, 16), previousSummary: 'Previous facts', summary: 'New facts', summaryAfterMessageId: '19', checkpoint: { version: 1, inputKey: 'thread/18', offset: 16, completed: 1, summary: 'New facts' } }
+  const c = new ContextCompaction('thread', { ...store, loadCandidates: async () => [latest, previous] })
+  c.requireVerifiedCacheAdoption(true); await c.initialize()
+  await c.prepareCachedAdoption(messages, async () => -1, new AbortController().signal, 'thread/18')
+  const view = c.apply(messages)
+  expect(view.some(row => row.id === 'atomic-context-previous')).toBe(true)
+  expect(view.some(row => row.id === 'atomic-context-latest')).toBe(false)
+  expect(view.some(row => row.id === '4')).toBe(true)
+  const summarize = vi.fn(async () => { throw Error('Do not generate another summary') })
+  await c.recover(messages, 2000, summarize, undefined, 1, () => 1000)
+  expect(summarize).not.toHaveBeenCalled()
+  expect(c.apply(messages).some(row => row.id === 'atomic-context-latest')).toBe(true)
+})
+
+it('does not immediately reload a deferred first archive as the active summary', async () => {
+  const messages = history(), store = storage()
+  await store.save({ version: 1, id: 'first', threadId: 'thread', source: messages.slice(0, 16), previousSummary: '', summary: 'Saved facts', checkpoint: { version: 1, inputKey: 'thread/18', offset: 16, completed: 1, summary: 'Saved facts' } })
+  const c = new ContextCompaction('thread', store)
+  c.requireVerifiedCacheAdoption(true); await c.initialize()
+  await c.prepareCachedAdoption(messages, async () => -1, new AbortController().signal, 'thread/18')
+  expect(c.apply(messages)).toEqual(messages)
+  expect(c.apply(messages)).toEqual(messages)
+})
+
+it('adopts a prepared summary at measured 85% pressure even when cache alignment fails', async () => {
+  const messages = history(), store = storage(), c = new ContextCompaction('thread', store)
+  c.requireVerifiedCacheAdoption(true); await c.initialize()
+  const summarize: Summarize = async (_p, _e, _s, _progress, checkpoints) => {
+    await checkpoints?.save({ version: 1, inputKey: 'thread/turn', offset: 16, completed: 1, summary: 'Verified saved facts' })
+    return 'Verified saved facts'
+  }
+  summarize.cached = true
+  c.schedule(messages, 131072, 125988, summarize, 16); await settle()
+  await c.prepareCachedAdoption(messages, async () => -1, new AbortController().signal)
+  expect(c.hasPreparedSummary).toBe(true)
+  expect(await c.adoptPreparedAtMeasuredPressure(messages, 83711, 131072)).toBe(false)
+  expect(c.apply(messages)).toEqual(messages)
+  expect(await c.adoptPreparedAtMeasuredPressure(messages, 125988, 131072)).toBe(true)
+  expect(c.hasPreparedSummary).toBe(false)
+  expect(c.apply(messages).some(row => row.id.startsWith('atomic-context-'))).toBe(true)
+  expect(c.apply(messages).some(row => row.id === '0')).toBe(false)
+  expect(store.saved.at(-1)?.source).toEqual(messages.slice(0, 16))
+  expect(store.saved.at(-1)?.cacheRetainFrom).toBe(16)
+})
+
+it('drops cache-only overlap under measured pressure and invalidates edited pending sources', async () => {
+  const messages = history(), store = storage()
+  await store.save({ version: 1, id: 'prior', threadId: 'thread', source: messages.slice(0, 4), previousSummary: '', summary: 'Prior facts', summaryAfterMessageId: '13' })
+  const c = new ContextCompaction('thread', store); c.requireVerifiedCacheAdoption(true); await c.initialize()
+  const summarize: Summarize = async (_p, _e, _s, _progress, checkpoints) => {
+    await checkpoints?.save({ version: 1, inputKey: 'thread/turn', offset: 16, completed: 1, summary: 'Merged prior and recent facts' })
+    return 'Merged prior and recent facts'
+  }
+  summarize.cached = true
+  c.schedule(messages, 131072, 125988, summarize, 16); await settle()
+  await c.prepareCachedAdoption(messages, async () => 8, new AbortController().signal)
+  expect(store.saved.at(-1)?.cacheRetainFrom).toBe(8)
+  expect(await c.adoptPreparedAtMeasuredPressure(messages, 125988, 131072)).toBe(true)
+  expect(store.saved.at(-1)?.cacheRetainFrom).toBe(16)
+  expect(store.saved.at(-1)?.retainedSummaries).toEqual([])
+  expect(c.apply(messages).some(row => row.id === '8')).toBe(false)
+
+  const next = new ContextCompaction('edited', storage()); next.requireVerifiedCacheAdoption(true); await next.initialize()
+  const editedSummary: Summarize = async (_p, _e, _s, _progress, checkpoints) => {
+    await checkpoints?.save({ version: 1, inputKey: 'edited/turn', offset: 16, completed: 1, summary: 'Old facts' }); return 'Old facts'
+  }
+  editedSummary.cached = true
+  next.schedule(messages, 131072, 125988, editedSummary, 16); await settle()
+  const edited = structuredClone(messages); edited[0].parts = [{ type: 'text', text: 'Corrected original source' }]
+  expect(await next.adoptPreparedAtMeasuredPressure(edited, 125988, 131072)).toBe(false)
+  expect(next.apply(edited)).toEqual(edited)
+  expect(next.hasPreparedSummary).toBe(false)
+})
+
+it.skipIf(!process.env.ATOMIC_PRESSURE_REPLAY_DIR)('adopts the saved real-thread summary at measured pressure without changing its archived source', async () => {
+  const { readFile, readdir } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const root = process.env.ATOMIC_PRESSURE_REPLAY_DIR!
+  const messages = (await readFile(join(root, 'messages.jsonl'), 'utf8')).trim().split('\n').map(line => convertThreadMessageToUIMessage(JSON.parse(line)))
+  const records: ArchiveRecord[] = await Promise.all((await readdir(join(root, 'context-archives'))).filter(name => name.endsWith('.json')).map(async name => JSON.parse(await readFile(join(root, 'context-archives', name), 'utf8'))))
+  const completed = records.filter(row => row.summary?.trim()).sort((a, b) => b.source.length - a.source.length)
+  const latest = completed[0], original = structuredClone(latest.source)
+  const store = storage(), c = new ContextCompaction(latest.threadId, { ...store, loadCandidates: async () => completed })
+  c.requireVerifiedCacheAdoption(true); await c.initialize()
+  await c.prepareCachedAdoption(messages, async () => -1, new AbortController().signal, latest.checkpoint!.inputKey)
+  expect(c.hasPreparedSummary).toBe(true)
+  expect(await c.adoptPreparedAtMeasuredPressure(messages, 125988, 131072)).toBe(true)
+  expect(c.apply(messages).some(row => row.id === `atomic-context-${latest.id}`)).toBe(true)
+  expect(store.saved.at(-1)?.source).toEqual(original)
+  expect(store.saved.at(-1)?.cacheRetainFrom).toBe(original.length)
+})

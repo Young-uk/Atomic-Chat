@@ -244,7 +244,30 @@ export class ContextCompaction {
   private active?: ArchiveRecord
   private resumable?: ArchiveRecord
   private pending?: { record: ArchiveRecord; sourceKey: string; controller: AbortController; recovery?: boolean; inputProgress?: (input?: SummaryInputProgress) => void }
-  private ready?: { record: ArchiveRecord; sourceKey: string }
+  private ready?: { record: ArchiveRecord; sourceKey: string; cacheVerified?: boolean }
+  private requireCacheMatch = false
+  requireVerifiedCacheAdoption(required: boolean): void { this.requireCacheMatch = required }
+  get hasPreparedSummary(): boolean { return !!this.ready && !this.pending }
+  /** Cache reuse is a preference, not permission to fill the context window.
+   * Only a new user turn may commit this measured-pressure handoff. */
+  async adoptPreparedAtMeasuredPressure(messages: UIMessage[], inputTokens: number, context: number): Promise<boolean> {
+    if (!Number.isSafeInteger(inputTokens) || inputTokens < 0 || !Number.isSafeInteger(context) || context <= 0) throw new Error('Invalid measured summary budget')
+    if (inputTokens < context * PROMPT_PRESSURE_TRIGGER || !this.ready || this.pending || !this.matches(this.ready.record, messages)) return false
+    const ready = this.ready
+    const anchors = new Set(messages.slice(ready.record.source.length).map(message => message.id))
+    const record = { ...ready.record, cacheRetainFrom: ready.record.source.length,
+      retainedSummaries: (ready.record.retainedSummaries ?? []).filter(item => anchors.has(item.afterMessageId)) }
+    await this.store.save(record)
+    if (this.ready !== ready || !this.matches(record, messages)) return false
+    this.active = record
+    this.ready = undefined
+    this.restoredAdoption = undefined
+    logCompactionBudget('prepared summary adopted under measured pressure', {
+      threadId: this.threadId, inputTokens, context, pressureThreshold: context * PROMPT_PRESSURE_TRIGGER,
+      sourceMessages: record.source.length, cacheAligned: false,
+    })
+    return true
+  }
   private archiveCandidates: ArchiveRecord[] = []
   private restoredAdoption?: ArchiveRecord
   private initialization?: Promise<void>
@@ -269,7 +292,7 @@ export class ContextCompaction {
   }
   /** Inspect the next-turn view without adopting it into an in-flight request. */
   previewReady(messages: UIMessage[]): UIMessage[] {
-    const record = this.ready?.record ?? this.active
+    const record = this.ready && (!this.requireCacheMatch || this.ready.cacheVerified) ? this.ready.record : this.active
     return record && this.matches(record, messages) ? this.preview(record, messages) : messages
   }
   private summaryFailure?: unknown
@@ -324,14 +347,26 @@ export class ContextCompaction {
     const boundary = record.cacheRetainFrom ?? record.source.length
     const archived = previous?.source.length ?? 0
     const placements = this.summaryPlacements(messages, previous ?? null)
+    if (ready && this.requireCacheMatch) ready.cacheVerified = false
     const current = () => ready ? this.ready === ready : this.active === record && this.restoredAdoption === record
     const selected = restored
       ? await select(messages, boundary, archived, signal, at => insertRetainedSummaries(messages.slice(at), placements), true)
-      : await select(messages, boundary, archived, signal)
+      : this.requireCacheMatch
+        ? await select(messages, boundary, archived, signal, undefined, true)
+        : await select(messages, boundary, archived, signal)
     signal.throwIfAborted()
     if (!current() || !this.matches(record, messages)) return
     if (!Number.isSafeInteger(selected) || selected <= archived || selected > boundary ||
-        (selected !== boundary && messages[selected]?.role !== 'user')) return
+        (selected !== boundary && messages[selected]?.role !== 'user')) {
+      if (restored && this.requireCacheMatch) {
+        this.ready = { record, sourceKey: fingerprint(record.source), cacheVerified: false }
+        this.active = previous
+        this.restoredAdoption = undefined
+      }
+      logCompactionBudget('cached handoff deferred', { threadId: this.threadId, boundary, reason: 'no-verified-cache-boundary' })
+      return
+    }
+    if (ready) ready.cacheVerified = true
     logCompactionBudget('cached handoff boundary checked', {
       threadId: this.threadId, sourceMessages: record.source.length,
       retainedFrom: selected, additionalRawMessages: record.source.length - selected, restored,
@@ -367,7 +402,8 @@ export class ContextCompaction {
 
   /** Caller invokes this only at a new user turn, never mid tool execution. */
   apply(messages: UIMessage[], allowNewSummary = true): UIMessage[] {
-    if (this.ready && allowNewSummary) {
+    if (this.ready && !this.matches(this.ready.record, messages)) this.ready = undefined
+    if (this.ready && allowNewSummary && (!this.requireCacheMatch || this.ready.cacheVerified)) {
       if (fingerprint(messages.slice(0, this.ready.record.source.length)) === this.ready.sourceKey) {
         this.active = this.ready.record
       }
@@ -379,7 +415,8 @@ export class ContextCompaction {
     if (this.active && !this.matches(this.active, messages)) this.active = undefined
     // A longer legacy snapshot can be incompatible after a transcript edit.
     // Do not let it hide a shorter independently saved, matching checkpoint.
-    if (!this.active) this.active = this.archiveCandidates.find(record => this.matches(record, messages))
+    if (!this.active) this.active = this.archiveCandidates.find(record =>
+      record.id !== this.ready?.record.id && this.matches(record, messages))
     if (!this.active) return messages
     const archived = this.active
     const overlap = archived.cacheRetainFrom
@@ -724,6 +761,7 @@ export class ContextCompaction {
       // Recovery runs only before output begins. Commit the exact verified
       // view here, including for a tool continuation which normally freezes
       // its active summary. Otherwise the retry sends the old oversized view.
+      if (this.ready) this.ready.cacheVerified = true // Explicit space recovery may require a cold handoff.
       this.apply(messages, true)
       return
     }

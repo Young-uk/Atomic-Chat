@@ -4,11 +4,26 @@ import { fetchDstarContext } from './dstar-context-archive'
 import { logCompactionBudget } from './dstar-context-compaction'
 import { SummaryCacheChangedError } from './summary-stream'
 
+/** ModelMessage file data has not passed through the SDK's model-prompt
+ * normalization yet. URL strings must become URLs before provider serialization;
+ * otherwise a data URL is prefixed with a second data URL header. */
+function normalizeUserPart(part: unknown): unknown {
+  if (!part || typeof part !== 'object') return part
+  const value = part as Record<string, unknown>
+  if (value.type !== 'file' && value.type !== 'image') return part
+  let data = value.type === 'image' ? value.image : value.data
+  if (typeof data === 'string') {
+    try { data = new URL(data) } catch { /* Raw base64 remains base64. */ }
+  }
+  if (data instanceof ArrayBuffer) data = new Uint8Array(data)
+  return { ...value, type: 'file', data, mediaType: value.mediaType ?? 'image/*' }
+}
+
 /** Use the installed provider's actual wire serializer, including tool results
  * and reasoning. Planning tokenizes text only; it never calls model generation. */
 export function historyPlanMessages(messages: ModelMessage[]): unknown[] {
   const prompt = messages.map(message => message.role === 'user' || message.role === 'assistant'
-    ? { ...message, content: typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content }
+    ? { ...message, content: typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.role === 'user' ? message.content.map(normalizeUserPart) : message.content }
     : message)
   return convertToOpenAICompatibleChatMessages(prompt as Parameters<typeof convertToOpenAICompatibleChatMessages>[0])
 }

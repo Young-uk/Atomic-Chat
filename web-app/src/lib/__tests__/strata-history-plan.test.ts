@@ -47,3 +47,17 @@ it('defers a background clone if foreground work changed the cache owner', async
   expect(await planStrataHistoryBoundary('http://local/v1', 'model', 'thread/old-turn', history, 8, 2,
     new AbortController().signal, () => [], {}, true)).toBe(-1)
 })
+
+it('preserves image data URLs without adding a second base64 header', () => {
+ const url = 'data:image/png;base64,iVBORw0KGgo='
+ const wire = historyPlanMessages([{role:'user',content:[{type:'file',mediaType:'image/png',data:url}]}])
+ expect(wire).toEqual([{role:'user',content:[{type:'image_url',image_url:{url}}]}])
+})
+it('preserves binary and raw base64 image bytes and image parts', () => {
+ const wire = historyPlanMessages([{role:'user',content:[
+  {type:'file',mediaType:'image/png',data:new Uint8Array([1,2,3])},
+  {type:'file',mediaType:'image/png',data:'AQID'},
+  {type:'image',mediaType:'image/png',image:'data:image/png;base64,AQID'},
+ ]}])
+ expect(wire).toEqual([{role:'user',content:Array.from({length:3},()=>({type:'image_url',image_url:{url:'data:image/png;base64,AQID'}}))}])
+})

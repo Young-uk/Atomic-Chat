@@ -1,3 +1,4 @@
+import * as promptBudget from '../managed-prompt-budget'
 import { webcrypto } from 'node:crypto'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { STRATA_PROVIDER, STRATA_MODEL } from '@/services/managed-local-engine'
@@ -121,6 +122,7 @@ async function readChunks(
 // Shared by every describe below: a seeded service hub plus a default MLX
 // provider/model, so each test only has to state what it changes.
 beforeEach(() => {
+  vi.spyOn(promptBudget, 'measureManagedPrompt').mockResolvedValue({ input_tokens: 1024, context_length: 65536, reserved_tokens: 1024 })
   useGeneralSetting.setState({ completionReviewEnabled: false })
   useMCPServers.setState({ mcpServers: {} })
   seedServiceHub({
@@ -1590,6 +1592,9 @@ describe('Dstar emergency full-context recovery', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ atomic_summary_slot: true, data: [{ id: 'qwen3.8-flash-next-chat', context_length: 8192 }] }) }))
     vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
     let recovered = false
+    vi.mocked(promptBudget.measureManagedPrompt).mockImplementation(async () => ({
+      input_tokens: !providerReject && !recovered ? 10000 : 1000, context_length: 8192, reserved_tokens: 1024,
+    }))
     vi.spyOn(ContextCompaction.prototype, 'apply').mockImplementation(messages => recovered
       ? [{ id: 'atomic-context-recovery', role: 'system', parts: [{ type: 'text', text: 'Archived prior facts' }] }, messages.at(-1)!] : messages)
     vi.spyOn(ContextCompaction.prototype, 'schedule').mockImplementation(() => {})
@@ -2351,4 +2356,33 @@ describe('Host-initiated past conversation lookup', () => {
       expect(current.parts).toEqual([{ type: 'text', text: 'What did I say in the other chat yesterday?' }])
     } finally { useAgentMode.setState({ approvalModes: {} }); vi.unstubAllEnvs(); vi.unstubAllGlobals() }
   })
+})
+
+it('uses the tokenizer budget to release a prepared clone before inference at 85% pressure', async () => {
+  const { ContextCompaction } = await import('../dstar-context-compaction')
+  const cachedSummary = await import('../strata-cached-summary')
+  vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'true'); vi.stubEnv('VITE_DSTAR_APPEND_EFFORT', 'true')
+  vi.spyOn(ContextCompaction.prototype, 'initialize').mockResolvedValue()
+  vi.spyOn(ContextCompaction.prototype, 'hasPreparedSummary', 'get').mockReturnValue(true)
+  vi.spyOn(ContextCompaction.prototype, 'prepareCachedAdoption').mockResolvedValue()
+  const adopted = vi.spyOn(ContextCompaction.prototype, 'adoptPreparedAtMeasuredPressure').mockResolvedValue(true)
+  vi.spyOn(ContextCompaction.prototype, 'schedule').mockImplementation(() => {})
+  vi.spyOn(cachedSummary, 'resumeRestoredStrataSummary').mockResolvedValue()
+  vi.mocked(promptBudget.measureManagedPrompt).mockResolvedValue({ input_tokens: 125988, context_length: 131072, reserved_tokens: 1032 })
+  const modelInfo = { id: 'qwen3.8-flash-next-chat', capabilities: [], settings: {} } as Model
+  useModelProvider.setState({ selectedProvider: 'dstar', selectedModel: modelInfo,
+    providers: [{ provider: 'dstar', active: true, api_key: '', base_url: 'http://127.0.0.1:8010/v1', models: [modelInfo], settings: [] }] })
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ atomic_summary_slot: true, atomic_summary_clone: true,
+    runtime_id: 'pressure-test', atomic_model_fingerprint: 'pressure-config', atomic_summary_context: 16384,
+    atomic_summary_token_count: true, data: [{ id: modelInfo.id, context_length: 131072 }] })))
+  const model = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'finish', finishReason: 'stop', usage: { inputTokens: 125988, outputTokens: 1, totalTokens: 125989 } }])
+  vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(model)
+  try {
+    const chunks = await readChunks(await new CustomChatTransport(undefined, 'measured-pressure').sendMessages({ chatId: 'measured-pressure', messages: [userMessage], abortSignal: undefined, trigger: 'submit-message', messageId: undefined }) as ReadableStream<Record<string, unknown>>)
+    expect(chunks.some(chunk => chunk.type === 'finish')).toBe(true)
+    const { useInferenceProgress } = await import('../inference-progress')
+    expect(useInferenceProgress.getState().contextByThread?.['measured-pressure']?.tokens).toBe(125989)
+    expect(adopted).toHaveBeenCalledWith(expect.any(Array), 125988, 131072)
+    expect((model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream).toHaveBeenCalledOnce()
+  } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals() }
 })

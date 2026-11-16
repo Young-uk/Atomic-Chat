@@ -1,22 +1,27 @@
+import { ReviewAgentStore } from './review-agent-store.mjs'
 import { BackgroundReviewChannel, validateReviewEvidence } from './review-channel.mjs'
 import { createLinkGeneratorRunner } from './agent-source/suite/memory/links/link-generator-runner.mjs'
 import { ConsolidatorJob, DistillRunner } from './agent-source/suite/memory/consolidator/index.mjs'
 import { USER_CONFIG_DEFAULTS } from './agent-source/suite/config/config-schema.mjs'
 import { createReflectionRunner } from './agent-source/suite/memory/reflection/reflection-runner.mjs'
 import { ProfileStore } from './agent-source/memory/profile-store.mjs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 /** Source reflection, owned by Chat's idle/background lifecycle. No Agent
  * runtime is started. Foreground chat and context recovery always win. */
 export class PersonalMemoryLifecycle {
-  constructor({ directory, notes, complete, now = () => Date.now() }) {
+  constructor({ directory, notes, complete, agentComplete, skillsRoot, now = () => Date.now(), idleMs = 15000 }) {
     this.now = now
     this.complete = complete
+    this.agentComplete = agentComplete
+    this.idleMs = idleMs
+    this.idleSince = null
     this.maintenanceEnabled = false
     this.nextMaintenance = 0
     this.notes = notes
     this.profile = new ProfileStore({ dbFile: join(directory, 'agent-notes.sqlite'), maxEntries: 500 })
     this.review = new BackgroundReviewChannel({ notes, complete, profile: this.profile })
+    this.agentStore = new ReviewAgentStore(notes, skillsRoot ?? join(dirname(notes.workspace), 'agent-skills'))
     this.linker = createLinkGeneratorRunner({ llmComplete: complete,
       linkStore: notes.maintenanceStores().linkStore, reflectionSlotId: -1, timeoutMs: 45000, maxLinksPerCall: 4 })
     this.pending = []
@@ -41,15 +46,35 @@ export class PersonalMemoryLifecycle {
       if (typeof input[key] !== 'string' || !input[key].trim()) throw new Error(`Missing reflection ${key}`)
     }
     if (input.sessionId.length > 200 || input.messageId.length > 200) throw new Error('Reflection identity is too long')
+    const checkedEvidence = validateReviewEvidence(input.evidence)
     const key = `${input.sessionId}:${input.messageId}`
     if (this.records.has(key)) return this.status()
+    let reviewDue
+    if (this.agentComplete && this.review.enabled) {
+      reviewDue = this.agentStore.observe(input)
+      if (reviewDue.duplicate) return this.status()
+      this.lastObservation = reviewDue
+      if (!reviewDue.memory && !reviewDue.skills && !this.pending.some(row => row.input.sessionId === input.sessionId && row.input.reviewMemory !== undefined)) return this.status()
+    }
     // Match the original end-of-turn best-effort posture. Bound pending
     // work; an old observation never blocks delivery of a current answer.
-    if (this.pending.length >= 32) throw new Error('Memory observation queue is full')
-    const row = { key, input: { sessionId: input.sessionId, messageId: input.messageId, userMessage: input.userMessage.slice(0, 10000), assistantReply: input.assistantReply.slice(0, 10000), cacheOwner: typeof input.cacheOwner === 'string' && /^[A-Za-z0-9_:/.-]{1,256}$/.test(input.cacheOwner) ? input.cacheOwner : undefined, evidence: validateReviewEvidence(input.evidence) }, state: 'queued', createdAt: this.now() }
+    const pendingReview = this.pending.find(row => row.input.sessionId === input.sessionId && row.input.reviewMemory !== undefined)
+    if (this.pending.length >= 32 && !pendingReview) throw new Error('Memory observation queue is full')
+    const row = { key, input: { sessionId: input.sessionId, messageId: input.messageId, userMessage: input.userMessage.slice(0, 10000), assistantReply: input.assistantReply.slice(0, 10000), cacheOwner: typeof input.cacheOwner === 'string' && /^[A-Za-z0-9_:/.-]{1,256}$/.test(input.cacheOwner) ? input.cacheOwner : undefined, evidence: checkedEvidence, ...(reviewDue ? { reviewMemory: reviewDue.memory, reviewSkills: reviewDue.skills } : {}) }, state: 'queued', createdAt: this.now() }
+    if (pendingReview) {
+      this.agentStore.mark(pendingReview.input, 'superseded')
+      this.records.delete(pendingReview.key)
+      row.input.reviewMemory ||= pendingReview.input.reviewMemory
+      row.input.reviewSkills ||= pendingReview.input.reviewSkills
+      pendingReview.key = key; pendingReview.input = row.input
+      this.records.set(key, pendingReview); this.agentStore.mark(row.input, 'queued')
+      return this.status()
+    }
     this.records.set(key, row)
     this.pending.push(row)
+    if (reviewDue) this.agentStore.mark(row.input, 'queued')
     this.trim()
+    if (!this.busy) this.schedule()
     return this.status()
   }
   trim() {
@@ -59,19 +84,34 @@ export class PersonalMemoryLifecycle {
     }
   }
   activity(busy) {
+    if (busy) { clearTimeout(this.idleTimer); this.idleSince = null }
+    else if (this.busy || this.idleSince === null) this.idleSince = this.now()
     this.busy = busy
-    if (busy) { this.runner.abortPending(); this.review.abortPending(); this.maintenanceController?.abort(); this.linker.abortPending() }
-    else void this.drain()
+    if (busy) { this.runner.abortPending(); this.review.abortPending(); this.agentController?.abort(); this.maintenanceController?.abort(); this.linker.abortPending() }
+    else this.schedule()
     return this.status()
+  }
+  schedule() {
+    if (this.closed || this.busy || this.active) return
+    clearTimeout(this.idleTimer)
+    const wait = this.agentComplete && this.review.enabled ? Math.max(0, this.idleMs - (this.now() - (this.idleSince ?? this.now()))) : 0
+    if (!wait) { void this.drain(); return }
+    this.idleTimer = setTimeout(() => void this.drain(), wait); this.idleTimer.unref?.()
   }
   status() {
     const row = this.active ?? [...this.records.values()].at(-1)
-    return { review: { enabled: this.review.enabled }, maintenance: { enabled: this.maintenanceEnabled, running: !!this.maintenanceController, last: this.maintenanceResult ?? null }, enabled: this.enabled, phase: this.active ? (this.busy ? 'paused' : 'running') : this.pending.length ? 'queued' : row?.state ?? 'idle', queued: this.pending.length,
-      last: row ? { key: row.key, state: row.state, outcome: row.outcome, factsWritten: row.factsWritten, notesWritten: row.notesWritten, reason: row.reason } : null }
+    return { review: { enabled: this.review.enabled, mode: this.agentComplete ? 'agent' : 'extractor', observation: this.lastObservation ?? null, diagnostics: this.agentComplete ? this.agentStore.diagnostics() : null }, maintenance: { enabled: this.maintenanceEnabled, running: !!this.maintenanceController, last: this.maintenanceResult ?? null }, enabled: this.enabled, phase: this.active ? (this.busy ? 'paused' : 'running') : this.pending.length ? 'queued' : row?.state ?? 'idle', queued: this.pending.length,
+      last: row ? { key: row.key, state: row.state, outcome: row.outcome, factsWritten: row.factsWritten, notesWritten: row.notesWritten, reason: row.reason, reviewRunId: row.reviewRunId, changes: row.changes, tool: row.tool, cacheMode: row.cacheMode } : null }
   }
-  configureReview(enabled) { this.review.configure(enabled) }
+  configureReview(enabled) {
+    this.review.configure(enabled)
+    if (!enabled && this.agentComplete) {
+      this.agentController?.abort()
+      this.pending = this.pending.filter(row => { if (row.input.reviewMemory === undefined) return true; row.state = 'cancelled'; this.agentStore.mark(row.input, 'cancelled'); return false })
+    }
+  }
   reviewHistory() { return this.review.store.history() }
-  undoReview(id) { return this.review.store.undo(id) }
+  undoReview(id) { return this.agentStore.owns(id) ? this.agentStore.undo(id) : this.review.store.undo(id) }
   configureMaintenance(enabled) {
     this.maintenanceEnabled = enabled === true
     if (!enabled) { this.maintenanceController?.abort(); this.linker.abortPending() }
@@ -99,6 +139,14 @@ export class PersonalMemoryLifecycle {
     this.active = row
     row.state = 'running'
     try {
+      if (this.agentComplete && this.review.enabled) {
+        const controller = this.agentController = new AbortController()
+        const result = await this.agentComplete(row.input, { signal: controller.signal, onProgress: progress => { row.reviewRunId = progress.runId; row.tool = progress.tool } })
+        if (controller.signal.aborted || this.busy || this.closed) throw new Error('Background review interrupted')
+        row.reviewRunId = result.runId; row.changes = result.changes; row.cacheMode = result.cacheMode
+        row.state = 'completed'; row.outcome = 'ok'; this.agentStore.mark(row.input, 'completed')
+        return
+      }
       let review
       if (this.review.eligible(row.input)) {
         review = await this.review.run(row.input)
@@ -116,17 +164,20 @@ export class PersonalMemoryLifecycle {
         this.pending.unshift(row)
       } else row.state = ['ok', 'none'].includes(row.outcome) ? 'completed' : 'failed'
     } catch (error) {
-      if (this.busy && !this.closed) { row.state = 'queued'; this.pending.unshift(row) }
-      else { row.state = 'failed'; row.reason = error.message }
+      if (this.busy && !this.closed && (row.attempts ?? 0) < 3) { row.attempts = (row.attempts ?? 0) + 1; row.state = 'queued'; this.pending.unshift(row) }
+      else { row.state = 'failed'; row.reason = error.message; if (this.agentComplete) this.agentStore.mark(row.input, 'failed', error.message) }
     } finally {
       delete row.reflection
       this.active = null
+      this.agentController = null
       this.trim()
-      if (!this.busy && !this.closed) void this.drain()
+      if (!this.busy && !this.closed) this.schedule()
     }
   }
   async close() {
     this.closed = true
+    clearTimeout(this.idleTimer)
+    this.agentController?.abort()
     this.runner.abortPending()
     this.review.abortPending()
     this.maintenanceController?.abort()

@@ -1111,3 +1111,36 @@ describe('managed final wire token budget', () => {
     expect(mockedInvoke).not.toHaveBeenCalledWith('stream_local_http', expect.anything())
   })
 })
+
+describe('managed streaming context identity', () => {
+  it.each([true, false])('keeps live occupancy scoped only to the same model: %s', async sameModel => {
+    type Channel = { onmessage: (value: { data: string; done?: boolean }) => void }
+    let channel: Channel | undefined
+    useInferenceProgress.setState({byThread:{},contextByThread:{'scoped-live':{
+      modelId:sameModel?'model':'other',usageScope:'verified-model',runtimeScope:'verified-server',
+      tokens:129838,outputTokens:538,estimated:false,
+    }}})
+    const frame='data: {"prompt_progress":{"processed":20480,"total":87422,"cache":4096}}\n\n'
+    mockedInvoke.mockImplementation((command,args)=>{
+      if(command!=='stream_local_http')return Promise.resolve()
+      channel=(args as {onChunk:Channel}).onChunk
+      queueMicrotask(()=>channel?.onmessage({data:frame}))
+      return new Promise(()=>{})
+    })
+    const wire=createLocalStreamingFetch(vi.fn(),{},undefined,'scoped-live')
+    const response=await wire('http://127.0.0.1:18080/v1/chat/completions',{
+      method:'POST',body:JSON.stringify({model:'model',messages:[]}),
+    })
+    expect(useInferenceProgress.getState().contextByThread?.['scoped-live']).toEqual({
+      modelId:'model',usageScope:sameModel?'verified-model':undefined,
+      runtimeScope:sameModel?'verified-server':undefined,tokens:87422,estimated:false,
+    })
+    expect(useInferenceProgress.getState().byThread['scoped-live']).toMatchObject({
+      processed:16384,total:83326,cache:4096,
+      runtimeScope:sameModel?'verified-server':undefined,
+    })
+    channel?.onmessage({data:'',done:true})
+    expect(await response.text()).toBe(frame)
+    expect(useInferenceProgress.getState().contextByThread?.['scoped-live']?.tokens).toBe(87422)
+  })
+})

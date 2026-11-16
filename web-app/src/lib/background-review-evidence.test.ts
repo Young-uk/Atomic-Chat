@@ -22,3 +22,17 @@ describe('background review evidence', () => {
     expect(rows.at(-1)?.id).toBe('m29')
   })
 })
+
+it('deduplicates continued messages and tool calls, keeps user evidence, and rejects array-wrapped tool errors', () => {
+  const user: UIMessage = { id: 'u', role: 'user', parts: [{ type: 'text', text: 'Always check the result.' }] }
+  const assistant = { id: 'a', role: 'assistant', parts: [
+    ...Array.from({ length: 10 }, (_, i) => ({ type: 'dynamic-tool', toolCallId: `ok${i}`, toolName: 'test', state: 'output-available', output: [{ type: 'text', text: 'x'.repeat(3000) }, { type: 'image', data: 'PRIVATE_IMAGE_CANARY' }] })),
+    { type: 'dynamic-tool', toolCallId: 'bad-array', state: 'output-available', output: [{ type: 'text', text: '{"error":"failed"}' }] },
+    { type: 'text', text: 'Done.' },
+  ] } as unknown as UIMessage
+  const rows = captureBackgroundReviewEvidence([user, assistant, assistant])
+  expect(new Set(rows.map(row => row.id)).size).toBe(rows.length)
+  expect(rows.some(row => row.id === 'u')).toBe(true)
+  expect(rows.some(row => row.id === 'tool:bad-array')).toBe(false)
+  expect(JSON.stringify(rows)).not.toContain('PRIVATE_IMAGE_CANARY')
+})
