@@ -523,7 +523,21 @@ struct RequestedEngine {
     strata_context: u32,
 }
 
+const RECOVERY_WINDOW: Duration = Duration::from_secs(600);
+const RECOVERY_LIMIT: usize = 3;
+
+fn failed_strata_is_idle(value: &serde_json::Value) -> bool {
+    let summary = &value["atomic_summary"];
+    summary["recovery_required"].as_bool() == Some(true)
+        && summary["foreground_requests"].as_u64() == Some(0)
+        && summary["pending"].as_bool() == Some(false)
+        && summary["active"].as_bool() == Some(false)
+        && value["activity"]["in_flight"].as_u64() == Some(0)
+        && value["atomic_inference_reserved"].as_u64() == Some(0)
+}
+
 struct Actor {
+    automatic_restarts: Vec<Instant>,
     env: managed_engines::Environment,
     client: reqwest::Client,
     owned: Option<OwnedEngine>,
@@ -924,7 +938,43 @@ impl Actor {
         }
     }
 
+    fn recovery_available(&mut self) -> bool {
+        self.automatic_restarts.retain(|time| time.elapsed() < RECOVERY_WINDOW);
+        if self.automatic_restarts.len() < RECOVERY_LIMIT { return true; }
+        self.error = Some("engineRecoveryLimit".into());
+        self.error_engine = Some(Engine::Strata);
+        false
+    }
+
+    async fn recover_failed_strata(&mut self) {
+        if self.stopping.is_some() || self.pending.is_some() || self.error.is_some() { return; }
+        let Some(owned) = self.owned.as_mut() else { return; };
+        if owned.engine != Engine::Strata || !owned.ready
+            || owned.last_probe.elapsed() < Duration::from_secs(2) { return; }
+        owned.last_probe = Instant::now();
+        let Some(pid) = owned.process.id() else { return; };
+        let Some(key) = owned.summary_owner_key.clone() else { return; };
+        let context = owned.strata_context.unwrap_or(self.strata_context);
+        // A health timeout is never evidence of a dead GPU. Only an explicit
+        // unloaded response followed by owned, idle, poisoned state qualifies.
+        let health = self.client.get(format!("http://127.0.0.1:{}/health", self.env.strata_port)).send().await;
+        let Ok(health) = health else { return; };
+        if !health.status().is_success() { return; }
+        let Ok(health) = health.json::<serde_json::Value>().await else { return; };
+        if health["loaded"].as_bool() != Some(false) { return; }
+        let Ok(status) = managed_engines::strata_status(&self.client, self.env.strata_port, pid).await else { return; };
+        if !failed_strata_is_idle(&status) || !self.recovery_available() { return; }
+        // Reuse the authenticated shutdown-only barrier. Never restore poisoned
+        // KV or replay a request whose tool side effects may have completed.
+        if managed_engines::drain_strata_summary(&self.client, self.env.strata_port, pid, &key).await.is_err() { return; }
+        if self.begin_stop().await.is_err() { return; }
+        self.automatic_restarts.push(Instant::now());
+        self.pending = Some(RequestedEngine { engine: Engine::Strata, selection: self.selection.clone(), strata_context: context });
+        log::warn!("[atomic-engines] restarting failed Strata runtime; request is not replayed (attempt {})", self.automatic_restarts.len());
+    }
+
     async fn tick(&mut self) {
+        self.recover_failed_strata().await;
         let mut ended = false;
         if let Some(owned) = self.owned.as_mut() {
             if self.confirmed_stop && self.stopping.is_some_and(|t| t.elapsed() >= Duration::from_secs(15)) {
@@ -936,6 +986,10 @@ impl Actor {
                 Ok(Some(status)) => {
                     if self.stopping.is_none() {
                         self.error = Some(format!("engineExited: {status}"));
+                        if owned.engine == Engine::Strata && owned.ready {
+                            self.pending = Some(RequestedEngine { engine: Engine::Strata,
+                                selection: self.selection.clone(), strata_context: owned.strata_context.unwrap_or(self.strata_context) });
+                        }
                     }
                     // caffeinate can exit before ds4 finishes checkpointing.
                     // Keep ownership until the captured descendants also exit;
@@ -1011,6 +1065,11 @@ impl Actor {
             self.stopping = None;
             self.confirmed_stop = false;
             if let Some(next) = self.pending.take() {
+                if self.error.as_deref().is_some_and(|error| error.starts_with("engineExited:")) {
+                    if !self.recovery_available() { return; }
+                    self.automatic_restarts.push(Instant::now());
+                    log::warn!("[atomic-engines] restarting exited Strata server; request is not replayed");
+                }
                 self.error_engine = Some(next.engine);
                 if let Err(error) = self.start(next) {
                     self.error = Some(error);
@@ -1084,6 +1143,7 @@ async fn run(
         .unwrap_or_default();
     let strata_context = env.load_strata_context();
     let mut actor = Actor {
+            automatic_restarts: Vec::new(),
         strata_context,
         error_engine: None,
         env,
@@ -1373,6 +1433,82 @@ mod tests {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[tokio::test]
+    async fn failed_native_restarts_only_after_owned_idle_authenticated_drain() {
+        let (root, env) = managed_fixture();
+        let port = env.strata_port;
+        fs::write(env.mock_strata.as_ref().unwrap(), b"exec /usr/bin/python3 -u fault-server.py\n").unwrap();
+        let script = r#"
+import http.server,json,pathlib
+mode=pathlib.Path('fault-mode')
+class Handler(http.server.BaseHTTPRequestHandler):
+    draining=False
+    def log_message(self,*args): pass
+    def do_GET(self):
+        m=mode.read_text() if mode.exists() else 'healthy'
+        summary=dict(recovery_required=m in ('failed','busy'),foreground_requests=int(m=='busy'),pending=False,active=False,rollback_pending=True,inference_draining=Handler.draining,recovery_stop_ready=Handler.draining)
+        value={'loaded':m=='healthy'} if self.path=='/health' else dict(atomic_summary=summary,atomic_inference_reserved=0,activity=dict(in_flight=int(m=='busy')))
+        body=json.dumps(value).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
+    def do_POST(self):
+        with open('posts','a') as f: f.write(self.path+'\n')
+        if self.path!='/v1/atomic/summary-cancel' or self.headers.get('X-Atomic-Owner-Key')!='test-owner':
+            self.send_response(403);self.end_headers();return
+        Handler.draining=True
+        self.send_response(200);self.end_headers();self.wfile.write(b'{}')
+http.server.HTTPServer(('127.0.0.1',PORT),Handler).serve_forever()
+"#.replace("PORT", &port.to_string());
+        fs::write(root.path().join("fault-server.py"), script).unwrap();
+        let mut actor = Actor { automatic_restarts: Vec::new(), env,
+            client: reqwest::Client::builder().no_proxy().timeout(Duration::from_millis(750)).build().unwrap(),
+            owned: None, stopping: None, confirmed_stop: false, pending: None,
+            selection: Selection::default(), strata_context: 32768, error: None, error_engine: None };
+        actor.start(RequestedEngine {engine: Engine::Strata, selection: Selection::default(), strata_context: 32768}).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(10);
+        loop {
+            if actor.client.get(format!("http://127.0.0.1:{port}/health")).send().await.is_ok() {break;}
+            assert!(Instant::now()<deadline);tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let pid=actor.owned.as_ref().unwrap().process.id().unwrap();
+        actor.owned.as_mut().unwrap().ready=true;
+        actor.owned.as_mut().unwrap().summary_owner_key=Some("test-owner".into());
+        for mode in ["healthy","loading","busy"] {
+            fs::write(root.path().join("fault-mode"),mode).unwrap();
+            actor.owned.as_mut().unwrap().last_probe=Instant::now()-Duration::from_secs(3);
+            actor.tick().await;
+            assert_eq!(actor.owned.as_ref().unwrap().process.id(),Some(pid));
+            assert!(actor.pending.is_none());assert!(actor.automatic_restarts.is_empty());
+        }
+        fs::write(root.path().join("fault-mode"),"failed").unwrap();
+        actor.owned.as_mut().unwrap().summary_owner_key=Some("wrong-owner".into());
+        actor.owned.as_mut().unwrap().last_probe=Instant::now()-Duration::from_secs(3);
+        actor.tick().await;
+        assert!(actor.stopping.is_none());assert!(actor.automatic_restarts.is_empty());
+        actor.owned.as_mut().unwrap().summary_owner_key=Some("test-owner".into());
+        actor.owned.as_mut().unwrap().last_probe=Instant::now()-Duration::from_secs(3);
+        actor.tick().await;
+        assert_eq!(actor.automatic_restarts.len(),1);
+        fs::write(root.path().join("fault-mode"),"healthy").unwrap();
+        while actor.owned.as_ref().and_then(|o|o.process.id())==Some(pid) {
+            assert!(Instant::now()<deadline);tokio::time::sleep(Duration::from_millis(50)).await;actor.tick().await;
+        }
+        assert_eq!(actor.owned.as_ref().unwrap().strata_context,Some(32768));
+        let replacement=actor.owned.as_mut().unwrap();
+        replacement.ready=true;
+        let replacement_pid=replacement.process.id();
+        replacement.process.start_kill().unwrap();
+        replacement.process.wait().await.unwrap();
+        actor.tick().await;
+        assert_ne!(actor.owned.as_ref().unwrap().process.id(),replacement_pid);
+        assert_eq!(actor.automatic_restarts.len(),2);
+        assert!(!fs::read_to_string(root.path().join("posts")).unwrap().contains("chat"));
+        actor.automatic_restarts=vec![Instant::now();RECOVERY_LIMIT];
+        assert!(!actor.recovery_available());
+        actor.automatic_restarts=vec![Instant::now()-RECOVERY_WINDOW-Duration::from_secs(1)];
+        assert!(actor.recovery_available());
+        actor.shutdown().await;
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[tokio::test]
     async fn strata_context_restarts_owned_runtime_and_preserves_dstar_settings() {
         let (root, env) = managed_fixture();
         fs::write(
@@ -1554,6 +1690,7 @@ mod tests {
     async fn ownership_observations_recover_without_clearing_lifecycle_or_other_engine_errors() {
         let (_root, env) = managed_fixture();
         let mut actor = Actor {
+            automatic_restarts: Vec::new(),
             env,
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -1840,6 +1977,7 @@ mod tests {
         )
         .unwrap();
         let mut actor = Actor {
+            automatic_restarts: Vec::new(),
             strata_context: managed_engines::DEFAULT_STRATA_CONTEXT,
             error_engine: None,
             env,

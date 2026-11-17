@@ -1020,7 +1020,7 @@ pub(super) async fn resume_strata_summary(
     Ok(())
 }
 
-async fn strata_status(
+pub(super) async fn strata_status(
     client: &reqwest::Client,
     port: u16,
     root: u32,

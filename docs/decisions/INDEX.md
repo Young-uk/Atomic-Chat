@@ -909,3 +909,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Normalize images before cache planning and token counting](2026-11-14-normalize-images-before-cache-planning.md)
 
 - [Preserve foreground usage identity during streaming](2026-11-14-preserve-foreground-usage-identity.md)
+
+- [Restart failed owned Strata runtimes](2026-11-17-restart-failed-strata-runtime.md) — bounded automatic recovery after native GPU or API-child exit, without replaying tool effects.

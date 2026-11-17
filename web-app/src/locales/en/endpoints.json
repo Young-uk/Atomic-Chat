@@ -107,6 +107,7 @@
     "strataCaution": "Strata IQ3_XXS is an experimental engine with high memory requirements. Available features depend on the server’s reported capabilities. Summary methods require additional memory. Low memory can defer summarization. Stability has not yet been verified on this Mac.",
     "selectDstar": "Choose Dstar in the chat model selector before using these controls.",
     "errors": {
+      "engineRecoveryLimit": "The model stopped repeatedly. Automatic restart is paused; check the engine log before starting it again.",
       "engineSummaryRecoveryRequired": "The previous summary failed to restore model state. Stop this engine, then start it again.",
       "engineBusy": "Another reply or tool is still running. Finish or stop it, then try again.",
       "foreignEngine": "A server is running outside Atomic. Stop it in the app that started it, then try again.",
