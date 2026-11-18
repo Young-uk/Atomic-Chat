@@ -159,7 +159,25 @@ export class LocalEngineCoordinator {
       const deadline = Date.now() + this.timeoutMs
       let prepared = false
       try {
-        if (this.prepare) await this.prepare()
+        if (this.prepare) {
+          try { await this.prepare() } catch (error) {
+            // A voice/embedding model can load after this engine is ready.
+            // Reusing an owned, matching runtime allocates no second model;
+            // never relax admission for a launch or engine/context switch.
+            if (forRequest && target.engine === 'strata' && error instanceof Error && error.message === 'otherLocalEngine') {
+              const existing = await this.control('status', target.engine)
+              if (!current()) return
+              if (existing.engine === target.engine && existing.status === 'ready' &&
+                  existing.owned && !existing.error && existing.servedModels.includes(target.model) &&
+                  !(existing.strataContext != null &&
+                    existing.activeContext !== existing.strataContext)) {
+                this.update({ target, phase: 'ready', snapshot: existing })
+                return
+              }
+            }
+            throw error
+          }
+        }
         if (!current()) return
         if (this.transition && !await this.beforeTransition(target.engine, current)) return
         if (!current()) { await this.transition?.resume(); return }
@@ -321,6 +339,11 @@ export class LocalEngineCoordinator {
       await waitForEngine(this.refresh(chatId), signal)
       signal?.throwIfAborted()
       if (revision !== this.revision) throw new Error('engineSelectionChanged')
+    }
+    // Retry must re-evaluate admission rather than replay a stale prepare error.
+    if (this.state.phase === 'error' && this.state.error === 'otherLocalEngine') {
+      this.pending = true
+      this.update({ target, phase: 'loading' })
     }
     if (this.state.phase === 'error') throw new Error(this.state.error || 'engineFailed')
     // Revalidate before every HTTP request; an idle child may have exited.

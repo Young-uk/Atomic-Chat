@@ -507,3 +507,41 @@ it('confirmed shutdown never reports stopped after an ownership failure', async 
   await expect(coordinator.stopConfirmed('strata')).rejects.toThrow('notOwned')
   expect(publish.mock.calls.at(-1)?.[0].phase).toBe('error')
 })
+
+
+it('Retry reuses a verified ready runtime despite a later auxiliary model', async () => {
+  const control = vi.fn().mockResolvedValue(snapshot(strata))
+  const publish = vi.fn()
+  const coordinator = new LocalEngineCoordinator(control, publish)
+  coordinator.configurePrepare(vi.fn().mockRejectedValue(new Error('otherLocalEngine')))
+  coordinator.selectEngineTarget(strata)
+  await flush()
+  expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'error', error: 'otherLocalEngine' }))
+  expect(control).not.toHaveBeenCalled()
+  const release = await coordinator.acquire(strata)
+  expect(control).toHaveBeenCalledExactlyOnceWith('status', 'strata')
+  expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'ready' }))
+  release()
+})
+
+it.each([
+  { owned: false }, { engine: 'dstar' as const }, { status: 'loading' as const },
+  { error: 'foreignEngine' }, { servedModels: ['another-model'] },
+  { strataContext: 131072, activeContext: 65536 },
+])('keeps launch admission closed when existing runtime does not match: %j', async change => {
+  const control = vi.fn().mockResolvedValue({ ...snapshot(strata), ...change })
+  const coordinator = new LocalEngineCoordinator(control)
+  coordinator.configurePrepare(vi.fn().mockRejectedValue(new Error('otherLocalEngine')))
+  coordinator.selectEngineTarget(strata, false)
+  await expect(coordinator.acquire(strata)).rejects.toThrow('otherLocalEngine')
+  expect(control).toHaveBeenCalledExactlyOnceWith('status', 'strata')
+})
+
+it('does not apply Strata reuse admission to Dstar startup policy', async () => {
+  const control = vi.fn().mockResolvedValue(snapshot(dstar))
+  const coordinator = new LocalEngineCoordinator(control)
+  coordinator.configurePrepare(vi.fn().mockRejectedValue(new Error('otherLocalEngine')))
+  coordinator.selectEngineTarget(dstar, false)
+  await expect(coordinator.acquire(dstar)).rejects.toThrow('otherLocalEngine')
+  expect(control).not.toHaveBeenCalled()
+})
