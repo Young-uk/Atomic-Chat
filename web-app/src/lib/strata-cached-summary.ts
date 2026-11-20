@@ -2,7 +2,7 @@ import { noteDstarCacheOwner, latestDstarCacheOwner } from './dstar-summary-idle
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
 import { fetchDstarContext } from './dstar-context-archive'
 import type { UIMessage } from 'ai'
-import { contextSourceFingerprint, type ContextCompaction, type Summarize } from './dstar-context-compaction'
+import { contextSourceFingerprint, logCompactionBudget, type ContextCompaction, type Summarize } from './dstar-context-compaction'
 import type { SummaryInputProgress } from './context-summary-progress'
 import { mergeRequestLedger, requestSources } from './dstar-open-requests'
 import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom, SummaryOutputLimitError, SummaryCacheChangedError } from './summary-stream'
@@ -51,6 +51,11 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
       finally { polling = false }
     }
     const stageTimer = options.recovery ? setInterval(() => { void pollStage() }, 1000) : undefined
+    const traceId = crypto.randomUUID()
+    let stage = 'request'
+    const trace = (event: string, fields: Record<string, unknown> = {}) =>
+      logCompactionBudget(event, { traceId, stage, ...fields })
+    trace('cached summary started')
     try {
       // The owner signal controls cancellation. A slow background decode is
       // not invalidated by the old ten-minute extraction-fragment timeout.
@@ -77,6 +82,7 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
       })
       signal.throwIfAborted()
       }
+      trace('cached summary HTTP response', { status: response.status })
       if (!response.ok) {
         const error = await response.json().catch(() => null)
         if (error?.error?.code === 'atomic_summary_clone_stale') throw new SummaryCacheChangedError()
@@ -87,16 +93,28 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
         }
         throw new Error(error?.error?.message ?? `Cached summary failed (${response.status}); originals retained`)
       }
+      stage = 'stream'
       const choice = await readSummaryChoice(response, signal, input => options.inputProgress?.(input, signal))
+      trace('cached summary stream ended', { finishReason: choice?.finish_reason, characters: choice?.message?.content?.length ?? 0 })
       if (choice?.finish_reason === 'length') throw new SummaryOutputLimitError()
       if (choice?.finish_reason !== 'stop' || !choice.message?.content?.trim()) throw new Error('Cached summary did not complete; originals retained')
+      stage = 'validation'
       const value = JSON.parse(choice.message.content)
       const known = new Set([...ledger.open, ...ledger.resolved].map(item => item.id))
       if (Array.isArray(value?.openRequests)) value.openRequests = value.openRequests.filter((item: { id?: string }) => !known.has(item?.id ?? ''))
-      const result = mergeRequestLedger(ledger, value, sources)
+      let discardedOpenRequests = 0
+      const result = mergeRequestLedger(ledger, value, sources, {
+        onInvalidOpenRequest: () => { discardedOpenRequests += 1 },
+      })
+      trace('cached summary validated', { discardedOpenRequests })
+      stage = 'checkpoint'
       await checkpoints?.save({ version: 1, inputKey: owner, offset: source.length, completed: 1, summary: result.summary, requests: result.ledger })
+      trace('cached summary checkpoint finished', { hasCheckpoint: Boolean(checkpoints) })
       progress?.(1)
       return result.summary
+    } catch (error) {
+      trace('cached summary failed', { cancelled: signal.aborted, errorType: error instanceof Error ? error.name : typeof error })
+      throw error
     } finally {
       watching = false
       clearInterval(stageTimer)

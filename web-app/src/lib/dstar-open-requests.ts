@@ -20,7 +20,7 @@ export function requestSources(messages: UIMessage[]): Map<string, { role: strin
 }
 
 export function mergeRequestLedger(previous: RequestLedger, value: unknown,
-  sources: ReturnType<typeof requestSources>): { summary: string; ledger: RequestLedger } {
+  sources: ReturnType<typeof requestSources>, options?: { onInvalidOpenRequest: () => void }): { summary: string; ledger: RequestLedger } {
   if (!value || typeof value !== 'object') throw new Error('Summary work-item response is not an object')
   const data = value as { summary?: unknown; openRequests?: unknown; resolvedRequests?: unknown }
   if (typeof data.summary !== 'string' || !data.summary.trim() ||
@@ -33,7 +33,9 @@ export function mergeRequestLedger(previous: RequestLedger, value: unknown,
     const source = typeof item?.id === 'string' ? sources.get(item.id) : undefined
     if (!source || source.role !== 'user' || !source.text.trim() ||
       typeof item.request !== 'string' || !item.request.trim() || Array.from(item.request).length > 280) {
-      throw new InvalidRequestSourceError()
+      if (!options) throw new InvalidRequestSourceError()
+      options.onInvalidOpenRequest()
+      continue
     }
     // Reopening requires an explicit model update, never a lost list entry.
     open.set(item.id, { id: item.id, request: item.request.trim(), sourceText: source.text })
