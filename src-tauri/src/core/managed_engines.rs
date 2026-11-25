@@ -158,8 +158,44 @@ if context == 131072:
 # Original IQ3 table restored from a SHA-256-verified backup; only file identity changed.
 if context == 131072:
     upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'], current_model=projected['atomic_summary_expected_model_fingerprint'], previous={'atomic_summary_expected_native_sha256': 'dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:07a1beb65dff4aa3b673c5abc3d61825fe3e60d66c496fe27e0ed925499a5567', 'atomic_summary_expected_backend_sha256': '0b1e737c56bc21b5c5c81fc5c43b06dbb6ef0aaff22b02abac0ff445d2c09f1e'}))
-projected['atomic_disk_session_reviewed_upgrades'] = upgrades
-print(json.dumps(projected))
+if context == 131072:
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'], current_model=projected['atomic_summary_expected_model_fingerprint'], previous={'atomic_summary_expected_native_sha256': 'dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3', 'atomic_summary_expected_model_fingerprint': 'strata-stat-v2:08ca95555a2d21895d8fb61fe7da249dfd659d5b5282d4b7437600e5602a4cd0', 'atomic_summary_expected_backend_sha256': 'ac061240d2ff3c3b1de0cb4de38f9624f19c3ede2d58d6de44c65d43b01faf0f'}))
+# Verify the exact prior MTP-off runtime before admitting its cached sessions.
+legacy = copy.deepcopy(cfg)
+legacy['exe'] = str(pathlib.Path(cfg['exe']).parents[1] / 'engine-eos-trace' / 'strata')
+legacy['env'].pop('STRATA_TEST_MTP_HISTORY')
+legacy_pins = prepare_summary_qualification_pins(legacy, offline=True)
+if legacy_pins['atomic_summary_expected_native_sha256'] == 'a782ed1b8d1852bd6fb94bf3fa5852302414b6ce227e2bd408922c5ec0a7e346':
+    legacy_pins['atomic_summary_expected_backend_sha256'] = '6008304ceb00000c1cd8ac0c8e0da10d6084db78c2ba2cf1c5d7bac83ba1f988'
+    upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                         current_model=projected['atomic_summary_expected_model_fingerprint'], previous=legacy_pins))
+cfg.update(projected)
+cfg['atomic_disk_session_reviewed_upgrades'] = upgrades
+cfg['atomic_mtp_disk_bridge'] = True
+if cfg.pop('atomic_mtp_requested', False):
+    rt = pathlib.Path(cfg['exe']).parent / 'rt'
+    for name, expected in (
+        ('mtp-q2_0.gguf', 'a22206a4d74eafbf31063a84610292535fb3b49af9a339963817fd04aed81e4d'),
+        ('draft_vocab_ko.bin', '8de2bec33e6a866311c70ec35ca58eec8048c9645b49ee94ef5bce523055174f'),
+    ):
+        with (rt / name).open('rb') as asset:
+            if hashlib.file_digest(asset, 'sha256').hexdigest() != expected:
+                raise ValueError('strataMtpAssetMismatch')
+    base = pathlib.Path(cfg['atomic_disk_session_dir'])
+    mtp = base.with_name(base.name + '-mtp')
+    cfg['args'][cfg['args'].index('--spec') + 1] = '4'
+    cfg['args'] += ['--spec-min-p', '0.5', '--mtp', str(rt)]
+    cfg['mtp'] = True
+    cfg['env'].update(STRATA_TEST_FOREGROUND_MTP='1', STRATA_TEST_MTP_SUMMARY='1',
+                      STRATA_METAL_MTP_GGUF=str(rt / 'mtp-q2_0.gguf'),
+                      STRATA_METAL_DRAFT_VOCAB=str(rt / 'draft_vocab_ko.bin'),
+                      STRATA_CONVERSATION_DISK_DIR=str(mtp))
+    cfg['atomic_disk_session_dir'] = str(mtp)
+    cfg['atomic_mtp_disk_bridge'] = {'base_dir': str(base), 'base_identity': projected}
+    cfg['atomic_disk_session_reviewed_upgrades'] = []
+    cfg.pop('atomic_disk_session_previous_backend_sha256', None)
+    cfg.update(prepare_summary_qualification_pins(cfg, offline=True))
+print(json.dumps(cfg))
 "#;
 
 pub(super) struct Environment {
@@ -347,8 +383,8 @@ impl Environment {
         let root = &self.strata_root;
         for relative in [
             "venv/bin/python",
-            "feature-integration/runtime-review-agent-v123/serve/server.py",
-            "feature-integration/engine-startup-checkpoints-v115/strata",
+            "feature-integration/runtime-mtp-cache-v1/serve/server.py",
+            "feature-integration/engine-mtp-cache-v1/strata",
             "candidate/strata-vision",
             "feature-integration/engine-priority-v7/metal/data/expert-profile.bin",
             "feature-integration/pack-iq3/tokenizer/tokenizer.json",
@@ -387,10 +423,11 @@ impl Environment {
                 "STRATA_METAL_KEEP_FREE_GB": "8",
                 "STRATA_ATOMIC_SUMMARY_HEADROOM_TOKENS": "8192",
                 "STRATA_ATOMIC_SUMMARY_CHECKPOINTS": "1",
+                "STRATA_TEST_MTP_HISTORY": "1",
                 "STRATA_CONVERSATION_DISK_DIR": self.dstar_root.join("kv-cache-strata-iq3-iq4nl")
             });
         serde_json::json!({
-            "exe": root.join("feature-integration/engine-startup-checkpoints-v115/strata"),
+            "exe": root.join("feature-integration/engine-mtp-cache-v1/strata"),
             "args": [
                 "--pack", root.join("feature-integration/pack-iq3").to_string_lossy(),
                 "--native", first.to_string_lossy(),
@@ -402,7 +439,7 @@ impl Environment {
                 "--prompt-cache-spread", "--prompt-cache-every", "4096",
                 "--conversation-cache-min-tokens", "1024"
             ],
-            "cwd": root.join("feature-integration/runtime-review-agent-v123"),
+            "cwd": root.join("feature-integration/runtime-mtp-cache-v1"),
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
@@ -410,6 +447,7 @@ impl Environment {
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3-iq4nl"),
             // Original IQ4_NL weights: never import sessions produced with the Q5_1 table.
             "atomic_disk_session_reviewed_upgrades": [],
+            "atomic_disk_session_previous_backend_sha256": "3a861afc1155e977fead42e65280fdf220e140decaaa8ed72d8410817bfeb142",
             "atomic_summary_mode": "state-bank-v1",
             "atomic_summary_scheduler": "weighted-quanta-v1",
             "atomic_summary_foreground_weight": 8,
@@ -421,9 +459,9 @@ impl Environment {
             "atomic_summary_state_bank_provenance": "experimental-user-validation",
             "atomic_summary_transaction_qualified": false,
             "atomic_completion_review_qualified": false,
-            "atomic_summary_expected_native_sha256": "dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3",
-            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:07085c3924d50f9fe91a43ad3de16f54b81a683982987ffaec8292d3b714eae7",
-            "atomic_summary_expected_backend_sha256": "0b1e737c56bc21b5c5c81fc5c43b06dbb6ef0aaff22b02abac0ff445d2c09f1e",
+            "atomic_summary_expected_native_sha256": "f2c917ba8cd068be9f60d9f4093ca9815e191ee7a24cf02d9f4d1ad533e6bc2d",
+            "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ed9a98d7e676528ee9e640f93b3ca94d69e63cdee9013abe5eab28c3b46118b8",
+            "atomic_summary_expected_backend_sha256": "f7e09faaf4006487dad74d445738019593370aa8344bdf2e3af0e11818cebc73",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": env,
@@ -438,11 +476,12 @@ impl Environment {
     fn pinned_strata_config(&self, context: u32) -> Result<serde_json::Value, String> {
         validate_strata_context(context)?;
         let mut config = self.strata_config(context);
+        config["atomic_mtp_requested"] = self.dstar_root.join("atomic-strata-mtp.enabled").is_file().into();
         let mut cmd = std::process::Command::new(self.strata_root.join("venv/bin/python"));
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
                 self.strata_root
-                    .join("feature-integration/runtime-review-agent-v123"),
+                    .join("feature-integration/runtime-mtp-cache-v1"),
             )
             .env("PYTHONUNBUFFERED", "1")
             .env("STRATA_NO_PRESET", "1")
@@ -515,12 +554,10 @@ impl Environment {
         {
             return Err("strataContextPinCalculationFailed".into());
         }
-        config["atomic_summary_expected_model_fingerprint"] = fingerprint.into();
-        let upgrades = pins["atomic_disk_session_reviewed_upgrades"]
-            .as_array()
-            .ok_or("strataContextPinCalculationFailed")?;
-        config["atomic_disk_session_reviewed_upgrades"] = serde_json::Value::Array(upgrades.clone());
-        Ok(config)
+        if !pins["atomic_disk_session_reviewed_upgrades"].is_array() {
+            return Err("strataContextPinCalculationFailed".into());
+        }
+        Ok(pins)
     }
 
     pub fn launch_strata(
@@ -599,7 +636,7 @@ impl Environment {
                 ])
                 .current_dir(
                     self.strata_root
-                        .join("feature-integration/runtime-review-agent-v123"),
+                        .join("feature-integration/runtime-mtp-cache-v1"),
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1491,14 +1528,14 @@ mod tests {
         assert_eq!(
             config["exe"],
             env.strata_root
-                .join("feature-integration/engine-startup-checkpoints-v115/strata")
+                .join("feature-integration/engine-mtp-cache-v1/strata")
                 .to_string_lossy()
                 .as_ref()
         );
         assert_eq!(
             config["cwd"],
             env.strata_root
-                .join("feature-integration/runtime-review-agent-v123")
+                .join("feature-integration/runtime-mtp-cache-v1")
                 .to_string_lossy()
                 .as_ref()
         );
