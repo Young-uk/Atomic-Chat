@@ -194,7 +194,15 @@ if cfg.pop('atomic_mtp_requested', False):
     cfg['atomic_mtp_disk_bridge'] = {'base_dir': str(base), 'base_identity': projected}
     cfg['atomic_disk_session_reviewed_upgrades'] = []
     cfg.pop('atomic_disk_session_previous_backend_sha256', None)
+    previous_mtp = prepare_summary_qualification_pins(cfg, offline=True)
+    previous_mtp['atomic_summary_expected_backend_sha256'] = 'f7e09faaf4006487dad74d445738019593370aa8344bdf2e3af0e11818cebc73'
+    cfg['env'].update(STRATA_WATCHDOG_S='3600', STRATA_WATCHDOG_IO_S='3600')
+    cfg['engine_silence_s'] = 3600
+    cfg['atomic_priority_restart_on_failure'] = True
     cfg.update(prepare_summary_qualification_pins(cfg, offline=True))
+    cfg['atomic_disk_session_reviewed_upgrades'] = [dict(
+        current_native=cfg['atomic_summary_expected_native_sha256'],
+        current_model=cfg['atomic_summary_expected_model_fingerprint'], previous=previous_mtp)]
 print(json.dumps(cfg))
 "#;
 
@@ -461,7 +469,7 @@ impl Environment {
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "f2c917ba8cd068be9f60d9f4093ca9815e191ee7a24cf02d9f4d1ad533e6bc2d",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ed9a98d7e676528ee9e640f93b3ca94d69e63cdee9013abe5eab28c3b46118b8",
-            "atomic_summary_expected_backend_sha256": "f7e09faaf4006487dad74d445738019593370aa8344bdf2e3af0e11818cebc73",
+            "atomic_summary_expected_backend_sha256": "3d80c5a9ce3e2e1a3c744ef3b5535a6c2fe525dd5427aa0f959c13e577d0ad29",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": env,
