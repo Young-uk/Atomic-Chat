@@ -1916,7 +1916,7 @@ describe('managed endpoint request routing', () => {
 
 })
 
-describe('Strata advertised plain tool policy', () => {
+describe('Strata built-in progress policy', () => {
   it.each([[true, true], [true, false], [false, true], [false, false]])('keeps history and progress with advertised policy=%s and tools=%s', async (advertised, toolsEnabled) => {
     const { STRATA_PROVIDER, STRATA_MODEL } = await import('@/services/managed-local-engine')
     const { ContextCompaction } = await import('../dstar-context-compaction')
@@ -1948,8 +1948,11 @@ describe('Strata advertised plain tool policy', () => {
       expect(response.parts.filter(p => p.type === 'text').map(p => p.text).join('')).toBe('I will check the source.')
       expect(response.parts.some(p => p.type === 'tool-search' || p.type === 'dynamic-tool')).toBe(toolsEnabled)
       expect(original).toEqual(before)
-      const prompt = JSON.stringify((model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0].prompt)
-      expect(prompt.includes('Talk with the user while carrying out their request.')).toBe(advertised)
+      const wire = (model as unknown as { doStream: ReturnType<typeof vi.fn> }).doStream.mock.calls[0][0].prompt
+      const prompt = JSON.stringify(wire)
+      const system = wire.find((message: { role: string }) => message.role === 'system')
+      expect(system?.content).toContain('Talk with the user while carrying out their request.')
+      expect(system?.content).toContain('During long reasoning')
       expect(prompt).not.toContain('atomic-tools:v1:')
       expect(prompt).not.toContain('atomic-tool-preamble:')
       expect(prompt).not.toContain('atomic-effort:')

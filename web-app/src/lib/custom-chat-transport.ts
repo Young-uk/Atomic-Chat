@@ -10,7 +10,7 @@ import i18n from '@/i18n/setup'
 import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
 import { SummaryAdmission, summarySchedulingContext } from './atomic-summary-admission'
 import { ATOMIC_PLAIN_TOOL_POLICY } from './atomic-tool-policy'
-import { localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
+import { STRATA_PROVIDER, localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
 import { convertThreadMessagesToUIMessages } from './messages'
 import { summarizeBatchesWithDstar } from './dstar-summary-batches'
 import { strataHistoryHash, bindStrataHistory, resumeRestoredStrataSummary, summarizeWithStrataCache } from './strata-cached-summary'
@@ -1664,13 +1664,16 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       !appendOnlyDstar && activeTools && 'retrieve' in activeTools
         ? ATTACHED_DOCUMENTS_HINT
         : undefined
+    // Managed chat protocols support ordinary assistant text alongside tool calls.
+    const usePlainToolSystem = effectiveProviderName === STRATA_PROVIDER ||
+      appendOnlyDstar || runtime?.toolPolicy === 'plain-system-v1'
     const systemWithSkills = composeSystemMessage(
       composeSystemMessage(renderInstructions(this.systemMessage), skillsBlock),
-      composeSystemMessage(documentsHint, (appendOnlyDstar || runtime?.toolPolicy === 'plain-system-v1') ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
+      composeSystemMessage(documentsHint, usePlainToolSystem ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
     )
 
     const dropSystemForTools =
-      isLocalProvider && shouldEnableTools && !!systemWithSkills
+      isLocalProvider && !usePlainToolSystem && shouldEnableTools && !!systemWithSkills
     const effectiveSystemMessage = dropSystemForTools
       ? undefined
       : systemWithSkills
