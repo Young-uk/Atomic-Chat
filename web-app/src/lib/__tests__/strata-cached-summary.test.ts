@@ -6,9 +6,6 @@ import { bindStrataHistory, strataHistoryHash, resumeRestoredStrataSummary, summ
 import { ContextCompaction, compactionBoundary, type ArchiveRecord, type Summarize } from '../dstar-context-compaction'
 
 vi.mock('../dstar-context-archive', () => ({ fetchDstarContext: (...args: unknown[]) => fetch(...args as Parameters<typeof fetch>) }))
-vi.mock('../summary-stream', async importOriginal => ({ ...await importOriginal<typeof import('../summary-stream')>(),
-  readSummaryChoice: async (response: Response) => (await response.json()).choices[0],
-}))
 afterEach(() => vi.unstubAllGlobals())
 const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve() }
 const history = (): UIMessage[] => Array.from({ length: 10 }, (_, i) => [
@@ -287,11 +284,15 @@ it.each(['http://127.0.0.1:18080/v1', 'http://127.0.0.1:8010/v1'])('clones image
 })
 
 
-it('waits for memory and resumes the same cached summary without replaying history', async () => {
+it.each(['HTTP', 'SSE'])('waits for memory and resumes the cached summary after a %s refusal', async (transport) => {
   vi.useFakeTimers()
   try {
+    const error = { code: 'atomic_summary_admission_refused', message: 'Summary is waiting for normal memory pressure, stable swap and available RAM; originals retained' }
+    const refusal = transport === 'SSE'
+      ? new Response(`data: ${JSON.stringify({ error })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
+      : Response.json({ error }, { status: 409 })
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(Response.json({ error: { code: 'atomic_summary_admission_refused', message: 'Summary is waiting for normal memory pressure, stable swap and available RAM; originals retained' } }, { status: 409 }))
+      .mockResolvedValueOnce(refusal)
       .mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ summary: 'Ready handoff', openRequests: [], resolvedRequests: [] }) } }] }))
     vi.stubGlobal('fetch', fetcher)
     const phases: string[] = []

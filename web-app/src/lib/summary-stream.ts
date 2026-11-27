@@ -5,8 +5,14 @@ const admissionMessages = new Set([
   'Not enough memory for the separate summary state; originals retained',
   'Summary is waiting for normal memory pressure, stable swap and available RAM; originals retained',
 ])
-export const summaryAdmissionMessage = (message: unknown) => typeof message === 'string' && admissionMessages.has(message)
+export const isSummaryMemoryWait = (message: unknown): message is string =>
+  typeof message === 'string' && admissionMessages.has(message)
+
+export const summaryAdmissionMessage = (message: unknown) => isSummaryMemoryWait(message)
   ? message : 'Background summary deferred by server safety admission; originals retained'
+
+/** Native memory admission changed before the summary ran. */
+export class SummaryMemoryWaitError extends Error {}
 
 /** A newer foreground request won the cache; a background clone must defer. */
 export class SummaryCacheChangedError extends Error {
@@ -62,8 +68,12 @@ export async function readSummaryChoice(response: Response, signal: AbortSignal,
     if (value.error) {
       checkSummaryHeadroom(value.error)
       checkSummaryIdle(value.error)
-      if (value.error.code === 'atomic_summary_admission_refused')
-        throw new Error(summaryAdmissionMessage(value.error.message))
+      if (value.error.code === 'atomic_summary_admission_refused') {
+        const message = summaryAdmissionMessage(value.error.message)
+        if (isSummaryMemoryWait(message)) throw new SummaryMemoryWaitError(message)
+        throw new Error(message)
+      }
+      if (value.error.code === 'atomic_summary_clone_stale') throw new SummaryCacheChangedError()
       throw new Error('Summary stream failed; originals retained')
     }
     const pp = value.prompt_progress

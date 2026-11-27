@@ -5,7 +5,7 @@ import type { UIMessage } from 'ai'
 import { contextSourceFingerprint, logCompactionBudget, type ContextCompaction, type Summarize } from './dstar-context-compaction'
 import type { SummaryInputProgress } from './context-summary-progress'
 import { mergeRequestLedger, requestSources } from './dstar-open-requests'
-import { readSummaryChoice, summaryAdmissionMessage, checkSummaryHeadroom, SummaryOutputLimitError, SummaryCacheChangedError } from './summary-stream'
+import { readSummaryChoice, isSummaryMemoryWait, summaryAdmissionMessage, checkSummaryHeadroom, SummaryOutputLimitError, SummaryCacheChangedError, SummaryMemoryWaitError } from './summary-stream'
 import type { SummaryAdmission } from './atomic-summary-admission'
 
 /** The conversation is already in the bound native clone. Send only the task,
@@ -66,10 +66,10 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
       )
       let compact = false
       while (true) {
-        stage = 'request'
-        let response: Response
+        let choice: Awaited<ReturnType<typeof readSummaryChoice>>
         while (true) {
-          response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          stage = 'request'
+          const response = await fetchDstarContext(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
             method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model, atomic_summary: true, atomic_summary_clone: owner,
               ...(checkpointSource ? { atomic_summary_checkpoint_source: checkpointSource } : {}),
@@ -77,10 +77,32 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
               stream: true, return_progress: true, think: false, temperature: 1, max_tokens: 0,
               messages: [{ role: 'user', content: compact ? compactTask : task }] }),
           })
-          if (response.ok) break
-          const waiting = await response.clone().json().catch(() => null)
-          if (waiting?.error?.code !== 'atomic_summary_admission_refused' || options.recovery ||
-              !/memory pressure|available RAM|Not enough memory|Summary resources are ready/.test(waiting.error.message ?? '')) break
+          trace('cached summary HTTP response', { status: response.status })
+          try {
+            if (!response.ok) {
+              const error = (await response.json().catch(() => null))?.error
+              if (error?.code === 'atomic_summary_clone_stale') throw new SummaryCacheChangedError()
+              checkSummaryHeadroom(error)
+              if (error?.code === 'atomic_summary_admission_refused') {
+                const message = summaryAdmissionMessage(error.message)
+                if (isSummaryMemoryWait(error.message)) {
+                  throw new SummaryMemoryWaitError(message)
+                }
+                options.admission?.refuse()
+                throw new Error(message)
+              }
+              throw new Error(error?.message ?? `Cached summary failed (${response.status}); originals retained`)
+            }
+            stage = 'stream'
+            choice = await readSummaryChoice(response, signal, input => options.inputProgress?.(input, signal))
+            break
+          } catch (error) {
+            if (!(error instanceof SummaryMemoryWaitError)) throw error
+            if (options.recovery) {
+              options.admission?.refuse()
+              throw error
+            }
+          }
           options.inputProgress?.({ phase: 'waiting-memory' }, signal)
           await new Promise<void>((resolve, reject) => {
             const aborted = () => { clearTimeout(timer); signal.removeEventListener('abort', aborted); reject(signal.reason) }
@@ -90,19 +112,6 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
           })
           signal.throwIfAborted()
         }
-        trace('cached summary HTTP response', { status: response.status })
-        if (!response.ok) {
-          const error = await response.json().catch(() => null)
-          if (error?.error?.code === 'atomic_summary_clone_stale') throw new SummaryCacheChangedError()
-          checkSummaryHeadroom(error?.error)
-          if (error?.error?.code === 'atomic_summary_admission_refused') {
-            options.admission?.refuse()
-            throw new Error(summaryAdmissionMessage(error.error.message))
-          }
-          throw new Error(error?.error?.message ?? `Cached summary failed (${response.status}); originals retained`)
-        }
-        stage = 'stream'
-        const choice = await readSummaryChoice(response, signal, input => options.inputProgress?.(input, signal))
         trace('cached summary stream ended', { finishReason: choice?.finish_reason, characters: choice?.message?.content?.length ?? 0 })
         if (choice?.finish_reason === 'length') {
           if (compact) throw new SummaryOutputLimitError()
