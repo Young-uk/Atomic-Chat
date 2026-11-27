@@ -1,4 +1,10 @@
 {
+  "controlVector": {
+    "label": "Strata 컨트롤 벡터",
+    "on": "컨트롤 벡터 켜짐 · Abliterated",
+    "off": "컨트롤 벡터 꺼짐 · Stock",
+    "unavailable": "현재 Strata 런타임에 컨트롤 벡터가 없습니다"
+  },
   "welcome": "안녕하세요, 잘 지내시나요?",
   "description": "오늘 무엇을 도와드릴까요?",
   "temporaryChat": "임시 채팅",

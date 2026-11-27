@@ -2065,6 +2065,38 @@ describe('independent Strata completion review isolated transport fixtures', () 
 })
 
 
+it.each([
+  { supported: true, enabled: false, expected: false },
+  { supported: true, enabled: true, expected: true },
+  { supported: false, enabled: true, expected: undefined },
+])('wires the Strata composer vector mode when advertised ($supported, $enabled)', async ({ supported, enabled, expected }) => {
+  const { useStrataProjection } = await import('@/hooks/useStrataProjection')
+  const model = { id: STRATA_MODEL, capabilities: [], settings: {} } as Model
+  useModelProvider.setState({ selectedProvider: STRATA_PROVIDER, selectedModel: model,
+    providers: [{ provider: STRATA_PROVIDER, active: true, api_key: '',
+      base_url: 'http://127.0.0.1:18080/v1', models: [model], settings: [] }] })
+  vi.stubEnv('VITE_DSTAR_BACKGROUND_COMPACTION', 'false')
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+    runtime_id: 'strata-vector-fixture', atomic_control_vector: supported,
+    data: [{ id: STRATA_MODEL, context_length: 65536 }],
+  }) }))
+  useStrataProjection.getState().setEnabled(enabled)
+  const primary = fakeStreamingModel([{ type: 'stream-start', warnings: [] }, { type: 'text-start', id: 'body' },
+    { type: 'text-delta', id: 'body', delta: 'Test answer' }, { type: 'text-end', id: 'body' },
+    { type: 'finish', finishReason: 'stop', usage: { inputTokens: 8, outputTokens: 3, totalTokens: 11 } }])
+  const create = vi.spyOn(ModelFactory, 'createModel').mockResolvedValue(primary)
+  const chat = new Chat<UIMessage>({ transport: new CustomChatTransport(undefined, 'strata-vector-fixture') })
+  try {
+    await chat.sendMessage({ text: 'Hello' })
+    expect(chat.error).toBeUndefined()
+    expect(create.mock.calls[0]?.[3]?.experimental_speed_projection).toBe(expected)
+  } finally {
+    useStrataProjection.getState().setEnabled(false)
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  }
+})
+
 describe('release completion-review gate through real transport discovery', () => {
   it.each(['dstar', 'strata'] as const)('does not review or continue a conditional offer on %s', async engine => {
     const modelId = engine === 'strata' ? STRATA_MODEL : 'qwen3.8-flash-next-chat'

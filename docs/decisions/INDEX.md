@@ -913,3 +913,5 @@ decision is reversed, add a new one that says which record it supersedes.
 - [Restart failed owned Strata runtimes](2026-11-17-restart-failed-strata-runtime.md) — bounded automatic recovery after native GPU or API-child exit, without replaying tool effects.
 
 - [Retry ready managed engines alongside auxiliary models](2026-11-18-retry-ready-engine-with-auxiliary-model.md).
+
+- **2026-11-27** — [Request-scoped Strata control vectors](2026-11-27-strata-control-vector.md)

@@ -34,7 +34,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { ArrowRight, Volume2, VolumeX } from 'lucide-react'
+import { ArrowRight, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react'
+import { useStrataProjection } from '@/hooks/useStrataProjection'
+import { localCapabilityTarget, probeLocalModelCapabilities } from '@/services/local-model-capabilities'
+import { useLocalEngine } from '@/services/managed-local-engine'
 import {
   IconCodeCircle2,
   IconPlayerStopFilled,
@@ -280,6 +283,26 @@ const ChatInput = memo(function ChatInput({
   const defaultAssistantId = useAssistant((state) => state.defaultAssistantId)
   const selectedModel = useModelProvider((state) => state.selectedModel)
   const selectedProvider = useModelProvider((state) => state.selectedProvider)
+  const projectionProvider = useModelProvider((state) =>
+    state.providers.find((provider) => provider.provider === state.selectedProvider)
+  )
+  const strataSelected = localCapabilityTarget(projectionProvider, selectedModel)?.engine === 'strata'
+  const endpointStatus = useLocalEngine((state) => state.snapshot?.status)
+  const projectionEnabled = useStrataProjection((state) => state.enabled)
+  const setProjectionEnabled = useStrataProjection((state) => state.setEnabled)
+  const [projectionAvailable, setProjectionAvailable] = useState(false)
+  const projectionModelId = selectedModel?.id
+  useEffect(() => {
+    setProjectionAvailable(false)
+    if (!strataSelected || !projectionProvider || !projectionModelId) return
+    const controller = new AbortController()
+    void probeLocalModelCapabilities(projectionProvider, { id: projectionModelId }, {
+      signal: controller.signal,
+    }).then((capabilities) => {
+      if (!controller.signal.aborted) setProjectionAvailable(capabilities?.controlVector === true)
+    })
+    return () => controller.abort()
+  }, [endpointStatus, projectionModelId, projectionProvider, strataSelected])
   const selectModelProvider = useModelProvider(
     (state) => state.selectModelProvider
   )
@@ -3435,6 +3458,35 @@ const ChatInput = memo(function ChatInput({
                     )}
                     toggles={accessToggles}
                   />
+                  {strataSelected && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={t('chat:controlVector.label')}
+                          aria-pressed={projectionAvailable && projectionEnabled}
+                          aria-disabled={!projectionAvailable}
+                          className={cn(
+                            'shrink-0 text-muted-foreground',
+                            !projectionAvailable && 'opacity-40',
+                            projectionAvailable && projectionEnabled && 'bg-primary/10 text-primary'
+                          )}
+                          onClick={() => {
+                            if (projectionAvailable) setProjectionEnabled(!projectionEnabled)
+                          }}
+                        >
+                          <SlidersHorizontal size={18} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {t(projectionAvailable
+                          ? projectionEnabled ? 'chat:controlVector.on' : 'chat:controlVector.off'
+                          : 'chat:controlVector.unavailable')}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                   {/* //! Browse (Chrome) button — temporarily hidden
                 {!agentRouteActive && hasJanBrowserMCPConfig && modelSupportsBrowser && (
                   <Tooltip>

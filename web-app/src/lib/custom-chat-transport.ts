@@ -8,6 +8,7 @@ import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history
 import { measureManagedPrompt } from './managed-prompt-budget'
 import i18n from '@/i18n/setup'
 import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
+import { useStrataProjection } from '@/hooks/useStrataProjection'
 import { SummaryAdmission, summarySchedulingContext } from './atomic-summary-admission'
 import { ATOMIC_PLAIN_TOOL_POLICY } from './atomic-tool-policy'
 import { STRATA_PROVIDER, localEngineCoordinator, localEngineTarget } from '@/services/managed-local-engine'
@@ -937,7 +938,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
   private summaryForeground?: { key: string; release: () => void; cleanups: (() => void)[] }
 
   private managedForeground?: {
-    selection: { provider?: ModelProvider; model: Model | null }
+    selection: { provider?: ModelProvider; model: Model | null; projection: boolean }
     release: () => void
     cleanups: (() => void)[]
   }
@@ -953,6 +954,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const state = useModelProvider.getState()
     const selection = this.managedForeground?.selection ?? {
       provider: state.getProviderByName(state.selectedProvider), model: state.selectedModel,
+      projection: useStrataProjection.getState().enabled,
     }
     const target = localEngineTarget(selection.provider, selection.model)
     if (!this.managedForeground && target && IS_TAURI && !IS_IOS && !IS_ANDROID) {
@@ -1014,7 +1016,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     } catch (error) { cleanupReview(); release(); throw error }
   }
 
-  private async sendWithContextRecovery(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0], recovered: boolean, selection: { provider?: ModelProvider; model: Model | null }, completed: (reason: string | undefined) => void): Promise<ReadableStream<UIMessageChunk>> {
+  private async sendWithContextRecovery(options: Parameters<CustomChatTransport['sendMessagesInternal']>[0], recovered: boolean, selection: { provider?: ModelProvider; model: Model | null; projection: boolean }, completed: (reason: string | undefined) => void): Promise<ReadableStream<UIMessageChunk>> {
     // Keep the continuation attached to this logical request until context
     // recovery succeeds. Preparing an oversized prompt consumes the pending
     // prefill, but has not yet generated any replacement text.
@@ -1096,7 +1098,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       messageId: string | undefined
     } & ChatRequestOptions,
     completed: (reason: string | undefined) => void = () => {},
-    selection?: { provider?: ModelProvider; model: Model | null }
+    selection?: { provider?: ModelProvider; model: Model | null; projection: boolean }
   ): Promise<ReadableStream<UIMessageChunk>> {
     const reviewEpoch = ++this.completionReviewEpoch
     const completionReviewOptedIn = useGeneralSetting.getState().completionReviewEnabled === true
@@ -1296,7 +1298,12 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         }
         // Only the identity-checked managed Strata route gets this extension.
         // Its progress stays on this request's SSE stream, never global metrics.
-        if (runtime?.engine === 'strata') effectiveReasoningOverride.return_progress = true
+        if (runtime?.engine === 'strata') {
+          effectiveReasoningOverride.return_progress = true
+          if (runtime.controlVector) {
+            effectiveReasoningOverride.experimental_speed_projection = selection?.projection ?? false
+          }
+        }
         if (runtime?.engine === 'dstar' || runtime?.engine === 'strata') {
           const user = options.messages.findLast(message => message.role === 'user')
           if (user) effectiveReasoningOverride.atomic_cache_owner = `${this.threadId ?? options.chatId}/${user.id}`

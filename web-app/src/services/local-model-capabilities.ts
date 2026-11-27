@@ -44,6 +44,7 @@ export type LocalModelCapabilities = {
   runtimeScope?: string
   archiveScope?: string
   summarySlot: boolean
+  controlVector?: boolean
   summaryClone?: boolean
   summaryStreamProgress?: boolean
   summaryTokenCounting: boolean
@@ -198,6 +199,7 @@ export async function probeLocalModelCapabilities(
       (target.engine === 'dstar' || strataSummarySupported)
     return {
       engine: target.engine, contextLength, runtimeId,
+      ...(target.engine === 'strata' && body.atomic_control_vector === true ? { controlVector: true } : {}),
       // Historical request measurements survive a same-config restart. Live
       // occupancy is separately bound to the ephemeral server process.
       usageScope: fingerprint || target.engine === 'dstar'

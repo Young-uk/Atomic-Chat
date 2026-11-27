@@ -36,6 +36,14 @@ describe('observed managed local capabilities', () => {
     respond(capabilities({ runtime_id: 'server-b' }))
     expect((await probeLocalModelCapabilities(provider, model))?.runtimeScope).not.toBe(value?.runtimeScope)
   })
+  it('exposes control vectors only for a registered Strata runtime that explicitly advertises them', async () => {
+    respond(capabilities())
+    expect((await probeLocalModelCapabilities(provider, model))?.controlVector).toBeUndefined()
+    respond(capabilities({ atomic_control_vector: true }))
+    expect((await probeLocalModelCapabilities(provider, model))?.controlVector).toBe(true)
+    respond(capabilities({ atomic_control_vector: 'true' }))
+    expect((await probeLocalModelCapabilities(provider, model))?.controlVector).toBeUndefined()
+  })
   it('replaces capacity and usage identities after restarting with a smaller context', async () => {
     respond(capabilities())
     const before = await probeLocalModelCapabilities(provider, model)

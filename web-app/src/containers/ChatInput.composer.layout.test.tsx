@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ChatInput from './ChatInput'
 import { useThreads } from '@/hooks/useThreads'
 import { usePrompt } from '@/hooks/usePrompt'
+import { useModelProvider } from '@/hooks/useModelProvider'
+import { useStrataProjection } from '@/hooks/useStrataProjection'
+import { STRATA_MODEL, STRATA_PROVIDER } from '@/services/managed-local-engine'
 import { seedServiceHub } from '@/test/service-hub'
 import {
   expectNoHorizontalOverflow,
@@ -24,6 +27,10 @@ vi.mock('motion/react', async (importOriginal) => ({
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useRouter: () => ({ navigate: vi.fn() }),
+}))
+vi.mock('@/services/local-model-capabilities', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/local-model-capabilities')>()),
+  probeLocalModelCapabilities: vi.fn(async () => ({ engine: 'strata', controlVector: true })),
 }))
 vi.mock('@/hooks/useTools', () => ({ useTools: vi.fn() }))
 vi.mock('@/hooks/useAgentSkills', () => ({
@@ -224,6 +231,34 @@ describe('Composer toolbar and Send reveal (Chromium)', () => {
       expectNoHorizontalOverflow(composer)
     }
   )
+
+  it('keeps the Strata switch beside permissions at desktop widths and Extra Large text', async () => {
+    const model = { id: STRATA_MODEL } as Model
+    const previous = useModelProvider.getState()
+    const provider = { provider: STRATA_PROVIDER, active: true, base_url: 'http://127.0.0.1:18080/v1', models: [model] } as ModelProvider
+    useModelProvider.setState({ providers: [provider], selectedProvider: STRATA_PROVIDER, selectedModel: model })
+    useStrataProjection.getState().setEnabled(false)
+    try {
+      await page.viewport(1024, 800)
+      setTheme('dark')
+      setFontSize(XL_FONT_SIZE)
+      renderComposer(1024)
+      const toggle = await screen.findByRole('button', { name: 'Strata control vector' })
+      await settle()
+      const access = screen.getByRole('button', { name: 'Restricted' })
+      const composer = screen.getByTestId('chat-input').closest<HTMLElement>('.border-input')!
+      expect(access.getBoundingClientRect().right).toBeLessThanOrEqual(toggle.getBoundingClientRect().left)
+      expectNoHorizontalOverflow(composer)
+      expect(toggle).toHaveAttribute('aria-pressed', 'false')
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-pressed', 'true')
+      fireEvent.click(toggle)
+      expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    } finally {
+      useModelProvider.setState(previous)
+      useStrataProjection.getState().setEnabled(false)
+    }
+  })
 
   it('folds the pill down only when the full pill would not fit', async () => {
     await page.viewport(360, 800)

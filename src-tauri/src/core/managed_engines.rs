@@ -221,6 +221,55 @@ if cfg.pop('atomic_mtp_requested', False):
     cfg['atomic_disk_session_reviewed_upgrades'].append(dict(current_native=cfg['atomic_summary_expected_native_sha256'],
                          current_model=cfg['atomic_summary_expected_model_fingerprint'],
                          previous=previous_reply_recovery))
+projection = cfg.pop('atomic_projection_root', None)
+if projection:
+    import subprocess
+    profile = pathlib.Path(projection)
+    def digest(path):
+        with path.open('rb') as file:
+            return hashlib.file_digest(file, 'sha256').hexdigest()
+    expected_native = '3bc155f79030ebb60ea35fc8cc968ec208a1acc26c0974cb6c91db659410e117'
+    expected_backend = 'f443dfc07fb862c48a1ca5b76c6bbea898c0314e5d621a182dc4a081a9a3fdbb'
+    if digest(profile / 'strata') != expected_native:
+        raise ValueError('strataProjectionNativeMismatch')
+    vector = profile / 'Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf'
+    if digest(vector) != '59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38':
+        raise ValueError('strataProjectionVectorMismatch')
+    kernel_hashes = {str(path.relative_to(profile)): digest(path)
+                     for name in ('kernels', 'engine-msl')
+                     for path in (profile / name).rglob('*') if path.is_file()}
+    if hashlib.sha256(json.dumps(kernel_hashes, sort_keys=True).encode()).hexdigest() != 'a7deaad5ac366e1a089cc757e6dfc10c89df81d15fd56edc9bce4958df56f8b7':
+        raise ValueError('strataProjectionKernelsMismatch')
+    backend_hashes = {name: digest(profile / 'serve' / name) for name in names
+                      if (profile / 'serve' / name).is_file()}
+    if hashlib.sha256(json.dumps(backend_hashes, sort_keys=True).encode()).hexdigest() != expected_backend:
+        raise ValueError('strataProjectionBackendMismatch')
+    previous = {key: cfg[key] for key in projected}
+    cfg['cwd'] = str(profile)
+    cfg['exe'] = str(profile / 'strata')
+    cfg['args'] += ['--control-vector-scaled', f'{vector}:1.0',
+                    '--control-vector-layer-range', '4', '44', '--cvec-mode', 'project', '--cvec-dir', 'per-layer']
+    cfg['env'].update(STRATA_METAL_KERNELS=str(profile / 'kernels'),
+                      STRATA_METAL_ENGINE_KERNELS=str(profile / 'engine-msl'))
+    cfg['sampling'] = {**cfg.get('sampling', {}), 'experimental_speed_projection': False}
+    result = subprocess.run(
+        [sys.executable, '-B', '-c', 'import json, sys; from serve.server import prepare_summary_qualification_pins; '
+         'print(json.dumps(prepare_summary_qualification_pins(json.load(sys.stdin), offline=True)))'],
+        input=json.dumps(cfg), text=True, check=True, stdout=subprocess.PIPE, cwd=profile)
+    receipt = json.loads(result.stdout)
+    if (receipt['atomic_summary_expected_native_sha256'] != expected_native or
+            receipt['atomic_summary_expected_backend_sha256'] != expected_backend):
+        raise ValueError('strataProjectionPinMismatch')
+    destination = dict(current_native=expected_native,
+                       current_model=receipt['atomic_summary_expected_model_fingerprint'])
+    cfg['atomic_disk_session_reviewed_upgrades'] = [
+        dict(destination, previous=old['previous']) for old in cfg['atomic_disk_session_reviewed_upgrades']
+    ] + [
+        dict(destination, previous=previous),
+        dict(destination, previous=dict(receipt,
+             atomic_summary_expected_backend_sha256='7eb7951e86a95e1a72c985514b6f4a8c75aaf742aba878da6fd13a30fad3e953')),
+    ]
+    cfg.update(receipt)
 print(json.dumps(cfg))
 "#;
 
@@ -503,7 +552,16 @@ impl Environment {
     fn pinned_strata_config(&self, context: u32) -> Result<serde_json::Value, String> {
         validate_strata_context(context)?;
         let mut config = self.strata_config(context);
-        config["atomic_mtp_requested"] = self.dstar_root.join("atomic-strata-mtp.enabled").is_file().into();
+        config["atomic_mtp_requested"] = self
+            .dstar_root
+            .join("atomic-strata-mtp.enabled")
+            .is_file()
+            .into();
+        let projection_root = self.strata_root.join("feature-integration/runtime-control-vector-v1");
+        if projection_root.join("strata").is_file() {
+            config["atomic_projection_root"] = serde_json::to_value(&projection_root)
+                .map_err(|_| "strataContextPinCalculationFailed")?;
+        }
         let mut cmd = std::process::Command::new(self.strata_root.join("venv/bin/python"));
         cmd.args(["-B", "-c", CONTEXT_PIN_SCRIPT])
             .current_dir(
@@ -559,13 +617,19 @@ impl Environment {
         }
         let pins: serde_json::Value = serde_json::from_slice(&output.stdout)
             .map_err(|_| "strataContextPinCalculationFailed")?;
-        for key in [
-            "atomic_summary_expected_native_sha256",
-            "atomic_summary_expected_backend_sha256",
-        ] {
-            if pins[key] != config[key] {
-                return Err("strataContextPinMismatch".into());
+        // The calculator verifies the separately pinned projection runtime before returning it.
+        // Standard launches retain their existing pinned identity.
+        if config["atomic_projection_root"].is_null() {
+            for key in [
+                "atomic_summary_expected_native_sha256",
+                "atomic_summary_expected_backend_sha256",
+            ] {
+                if pins[key] != config[key] {
+                    return Err("strataContextPinMismatch".into());
+                }
             }
+        } else if pins["cwd"] != config["atomic_projection_root"] {
+            return Err("strataContextPinMismatch".into());
         }
         let fingerprint = pins["atomic_summary_expected_model_fingerprint"]
             .as_str()
@@ -662,8 +726,9 @@ impl Environment {
                     "120",
                 ])
                 .current_dir(
-                    self.strata_root
-                        .join("feature-integration/runtime-mtp-cache-v1"),
+                    configuration["cwd"]
+                        .as_str()
+                        .ok_or("strataContextPinMismatch")?,
                 )
                 .env("STRATA_OWNER_ATTEST_KEY", &key)
                 .env("PYTHONUNBUFFERED", "1")
@@ -1174,9 +1239,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn confirmed_kill_ignores_recycled_identity_and_reaps_only_owned_child() {
-        let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
         let captured = super::owned_family(child.id()).unwrap();
-        let changed: Vec<_> = captured.iter().map(|p| super::ProcessIdentity { pid: p.pid, started: p.started + 1 }).collect();
+        let changed: Vec<_> = captured
+            .iter()
+            .map(|p| super::ProcessIdentity {
+                pid: p.pid,
+                started: p.started + 1,
+            })
+            .collect();
         super::kill_owned_family(&changed).unwrap();
         assert!(child.try_wait().unwrap().is_none());
         super::kill_owned_family(&captured).unwrap();
@@ -1194,18 +1268,35 @@ mod tests {
         for context in [DEFAULT_STRATA_CONTEXT, 131_072] {
             if let Some(path) = std::env::var_os("ATOMIC_STRATA_CAPTURE_CONFIG") {
                 let path = PathBuf::from(path).with_extension(format!("{context}.input.json"));
-                fs::write(path, serde_json::to_vec_pretty(&env.strata_config(context)).unwrap()).unwrap();
+                fs::write(
+                    path,
+                    serde_json::to_vec_pretty(&env.strata_config(context)).unwrap(),
+                )
+                .unwrap();
             }
-            let config = env.pinned_strata_config(context)
-                .expect("the exact app-generated config must pass the real read-only pin calculator");
-            let upgrades = config["atomic_disk_session_reviewed_upgrades"].as_array().unwrap();
+            let config = env.pinned_strata_config(context).expect(
+                "the exact app-generated config must pass the real read-only pin calculator",
+            );
+            let upgrades = config["atomic_disk_session_reviewed_upgrades"]
+                .as_array()
+                .unwrap();
             let current_model = &config["atomic_summary_expected_model_fingerprint"];
             assert!(upgrades.iter().all(|bridge| &bridge["current_model"] == current_model));
-            assert!(upgrades.iter().any(|bridge| {
-                &bridge["previous"]["atomic_summary_expected_model_fingerprint"] == current_model
-                    && bridge["previous"]["atomic_summary_expected_backend_sha256"]
-                        == "35319f29cbbe40d0c84fb56db862a9ce1a0387d357822dddf560665ee784de88"
-            }));
+            if config["sampling"]["experimental_speed_projection"] == false {
+                let stock = env.strata_config(context);
+                assert!(upgrades.iter().any(|bridge| {
+                    bridge["previous"]["atomic_summary_expected_native_sha256"]
+                        == stock["atomic_summary_expected_native_sha256"]
+                        && bridge["previous"]["atomic_summary_expected_backend_sha256"]
+                            == stock["atomic_summary_expected_backend_sha256"]
+                }));
+            } else {
+                assert!(upgrades.iter().any(|bridge| {
+                    &bridge["previous"]["atomic_summary_expected_model_fingerprint"] == current_model
+                        && bridge["previous"]["atomic_summary_expected_backend_sha256"]
+                            == "35319f29cbbe40d0c84fb56db862a9ce1a0387d357822dddf560665ee784de88"
+                }));
+            }
             if context == 131_072 {
                 if let Some(path) = std::env::var_os("ATOMIC_STRATA_CAPTURE_CONFIG") {
                     fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
@@ -1216,18 +1307,38 @@ mod tests {
 
     #[test]
     fn conversation_cache_capacity_follows_context_and_preserves_snapshot_room() {
-        for (context, expected) in [(16_384, 1280), (65_536, 2048), (131_072, 2816), (262_144, 4608)] {
+        for (context, expected) in [
+            (16_384, 1280),
+            (65_536, 2048),
+            (131_072, 2816),
+            (262_144, 4608),
+        ] {
             assert_eq!(strata_conversation_cache_mib(context), expected);
-            let cfg = Environment::personal(PathBuf::from("/home/test/dstar")).strata_config(context);
+            let cfg =
+                Environment::personal(PathBuf::from("/home/test/dstar")).strata_config(context);
             let args = cfg["args"].as_array().unwrap();
-            let budget = args.iter().position(|arg| arg == "--conversation-cache-mib").unwrap();
+            let budget = args
+                .iter()
+                .position(|arg| arg == "--conversation-cache-mib")
+                .unwrap();
             assert_eq!(args[budget + 1], expected.to_string());
-            let minimum = args.iter().position(|arg| arg == "--conversation-cache-min-tokens").unwrap();
+            let minimum = args
+                .iter()
+                .position(|arg| arg == "--conversation-cache-min-tokens")
+                .unwrap();
             assert_eq!(args[minimum + 1], "1024");
         }
         assert!(strata_conversation_cache_mib(131_072) > 1634);
         let mut previous = 0;
-        for context in [16_384, 65_536, 65_537, 131_072, 262_144, 1_048_576, MAX_LOCAL_CONTEXT] {
+        for context in [
+            16_384,
+            65_536,
+            65_537,
+            131_072,
+            262_144,
+            1_048_576,
+            MAX_LOCAL_CONTEXT,
+        ] {
             let bytes = strata_conversation_cache_mib(context) << 20;
             let required = (1_u64 << 30) + u64::from(context) * 14_208;
             assert!(bytes >= required && bytes - required < (256 << 20));
