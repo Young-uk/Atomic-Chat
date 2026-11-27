@@ -70,6 +70,24 @@ describe('MessageItem action names', () => {
     expect(remove).toHaveAttribute('aria-haspopup', 'dialog')
   })
 
+  it('shows the continue action only on the idle last reply and dispatches its id', () => {
+    const onContinueReply = vi.fn()
+    const props = { message: assistantMessage, isFirstMessage: false, isLastMessage: true, status: 'ready' as const }
+    const { rerender } = render(<MessageItem {...props} />)
+    const button = () => screen.queryByRole('button', { name: 'continueReply' })
+    expect(button()).toBeNull()
+    rerender(<MessageItem {...props} onContinueReply={onContinueReply} />)
+    fireEvent.click(screen.getByRole('button', { name: 'continueReply' }))
+    expect(onContinueReply).toHaveBeenCalledTimes(1)
+    expect(onContinueReply).toHaveBeenCalledWith('a1')
+    rerender(<MessageItem {...props} onContinueReply={onContinueReply} isLastMessage={false} />)
+    expect(button()).toBeNull()
+    rerender(<MessageItem {...props} onContinueReply={onContinueReply} status="streaming" />)
+    expect(button()).toBeNull()
+    rerender(<MessageItem {...props} onContinueReply={onContinueReply} requestActive />)
+    expect(button()).toBeNull()
+  })
+
   it('names copy, delete and regenerate on the last assistant message', () => {
     const onRegenerate = vi.fn()
     render(

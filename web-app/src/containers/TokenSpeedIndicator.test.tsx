@@ -20,6 +20,19 @@ describe('TokenSpeedIndicator', () => {
     expect(screen.queryByText(/tok\/sec/)).not.toBeInTheDocument()
   })
 
+  it('shows the prompt metrics instead of reply metrics in the input row', () => {
+    render(
+      <TokenSpeedIndicator
+        inputStats={{ messageId: 'input', tokens: 631, tokensPerSecond: 124.6 }}
+        metadata={{ usage: { outputTokens: 594 }, tokenSpeed: { tokenSpeed: 54.1 } }}
+      />
+    )
+
+    expect(screen.getByText('125 tok/sec')).toBeInTheDocument()
+    expect(screen.getByText('631 tokens')).toBeInTheDocument()
+    expect(screen.queryByText('594 tokens')).not.toBeInTheDocument()
+  })
+
   it('shows both metrics when a reliable TPS value exists', () => {
     render(
       <TokenSpeedIndicator

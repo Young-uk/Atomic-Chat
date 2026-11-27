@@ -18,13 +18,20 @@ interface TokenSpeed {
   draftTokensAccepted?: number
 }
 
+export interface InputTokenStats {
+  messageId: string
+  tokens?: number
+  tokensPerSecond?: number
+}
+
 interface TokenSpeedIndicatorProps {
+  inputStats?: InputTokenStats
   metadata?: Record<string, unknown>
   streaming?: boolean
 }
 
 export const TokenSpeedIndicator = memo(
-  ({ metadata, streaming }: TokenSpeedIndicatorProps) => {
+  ({ metadata, streaming, inputStats }: TokenSpeedIndicatorProps) => {
     // Get real-time token speed from global state during streaming
     const streamingTokenSpeed = useAppState((state) =>
       state.tokenSpeed ? Math.round(state.tokenSpeed.tokenSpeed) : 0
@@ -51,11 +58,11 @@ export const TokenSpeedIndicator = memo(
     if (nonStreamingAssistantParam) return
 
     // Use streaming data if available, otherwise fall back to metadata
-    const displaySpeed = streaming
+    const displaySpeed = inputStats ? Math.round(inputStats.tokensPerSecond ?? 0) : streaming
       ? streamingTokenSpeed
       : Math.round(toNumber(persistedTokenSpeed))
 
-    const displayTokenCount = streaming
+    const displayTokenCount = inputStats ? (inputStats.tokens ?? 0) : streaming
       ? streamingTokenCount
       : (usage?.outputTokens ?? persistedTokenCount)
 
@@ -74,13 +81,13 @@ export const TokenSpeedIndicator = memo(
     return (
       <div className="flex items-center gap-2 text-muted-foreground text-xs">
         {displaySpeed > 0 && (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1" title={inputStats ? "Prompt processing speed" : undefined}>
             <Gauge size={16} />
             <span>{displaySpeed} tok/sec</span>
           </div>
         )}
         {displayTokenCount > 0 && (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1" title={inputStats ? "Input tokens, including conversation context" : undefined}>
             <WholeWord size={16} />
             <span>{displayTokenCount} tokens</span>
           </div>

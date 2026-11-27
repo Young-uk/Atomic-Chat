@@ -169,6 +169,11 @@ if legacy_pins['atomic_summary_expected_native_sha256'] == 'a782ed1b8d1852bd6fb9
     legacy_pins['atomic_summary_expected_backend_sha256'] = '6008304ceb00000c1cd8ac0c8e0da10d6084db78c2ba2cf1c5d7bac83ba1f988'
     upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
                          current_model=projected['atomic_summary_expected_model_fingerprint'], previous=legacy_pins))
+# The reply recovery changes Python generation control only. The saved state format is identical.
+previous_reply_recovery = dict(projected, atomic_summary_expected_backend_sha256='3d80c5a9ce3e2e1a3c744ef3b5535a6c2fe525dd5427aa0f959c13e577d0ad29')
+upgrades.append(dict(current_native=projected['atomic_summary_expected_native_sha256'],
+                     current_model=projected['atomic_summary_expected_model_fingerprint'],
+                     previous=previous_reply_recovery))
 cfg.update(projected)
 cfg['atomic_disk_session_reviewed_upgrades'] = upgrades
 cfg['atomic_mtp_disk_bridge'] = True
@@ -203,6 +208,11 @@ if cfg.pop('atomic_mtp_requested', False):
     cfg['atomic_disk_session_reviewed_upgrades'] = [dict(
         current_native=cfg['atomic_summary_expected_native_sha256'],
         current_model=cfg['atomic_summary_expected_model_fingerprint'], previous=previous_mtp)]
+    # The reply recovery changes Python generation control only. The saved state format is identical.
+    previous_reply_recovery = dict({key: cfg[key] for key in projected}, atomic_summary_expected_backend_sha256='3d80c5a9ce3e2e1a3c744ef3b5535a6c2fe525dd5427aa0f959c13e577d0ad29')
+    cfg['atomic_disk_session_reviewed_upgrades'].append(dict(current_native=cfg['atomic_summary_expected_native_sha256'],
+                         current_model=cfg['atomic_summary_expected_model_fingerprint'],
+                         previous=previous_reply_recovery))
 print(json.dumps(cfg))
 "#;
 
@@ -451,6 +461,7 @@ impl Environment {
             "tokenizer": root.join("feature-integration/pack-iq3/tokenizer"),
             "model_name": "ista-iq3-xxs",
             "effort_position": "end",
+            "reasoning_close_retry": true,
             "log": root.join("strata-atomic.log"),
             "atomic_disk_session_dir": self.dstar_root.join("kv-cache-strata-iq3-iq4nl"),
             // Original IQ4_NL weights: never import sessions produced with the Q5_1 table.
@@ -469,7 +480,7 @@ impl Environment {
             "atomic_completion_review_qualified": false,
             "atomic_summary_expected_native_sha256": "f2c917ba8cd068be9f60d9f4093ca9815e191ee7a24cf02d9f4d1ad533e6bc2d",
             "atomic_summary_expected_model_fingerprint": "strata-stat-v2:ed9a98d7e676528ee9e640f93b3ca94d69e63cdee9013abe5eab28c3b46118b8",
-            "atomic_summary_expected_backend_sha256": "3d80c5a9ce3e2e1a3c744ef3b5535a6c2fe525dd5427aa0f959c13e577d0ad29",
+            "atomic_summary_expected_backend_sha256": "35319f29cbbe40d0c84fb56db862a9ce1a0387d357822dddf560665ee784de88",
             "backend": "metal", "lib_dirs": [], "port": self.strata_port,
             "host": "127.0.0.1", "open_browser": false, "mtp": false, "api_monitor": false,
             "env": env,
@@ -1180,9 +1191,16 @@ mod tests {
             let config = env.pinned_strata_config(context)
                 .expect("the exact app-generated config must pass the real read-only pin calculator");
             let upgrades = config["atomic_disk_session_reviewed_upgrades"].as_array().unwrap();
-            let bridge = upgrades.last().unwrap();
-            assert_eq!(bridge["current_model"], config["atomic_summary_expected_model_fingerprint"]);
-            assert_ne!(bridge["previous"]["atomic_summary_expected_model_fingerprint"], bridge["current_model"]);
+            let current_model = &config["atomic_summary_expected_model_fingerprint"];
+            assert!(upgrades.iter().all(|bridge| &bridge["current_model"] == current_model));
+            assert!(upgrades.iter().any(|bridge| {
+                &bridge["previous"]["atomic_summary_expected_model_fingerprint"] != current_model
+            }));
+            assert!(upgrades.iter().any(|bridge| {
+                &bridge["previous"]["atomic_summary_expected_model_fingerprint"] == current_model
+                    && bridge["previous"]["atomic_summary_expected_backend_sha256"]
+                        == "3d80c5a9ce3e2e1a3c744ef3b5535a6c2fe525dd5427aa0f959c13e577d0ad29"
+            }));
             if context == 131_072 {
                 if let Some(path) = std::env::var_os("ATOMIC_STRATA_CAPTURE_CONFIG") {
                     fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
@@ -1522,6 +1540,7 @@ mod tests {
         assert_eq!(config["port"], 18080);
         assert_eq!(config["model_name"], "ista-iq3-xxs");
         assert_eq!(config["effort_position"], "end");
+        assert_eq!(config["reasoning_close_retry"], true);
         assert_eq!(config["env"]["STRATA_METAL_KEEP_FREE_GB"], "8");
         assert_eq!(config["env"]["STRATA_METAL_PROMPT_CHUNK"], "4096");
         assert_eq!(config["env"]["STRATA_METAL_PROMPT_GU_K"], "32");
@@ -1586,15 +1605,15 @@ mod tests {
         assert!(config.get("atomic_summary_snapshot_path").is_none());
         assert_eq!(
             config["atomic_summary_expected_native_sha256"],
-            "dbf4b8b7eb70cf123aec758007ba628b0ff9ca9490093f6f8776c5dc8ebc75f3"
+            "f2c917ba8cd068be9f60d9f4093ca9815e191ee7a24cf02d9f4d1ad533e6bc2d"
         );
         assert_eq!(
             config["atomic_summary_expected_model_fingerprint"],
-            "strata-stat-v2:07085c3924d50f9fe91a43ad3de16f54b81a683982987ffaec8292d3b714eae7"
+            "strata-stat-v2:ed9a98d7e676528ee9e640f93b3ca94d69e63cdee9013abe5eab28c3b46118b8"
         );
         assert_eq!(
             config["atomic_summary_expected_backend_sha256"],
-            "0b1e737c56bc21b5c5c81fc5c43b06dbb6ef0aaff22b02abac0ff445d2c09f1e"
+            "35319f29cbbe40d0c84fb56db862a9ce1a0387d357822dddf560665ee784de88"
         );
         assert!(!config.to_string().contains("OWNER_ATTEST"));
         let args = config["args"].as_array().unwrap();

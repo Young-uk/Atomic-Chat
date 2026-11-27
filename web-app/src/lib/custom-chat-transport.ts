@@ -1939,6 +1939,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       },
     })
 
+    const inputMessageId = options.messages.findLast(message => message.role === 'user')?.id
+    let inputStats: { messageId: string; tokens?: number; tokensPerSecond?: number } | undefined
     let latestStepUsage: LanguageModelUsage | undefined
     let completedForegroundTokens: number | undefined
     let tokensPerSecond = 0
@@ -2018,10 +2020,20 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         }
 
         if (part.type === 'finish-step') {
-          latestStepUsage = part.usage
           const pm = part.providerMetadata?.providerMetadata as
             | Record<string, unknown>
             | undefined
+          // Capture the initial prompt. Later tool steps include tool results
+          // and should not be attributed to the user's message.
+          if (!latestStepUsage && inputMessageId) {
+            inputStats = {
+              messageId: inputMessageId,
+              tokens: part.usage?.inputTokens,
+              tokensPerSecond: typeof pm?.promptPerSecond === 'number'
+                ? pm.promptPerSecond : undefined,
+            }
+          }
+          latestStepUsage = part.usage
           tokensPerSecond = (pm?.tokensPerSecond as number) || 0
           draftTokensTotal = (pm?.draftTokensTotal as number) ?? null
           draftTokensAccepted = (pm?.draftTokensAccepted as number) ?? null
@@ -2069,6 +2081,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           })
           finalResponseMetadata = {
             finishReason: finishPart.finishReason,
+            ...(inputStats ? { inputStats } : {}),
             activityDurationMs: Math.max(0, Date.now() - requestStartedAt),
             // Provider-agnostic time to first token: `streamStartTime` is the
             // first generated delta, set above. The α→θ stage breakdown in

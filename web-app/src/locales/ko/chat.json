@@ -6,6 +6,8 @@
   "status": {
     "empty": "채팅을 찾을 수 없습니다"
   },
+  "continueReply": "이어서 답하기",
+  "continueReplyMessage": "방금 답변이 끊긴 지점부터 이어서 써 줘. 이미 나온 부분은 반복하지 말고, 내가 요청한 언어로 답해 줘. 언어를 따로 지정하지 않았다면 앞선 답변과 같은 언어로 써 줘. 앞서 확인한 도구 결과가 있으면 그대로 활용해 줘.",
   "sendMessage": "메시지 보내기",
   "newConversation": "새 대화",
   "clearHistory": "기록 지우기",

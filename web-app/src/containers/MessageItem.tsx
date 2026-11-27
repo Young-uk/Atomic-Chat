@@ -19,11 +19,11 @@ import {
 } from '@/components/ai-elements/reasoning'
 import { CopyButton } from './CopyButton'
 import { useModelProvider } from '@/hooks/useModelProvider'
-import { IconAlertCircle, IconPencil, IconRefresh } from '@tabler/icons-react'
+import { IconAlertCircle, IconPencil, IconRefresh, IconTextPlus } from '@tabler/icons-react'
 import { AudioPlayer } from '@/containers/AudioPlayer'
 import { InlineMessageEditor } from '@/containers/InlineMessageEditor'
 import { DeleteMessageDialog } from '@/containers/dialogs/DeleteMessageDialog'
-import TokenSpeedIndicator from '@/containers/TokenSpeedIndicator'
+import TokenSpeedIndicator, { type InputTokenStats } from '@/containers/TokenSpeedIndicator'
 import { extractFilesFromPrompt, FileMetadata } from '@/lib/fileMetadata'
 import { AttachmentChip } from '@/containers/AttachmentChip'
 import {
@@ -61,6 +61,7 @@ import { DocCitationChip } from '@/containers/DocCitationChip'
 import { messageClockLabel } from '@/lib/messageClock'
 
 const CHAT_STATUS = {
+  READY: 'ready',
   STREAMING: 'streaming',
   SUBMITTED: 'submitted',
 } as const
@@ -78,6 +79,7 @@ type ReasoningTraceBlock = Extract<TraceBlock, { kind: 'reasoning' }>
 
 export type MessageItemProps = {
   message: UIMessage
+  inputStats?: InputTokenStats
   isFirstMessage: boolean
   isLastMessage: boolean
   status: ChatStatus
@@ -89,6 +91,7 @@ export type MessageItemProps = {
   reasoningContainerRef?: React.RefObject<HTMLDivElement | null>
   onReasoningScroll?: UIEventHandler<HTMLDivElement>
   onRegenerate?: (messageId: string) => void
+  onContinueReply?: (messageId: string) => void
   onEdit?: (messageId: string, newText: string) => void
   onDelete?: (messageId: string) => void
   assistant?: { avatar?: React.ReactNode; name?: string }
@@ -101,6 +104,7 @@ export type MessageItemProps = {
 export const MessageItem = memo(
   ({
     message,
+    inputStats,
     isLastMessage,
     status,
     requestActive,
@@ -111,6 +115,7 @@ export const MessageItem = memo(
     reasoningContainerRef,
     onReasoningScroll,
     onRegenerate,
+    onContinueReply,
     onEdit,
     onDelete,
     agentAttachmentReferences = [],
@@ -674,6 +679,7 @@ export const MessageItem = memo(
             {onDelete && status !== CHAT_STATUS.STREAMING && (
               <DeleteMessageDialog onDelete={handleDelete} />
             )}
+            {inputStats && <TokenSpeedIndicator inputStats={inputStats} />}
           </div>
         )}
 
@@ -734,6 +740,17 @@ export const MessageItem = memo(
                     <IconRefresh size={16} />
                   </Button>
                 )}
+              {onContinueReply && isLastMessage && status === CHAT_STATUS.READY && (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => onContinueReply(message.id)}
+                  title={t('continueReply')}
+                  aria-label={t('continueReply')}
+                >
+                  <IconTextPlus size={16} />
+                </Button>
+              )}
             </div>
 
             {!isRequestActive && (
@@ -777,6 +794,7 @@ export const MessageItem = memo(
       prevProps.onEdit === nextProps.onEdit &&
       prevProps.onDelete === nextProps.onDelete &&
       prevProps.onRegenerate === nextProps.onRegenerate &&
+      prevProps.onContinueReply === nextProps.onContinueReply &&
       prevProps.onReasoningScroll === nextProps.onReasoningScroll &&
       prevProps.agentAttachmentReferences ===
         nextProps.agentAttachmentReferences

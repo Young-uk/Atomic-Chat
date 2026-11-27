@@ -19,6 +19,8 @@
   "status": {
     "empty": "No Chats Found"
   },
+  "continueReply": "Continue reply",
+  "continueReplyMessage": "Continue the previous answer from where it stopped, without repeating what is already shown. Use the language I requested, or keep the language of the answer so far. Reuse any relevant tool results already in this conversation.",
   "sendMessage": "Send Message",
   "replyGate": {
     "sendHint": "Choose what to reply with",

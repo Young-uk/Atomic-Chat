@@ -615,7 +615,8 @@ it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].map
         <div>
           <MessageItem message={{ id: 'adjacent', role: 'assistant', parts: [thought,
             ...(!live ? [{ type: 'text' as const, text: 'The final answer.' }] : []),
-          ] }} isFirstMessage={false} isLastMessage status={live ? 'submitted' : 'ready'} requestActive={live} inferenceThreadId="adjacent" showInferenceProgress={live} />
+          ] }} isFirstMessage={false} isLastMessage status={live ? 'submitted' : 'ready'} requestActive={live} inferenceThreadId="adjacent" showInferenceProgress={live}
+            onRegenerate={() => {}} onContinueReply={live ? undefined : () => {}} />
         </div>
       </div>
     )
@@ -625,6 +626,9 @@ it.each([1024, 1280].flatMap(width => [16, 20].flatMap(size => [false, true].map
       screen.getByRole('button', { name: /Reasoning details|Reasoned/ }).getBoundingClientRect().bottom
     rerender(view(false))
     await settle(container)
+    const continueButton = screen.getByRole('button', { name: 'Continue reply' })
+    expectVerticallyCentered(continueButton, screen.getByRole('button', { name: 'Regenerate' }))
+    expectNoHorizontalOverflow(screen.getByTestId('assistant-message-actions'))
     const finishedGap = screen.getByText('The final answer.').getBoundingClientRect().top -
       screen.getByRole('button', { name: /Thought|Reasoned/ }).getBoundingClientRect().bottom
     expect(liveGap).toBeCloseTo(finishedGap, 0)

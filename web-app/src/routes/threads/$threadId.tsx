@@ -25,6 +25,7 @@ import HeaderContextSize from '@/containers/HeaderContextSize'
 import { useThreads } from '@/hooks/useThreads'
 import ChatInput from '@/containers/ChatInput'
 import { MessageQueue } from '@/containers/MessageQueue'
+import { canContinueStrataReply, enqueueReplyContinuation } from '@/lib/continue-strata-reply'
 import { useMessageQueue, emptyMessageQueue, steerQueuedMessage } from '@/hooks/useMessageQueue'
 import { useShallow } from 'zustand/react/shallow'
 import { MessageItem } from '@/containers/MessageItem'
@@ -2091,6 +2092,15 @@ function ThreadDetail() {
   }, [navigate])
   useChatHistoryNavigation(conversationFindRef, threadId, search.historyMessage, chatMessages, openHistorySource)
   const lastChatMessage = chatMessages[chatMessages.length - 1]
+  const canContinueReply = inputStatus === CHAT_STATUS.READY && !shownError &&
+    !pendingInitialUserMessage && !pendingContinueMessage && !isAutoIncreasingContext &&
+    !queuePaused && !queueInFlight && queuedMessages.length === 0 &&
+    canContinueStrataReply(lastChatMessage, selectedProvider, selectedModel?.id)
+  const handleContinueReply = useCallback((messageId: string) => {
+    if (!canContinueReply || chatMessagesRef.current.at(-1)?.id !== messageId ||
+        useChatSessions.getState().requestActive[threadId]) return
+    enqueueReplyContinuation(threadId, t('chat:continueReplyMessage'))
+  }, [canContinueReply, threadId, t])
   const hasActiveAssistantMessage = lastChatMessage?.role === 'assistant'
   const latestUserMessageId = useMemo(() => {
     for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
@@ -2099,6 +2109,15 @@ function ThreadDetail() {
       }
     }
     return undefined
+  }, [chatMessages])
+  const inputStatsByMessageId = useMemo(() => {
+    const stats = new Map<string, import('@/containers/TokenSpeedIndicator').InputTokenStats>()
+    for (const message of chatMessages) {
+      if (message.role !== 'assistant') continue
+      const input = (message.metadata as { inputStats?: import('@/containers/TokenSpeedIndicator').InputTokenStats } | undefined)?.inputStats
+      if (input?.messageId) stats.set(input.messageId, input)
+    }
+    return stats
   }, [chatMessages])
   const agentAttachmentReferencesByMessageId = useMemo(() => {
     const referencesByMessageId = new Map<string, AgentFileReference[]>()
@@ -2152,6 +2171,7 @@ function ThreadDetail() {
                       <div key={message.id} data-atomic-find-message={message.id}>
                         <MessageItem
                           message={message}
+                          inputStats={message.role === 'user' ? inputStatsByMessageId.get(message.id) : undefined}
                           isFirstMessage={isFirstMessage}
                           isLastMessage={isLastMessage}
                           status={inputStatus}
@@ -2161,6 +2181,7 @@ function ThreadDetail() {
                           reasoningContainerRef={reasoningContainerRef}
                           onReasoningScroll={onReasoningScroll}
                           onRegenerate={handleRegenerate}
+                          onContinueReply={isLastMessage && canContinueReply ? handleContinueReply : undefined}
                           onEdit={handleEditMessage}
                           onDelete={handleDeleteMessage}
                           isAnimating={!pendingContinueMessage}
