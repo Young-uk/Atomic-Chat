@@ -23,13 +23,13 @@ describe('TokenSpeedIndicator', () => {
   it('shows the prompt metrics instead of reply metrics in the input row', () => {
     render(
       <TokenSpeedIndicator
-        inputStats={{ messageId: 'input', tokens: 631, tokensPerSecond: 124.6 }}
+        inputStats={{ messageId: 'input', tokens: 20333, delta: 333, tokensPerSecond: 124.6 }}
         metadata={{ usage: { outputTokens: 594 }, tokenSpeed: { tokenSpeed: 54.1 } }}
       />
     )
 
     expect(screen.getByText('125 tok/sec')).toBeInTheDocument()
-    expect(screen.getByText('631 tokens')).toBeInTheDocument()
+    expect(screen.getByText('+333 (20333) tokens')).toBeInTheDocument()
     expect(screen.queryByText('594 tokens')).not.toBeInTheDocument()
   })
 

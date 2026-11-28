@@ -19,6 +19,7 @@ interface TokenSpeed {
 }
 
 export interface InputTokenStats {
+  delta?: number
   messageId: string
   tokens?: number
   tokensPerSecond?: number
@@ -89,7 +90,7 @@ export const TokenSpeedIndicator = memo(
         {displayTokenCount > 0 && (
           <div className="flex items-center gap-1" title={inputStats ? "Input tokens, including conversation context" : undefined}>
             <WholeWord size={16} />
-            <span>{displayTokenCount} tokens</span>
+            <span>{inputStats?.delta !== undefined ? `${inputStats.delta >= 0 ? '+' : ''}${inputStats.delta} (${displayTokenCount})` : displayTokenCount} tokens</span>
           </div>
         )}
         {acceptanceRate !== null && (

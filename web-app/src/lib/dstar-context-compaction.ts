@@ -728,6 +728,7 @@ export class ContextCompaction {
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error)
         console.warn('[context-compaction] batches failed', { threadId: this.threadId, completed: progress.completed, error: this.error })
+        logCompactionBudget('batch failure', { threadId: this.threadId, archiveId: task.record?.id, completed: progress.completed, archived: progress.archived, cancelled: controller.signal.aborted, category: error instanceof SyntaxError ? 'invalid-json' : error instanceof Error ? error.name : 'unknown', reason: this.error === 'Complete summary segment did not finish within its output budget' ? 'incomplete-output' : undefined })
         progress.finishedAt = Date.now(); report('failed')
       } finally {
         if (this.pending === task) { this.pending = undefined; this.notifyBatch(); if (controller.signal.aborted) this.onProgress?.(undefined) }

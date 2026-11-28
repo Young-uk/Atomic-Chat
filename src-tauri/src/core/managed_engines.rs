@@ -228,8 +228,8 @@ if projection:
     def digest(path):
         with path.open('rb') as file:
             return hashlib.file_digest(file, 'sha256').hexdigest()
-    expected_native = '3bc155f79030ebb60ea35fc8cc968ec208a1acc26c0974cb6c91db659410e117'
-    expected_backend = 'f443dfc07fb862c48a1ca5b76c6bbea898c0314e5d621a182dc4a081a9a3fdbb'
+    expected_native = '7831335d5d085222b704b14b64b4bd4a71c414701c9c0b324c2cc89e34fe3d9d'
+    expected_backend = 'a047d8211b36b3171cce296ead9cfe10892b36f5dd53969851f2891f525da2dc'
     if digest(profile / 'strata') != expected_native:
         raise ValueError('strataProjectionNativeMismatch')
     vector = profile / 'Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf'
@@ -266,6 +266,7 @@ if projection:
         dict(destination, previous=old['previous']) for old in cfg['atomic_disk_session_reviewed_upgrades']
     ] + [
         dict(destination, previous=previous),
+        dict(destination, previous=dict(receipt, atomic_summary_expected_backend_sha256='f443dfc07fb862c48a1ca5b76c6bbea898c0314e5d621a182dc4a081a9a3fdbb')),
         dict(destination, previous=dict(receipt,
              atomic_summary_expected_backend_sha256='7eb7951e86a95e1a72c985514b6f4a8c75aaf742aba878da6fd13a30fad3e953')),
     ]

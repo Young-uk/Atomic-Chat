@@ -1685,16 +1685,20 @@ export class ModelFactory {
       headers['Authorization'] = `Bearer ${provider.api_key}`
     }
 
-    const openAICompatible = createOpenAICompatible({
-      name: provider.provider,
-      baseURL,
-      headers,
-      includeUsage: true,
-      // Use the IPC-channel streaming fetch (see OpenAI factory rationale).
-      fetch: createLocalStreamingFetch(httpFetch, parameters, undefined, progressThreadId,
-        usesAppendOnlyDstarEffort(provider.base_url, modelId) ? provider.base_url : undefined,
-        import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && localEngineTarget(provider, { id: modelId }) ? provider.base_url : undefined),
-    })
+    const target = localEngineTarget(provider, { id: modelId })
+    const fetch = createLocalStreamingFetch(httpFetch, parameters, undefined, progressThreadId,
+      usesAppendOnlyDstarEffort(provider.base_url, modelId) ? provider.base_url : undefined,
+      import.meta.env.VITE_DSTAR_BACKGROUND_COMPACTION === 'true' && target ? provider.base_url : undefined)
+    const model = target?.engine === 'strata'
+      ? new OpenAICompatibleChatLanguageModel(modelId, {
+          provider: `${provider.provider}.chat`,
+          headers: () => headers,
+          url: ({ path }) => baseURL.replace(/\/$/, '') + path,
+          includeUsage: true,
+          fetch,
+          metadataExtractor: providerMetadataExtractor,
+        })
+      : createOpenAICompatible({ name: provider.provider, baseURL, headers, includeUsage: true, fetch }).languageModel(modelId)
 
     // Some OpenAI-compatible providers (MiniMax, DeepSeek, Moonshot, NVIDIA
     // NIM, etc.) stream chain-of-thought inline as <think>...</think> inside
@@ -1703,7 +1707,7 @@ export class ModelFactory {
     // it, the reasoning is split into a dedicated reasoning part. The
     // middleware is a no-op for providers that never emit <think> tags.
     return wrapLanguageModel({
-      model: openAICompatible.languageModel(modelId),
+      model,
       middleware: extractReasoningMiddleware({
         tagName: 'think',
         separator: '\n',

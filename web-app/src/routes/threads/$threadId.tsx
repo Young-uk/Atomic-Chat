@@ -2117,6 +2117,15 @@ function ThreadDetail() {
       const input = (message.metadata as { inputStats?: import('@/containers/TokenSpeedIndicator').InputTokenStats } | undefined)?.inputStats
       if (input?.messageId) stats.set(input.messageId, input)
     }
+    let previous: number | undefined
+    for (const message of chatMessages) {
+      if (message.role !== 'user') continue
+      const input = stats.get(message.id)
+      if (input?.tokens !== undefined) {
+        stats.set(message.id, { ...input, delta: previous === undefined ? undefined : input.tokens - previous })
+      }
+      previous = input?.tokens
+    }
     return stats
   }, [chatMessages])
   const agentAttachmentReferencesByMessageId = useMemo(() => {
