@@ -358,7 +358,7 @@ it('prepares token-counted emergency requests without cloning the full native hi
     return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Bounded summary',openRequests:[],resolvedRequests:[]})}}]})
   }))
   const clone=summarizeWithStrataCache('http://local/v1','m','thread/turn',{recovery:true,coldRecovery:true})
-  const fallback=clone.headroomFallback!
+  const fallback=clone
   await fallback('', '', new AbortController().signal,undefined,{save:async()=>{},requestSources:history().slice(0,2)})
   const generated=calls.find(body=>body.atomic_summary_cold_recovery)
   expect(generated).toMatchObject({atomic_summary_recovery:true,atomic_summary_cold_recovery:'thread/turn',temperature:1})
@@ -404,7 +404,7 @@ it('waits for conversation completion then preserves the latest native owner wit
     generated.push(body)
     return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Frozen facts',openRequests:[],resolvedRequests:[]})}}]})
   }))
-  const fallback=summarizeWithStrataCache(endpoint,'m','thread/old',{coldRecovery:true}).headroomFallback!
+  const fallback=summarizeWithStrataCache(endpoint,'m','thread/old',{coldRecovery:true})
   const source=history().slice(0,2), original=structuredClone(source)
   const task=fallback('','',new AbortController().signal,undefined,{save:async()=>{},requestSources:source})
   await settle();expect(generated).toHaveLength(0)
@@ -413,7 +413,9 @@ it('waits for conversation completion then preserves the latest native owner wit
   expect(generated).toHaveLength(1)
   expect(generated[0]).toMatchObject({atomic_summary_cold_recovery:'thread/new',atomic_summary_recovery:true})
   expect(source).toEqual(original)
-  expect(JSON.stringify(generated[0])).not.toContain('new-after-snapshot')
+  expect(generated[0]).not.toHaveProperty('atomic_summary_clone')
+  expect(JSON.stringify(generated[0].messages)).toContain('Question 0')
+  expect(JSON.stringify(generated[0].messages)).not.toContain('Question 1')
 })
 
 it('retries only a clean native idle race and refreshes the preserved owner', async () => {
@@ -430,7 +432,7 @@ it('retries only a clean native idle race and refreshes the preserved owner', as
     }
     return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({summary:'Independent facts',openRequests:[],resolvedRequests:[]})}}]})
   }))
-  const fallback=summarizeWithStrataCache(endpoint,'m','thread/old',{coldRecovery:true}).headroomFallback!
+  const fallback=summarizeWithStrataCache(endpoint,'m','thread/old',{coldRecovery:true})
   expect(await fallback('','',new AbortController().signal,undefined,{save:async()=>{},requestSources:history().slice(0,2)})).toBe('Independent facts')
   expect(requests.map(body=>body.atomic_summary_cold_recovery)).toEqual(['thread/old','thread/new'])
 })
@@ -477,8 +479,8 @@ it('does not idle-wait on the foreground request that depends on restored-cache 
   const coordinator=new ContextCompaction('thread',{save:async()=>{},load:async()=>undefined})
   try {
     expect(await resumeRestoredStrataSummary(endpoint,'m','thread',messages,messages,1000,coordinator,new AbortController().signal,{coldRecovery:true})).toBe(true)
-    expect(generated[0]).toMatchObject({atomic_summary_clone:'thread/u9',atomic_summary_recovery:true})
-    expect(generated[1]).toMatchObject({atomic_summary_cold_recovery:'thread/u9',atomic_summary_recovery:true})
+    expect(generated.every(body => !body.atomic_summary_clone)).toBe(true)
+    expect(generated[0]).toMatchObject({atomic_summary_cold_recovery:'thread/u9',atomic_summary_recovery:true})
     expect(coordinator.apply(messages).at(-1)?.id).toBe('pending')
   } finally {end()}
 })

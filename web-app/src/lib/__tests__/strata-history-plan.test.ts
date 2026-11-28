@@ -1,3 +1,4 @@
+import { strataConversationHistory } from '../strata-history-plan'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { UIMessage } from 'ai'
 import { historyPlanMessages, planStrataHistoryBoundary } from '../strata-history-plan'
@@ -60,4 +61,22 @@ it('preserves binary and raw base64 image bytes and image parts', () => {
   {type:'image',mediaType:'image/png',image:'data:image/png;base64,AQID'},
  ]}])
  expect(wire).toEqual([{role:'user',content:Array.from({length:3},()=>({type:'image_url',image_url:{url:'data:image/png;base64,AQID'}}))}])
+})
+
+it('omits old drafts only on the model view and keeps the current tool turn intact', () => {
+  const thought = {type:'reasoning' as const, text:'abandoned draft'}
+  const text = {type:'text' as const, text:'visible answer'}
+  const tool = {type:'dynamic-tool' as const, toolName:'search', toolCallId:'1',
+    state:'output-available' as const, input:{}, output:'result'}
+  const history: UIMessage[] = [
+    {id:'a',role:'assistant',parts:[thought,text,tool]},
+    {id:'empty',role:'assistant',parts:[thought,{type:'step-start'}]},
+    {id:'u',role:'user',parts:[text]},
+    {id:'live',role:'assistant',parts:[thought,tool]},
+  ]
+  const view = strataConversationHistory(history)
+  expect(view.map(message => message.id)).toEqual(['a','u','live'])
+  expect(view[0].parts).toEqual([text,tool])
+  expect(view[2]).toBe(history[3])
+  expect(history[0].parts).toEqual([thought,text,tool])
 })

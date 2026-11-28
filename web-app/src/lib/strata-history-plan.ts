@@ -4,6 +4,19 @@ import { fetchDstarContext } from './dstar-context-archive'
 import { logCompactionBudget } from './dstar-context-compaction'
 import { SummaryCacheChangedError } from './summary-stream'
 
+/** Completed turns contribute their visible answer and tool evidence. Keep the
+ * current turn intact so a tool continuation can resume its active reasoning. */
+export function strataConversationHistory(messages: UIMessage[]): UIMessage[] {
+  const lastUser = messages.findLastIndex(message => message.role === 'user')
+  return messages.flatMap((message, index) => {
+    if (index >= lastUser || message.role !== 'assistant' ||
+        !message.parts.some(part => part.type === 'reasoning')) return [message]
+    const parts = message.parts.filter(part => part.type !== 'reasoning')
+    return parts.some(part => part.type !== 'step-start' && (part.type !== 'text' || part.text.trim()))
+      ? [{ ...message, parts }] : []
+  })
+}
+
 /** ModelMessage file data has not passed through the SDK's model-prompt
  * normalization yet. URL strings must become URLs before provider serialization;
  * otherwise a data URL is prefixed with a second data URL header. */

@@ -4,7 +4,7 @@ import { personalTaskInput } from './personal-task-context'
 import { supportsPersonalMemoryRuntime } from './personal-memory-context'
 import { captureBackgroundReviewEvidence } from './background-review-evidence'
 import { scheduledMessagesForModel } from './personal-task-delivery'
-import { historyPlanMessages, planStrataHistoryBoundary } from './strata-history-plan'
+import { historyPlanMessages, planStrataHistoryBoundary, strataConversationHistory } from './strata-history-plan'
 import { measureManagedPrompt } from './managed-prompt-budget'
 import i18n from '@/i18n/setup'
 import { probeLocalModelCapabilities } from '@/services/local-model-capabilities'
@@ -1439,10 +1439,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const sanitizedMessages = stripAgentRunToolParts(
       withMessageClocksForModel(withoutEmptyFailedTurns(memoryMessages))
     )
+    const conversationHistory = runtime?.engine === 'strata' ? strataConversationHistory(sanitizedMessages) : sanitizedMessages
     const messagesToConvert =
       effectiveProviderName === 'anthropic'
-        ? splitAnthropicSerialToolUse(sanitizedMessages)
-        : sanitizedMessages
+        ? splitAnthropicSerialToolUse(conversationHistory)
+        : conversationHistory
 
     // Convert UI messages to model messages. Non-image file parts are stripped
     // first — the converters accept `image/*` and nothing else. Order matters:
@@ -1676,7 +1677,12 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       appendOnlyDstar || runtime?.toolPolicy === 'plain-system-v1'
     const systemWithSkills = composeSystemMessage(
       composeSystemMessage(renderInstructions(this.systemMessage), skillsBlock),
-      composeSystemMessage(documentsHint, usePlainToolSystem ? ATOMIC_PLAIN_TOOL_POLICY : undefined)
+      composeSystemMessage(
+        composeSystemMessage(documentsHint, usePlainToolSystem ? ATOMIC_PLAIN_TOOL_POLICY : undefined),
+        effectiveProviderName === STRATA_PROVIDER
+          ? '이전 대화에 중간에서 끊긴 답변이 있더라도, 이번에는 현재 질문에 대한 답을 온전히 전달한 뒤 마치세요. 작업을 확인하겠다고 말한 경우에는 실제로 확인한 결과나 확인할 수 없었던 이유까지 알려주세요.'
+          : undefined
+      )
     )
 
     const dropSystemForTools =
@@ -1821,7 +1827,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
               ? summarizeWithStrataCache(provider.base_url!, modelId!, `${snapshotThreadId}/${history.findLast(message => message.role === 'user')!.id}`,
                 { sourcePrefix: checkpointSourcePlanner(modelView, history), coldRecovery: runtime.engine === 'strata', selectBoundary: cacheBoundaryPlanner(modelView), admission: summaryAdmission, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
               : summarizeBatchesWithDstar(provider.base_url!, modelId!, { tokenCounting: summaryTokenCounting, admission: summaryAdmission, streamProgress: runtime?.summaryStreamProgress, inputProgress: (input, signal) => coordinator.reportInput(signal, input) })
-          if (!summaryAdapter.cached) summaryAdapter.fallbackReason = 'unsupported'
+          if (!runtime?.summaryClone || !cacheUser) summaryAdapter.fallbackReason = 'unsupported'
           coordinator.schedule(history, schedulingContext, estimateConversationUsage([response], Math.max(estimated, afterTurnEstimate)), summaryAdapter, undefined,
             retained => {
               const retainedView = projectCompactedMessages(retained, modelView)

@@ -13,6 +13,18 @@ import type { SummaryAdmission } from './atomic-summary-admission'
  * The frozen archive boundary is independent of later foreground messages. */
 export function summarizeWithStrataCache(baseUrl: string, model: string, owner: string,
   options: { sourcePrefix?: (owner: string, source: UIMessage[]) => Promise<Record<string, unknown> | undefined>; recovery?: boolean; coldRecovery?: boolean; selectBoundary?: (owner: string, messages: UIMessage[], boundary: number, archived: number, signal: AbortSignal) => Promise<number>; admission?: SummaryAdmission; inputProgress?: (input: SummaryInputProgress | undefined, signal: AbortSignal) => void }): Summarize {
+  // A native foreground snapshot can extend past the archived turn. Its
+  // owner protects the foreground cache but does not bound the model input.
+  if (options.coldRecovery) {
+    const bounded = summarizeBatchesWithDstar(baseUrl, model, {
+      tokenCounting: true, recovery: true, idleOnly: !options.recovery,
+      coldRecoveryOwner: options.recovery ? owner : () => latestDstarCacheOwner(baseUrl, owner),
+      admission: options.admission, streamProgress: true, inputProgress: options.inputProgress,
+    })
+    bounded.countRawTokens = bounded.batches?.countRawTokens
+    bounded.recoveryPriority = options.recovery === true
+    return bounded
+  }
   const summarize: Summarize = async (previous, _evidence, signal, progress, checkpoints) => {
     if (!options.recovery) options.admission?.assertAllowed()
     const source = checkpoints?.requestSources ?? []
@@ -152,7 +164,6 @@ ${JSON.stringify({ previous, openRequests: ledger.open.map(({ id, request }) => 
   const boundedFallback = (reason: 'headroom' | 'output_limit') => {
     const fallback = summarizeBatchesWithDstar(baseUrl, model, {
       tokenCounting: true, recovery: true, idleOnly: !options.recovery, streamProgress: true, inputProgress: options.inputProgress,
-      ...(options.coldRecovery ? { coldRecoveryOwner: options.recovery ? owner : () => latestDstarCacheOwner(baseUrl, owner) } : {}),
     })
     fallback.fallbackReason = reason
     fallback.recoveryPriority = options.recovery === true
